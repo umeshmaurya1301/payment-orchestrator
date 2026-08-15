@@ -9,11 +9,14 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * a readable summary of what has actually been built and measured so far.
  */
 @ConfigurationProperties(prefix = "payorch.resilience")
-public record ResilienceProperties(Deadline deadline) {
+public record ResilienceProperties(Deadline deadline, Retry retry) {
 
     public ResilienceProperties {
         if (deadline == null) {
             deadline = new Deadline(null, null, null, null);
+        }
+        if (retry == null) {
+            retry = new Retry(null, null, null, null, null);
         }
     }
 
@@ -54,6 +57,40 @@ public record ResilienceProperties(Deadline deadline) {
                 // cannot be exploited by a caller; services that need the
                 // opposite say so explicitly.
                 trustInboundHeader = Boolean.FALSE;
+            }
+        }
+    }
+
+    /**
+     * @param maxRetries       retries <em>after</em> the first attempt. 2 means
+     *                         up to three calls in total.
+     * @param baseDelayMs      first backoff ceiling; doubles each retry
+     * @param maxDelayMs       cap on the exponential ceiling
+     * @param budgetRatio      retries as a fraction of total requests. 0.1 caps
+     *                         them at 10% of traffic however bad things get -
+     *                         which is what stops a partial outage becoming a
+     *                         self-inflicted total one.
+     * @param budgetMaxTokens  ceiling on banked credit, so a quiet period cannot
+     *                         fund a retry storm the moment things break
+     */
+    public record Retry(Integer maxRetries, Long baseDelayMs, Long maxDelayMs,
+                        Double budgetRatio, Double budgetMaxTokens) {
+
+        public Retry {
+            if (maxRetries == null || maxRetries < 0) {
+                maxRetries = 2;
+            }
+            if (baseDelayMs == null || baseDelayMs <= 0) {
+                baseDelayMs = 50L;
+            }
+            if (maxDelayMs == null || maxDelayMs <= 0) {
+                maxDelayMs = 1_000L;
+            }
+            if (budgetRatio == null || budgetRatio < 0) {
+                budgetRatio = 0.1;
+            }
+            if (budgetMaxTokens == null || budgetMaxTokens <= 0) {
+                budgetMaxTokens = 100.0;
             }
         }
     }

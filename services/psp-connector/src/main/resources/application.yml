@@ -57,6 +57,19 @@ payorch:
       min-slice-ms: ${DEADLINE_MIN_SLICE_MS:50}
       trust-inbound-header: true
 
+    retry:
+      # 3b. Classification first, then the mechanism.
+      #
+      # budget-ratio caps retries at 10% of TOTAL traffic - not of failures.
+      # A ratio of failures would rise as the failure rate rose, which is
+      # exactly backwards: the worse things get, the less a struggling provider
+      # can absorb being asked again.
+      max-retries: ${RETRY_MAX:2}
+      base-delay-ms: 50
+      max-delay-ms: 1000
+      budget-ratio: ${RETRY_BUDGET_RATIO:0.1}
+      budget-max-tokens: 100
+
 management:
   endpoints:
     web:

@@ -4,6 +4,7 @@ import java.time.Instant;
 
 import com.payorch.infra.resilience.deadline.DeadlineExecutor;
 import com.payorch.infra.resilience.deadline.DeadlinePropagation;
+import com.payorch.infra.resilience.retry.Retrier;
 import com.payorch.infra.tokenization.DetokenizedCard;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
@@ -11,19 +12,22 @@ import org.springframework.web.client.RestClientException;
 /**
  * The adapter for {@code mock-psp-simulator}.
  *
- * <p><strong>Phase 3a: bounded, and nothing more.</strong> The call is now
- * limited by whatever is left of the request's budget, and a call with too
- * little left is declined rather than started. Still no retry and no breaker -
- * those are 3b and 3c, each landing only after its own measurement.
+ * <p><strong>Phase 3a and 3b.</strong> The call is bounded by whatever is left
+ * of the request's budget, and retried - subject to classification, an
+ * idempotency reference, a budget and the deadline. Still no circuit breaker;
+ * that is 3c, after its own measurement.
  *
- * <p>This is the last hop, so the budget it sees has already had the edge's and
- * the orchestrator's time deducted from it. Under phase 2's {@code hangRate},
- * this is the call that used to hang forever.
+ * <p><strong>Retry outside, deadline inside.</strong> Each attempt gets its own
+ * slice of the remaining budget rather than all attempts sharing one bound, so
+ * a retry cannot overrun the request and the slice naturally shrinks as time is
+ * spent. The retrier consults the deadline again before backing off, so a
+ * backoff that would not leave room for another call is never slept through.
  *
- * <p>The one thing that is here is the {@code reference} being passed straight
- * through as the provider's idempotency key. That is not resilience - it is a
- * correctness property, and adding it later would mean phase 3's first retry
- * experiment double-charged before anyone noticed.
+ * <p>The {@code reference} passed to the retrier is the same value carried in
+ * the request body - the orchestrator's attempt id, which the provider treats
+ * as an idempotency key. That is what makes retrying a possibly-processed
+ * authorization safe rather than a double charge, and phase 1 built it for
+ * exactly this moment.
  */
 public class MockPspAdapter implements PspAdapter {
 
@@ -31,8 +35,12 @@ public class MockPspAdapter implements PspAdapter {
 
     private final RestClient client;
     private final DeadlineExecutor deadlines;
+    private final Retrier retrier;
 
-    public MockPspAdapter(String baseUrl, DeadlinePropagation propagation, DeadlineExecutor deadlines) {
+    public MockPspAdapter(String baseUrl,
+                          DeadlinePropagation propagation,
+                          DeadlineExecutor deadlines,
+                          Retrier retrier) {
         // The request factory still has no read timeout, and that is now
         // deliberate rather than an omission: a factory-level timeout is shared
         // by every call, and a budget is per request by definition. The bound
@@ -42,6 +50,7 @@ public class MockPspAdapter implements PspAdapter {
                 .requestInterceptor(propagation)
                 .build();
         this.deadlines = deadlines;
+        this.retrier = retrier;
     }
 
     @Override
@@ -59,22 +68,27 @@ public class MockPspAdapter implements PspAdapter {
                 card.expiryMonth(),
                 card.expiryYear());
 
-        // DeadlineExceededException propagates rather than becoming
-        // ProviderUnavailableException: the caller needs to know whether the
-        // request was ever sent, and collapsing it here would throw that away.
-        ProviderResponse response = deadlines.callWithin("mockpsp.authorize", () -> {
-            try {
-                return client.post()
-                        .uri("/psp/v1/authorize")
-                        .body(request)
-                        .retrieve()
-                        .body(ProviderResponse.class);
-            } catch (RestClientException e) {
-                // Covers a connection failure, a 5xx, and a body that would not
-                // parse. All three mean the same thing to the caller: no answer.
-                throw new ProviderUnavailableException(PSP_ID, e);
-            }
-        });
+        // command.reference() is the orchestrator's attempt id, and it is in the
+        // request body above. Passing the SAME value as the idempotency
+        // reference is what permits a retry of a call that may already have been
+        // processed - the provider recognises the repeat and returns the
+        // original authorization instead of creating a second.
+        ProviderResponse response = retrier.call("mockpsp.authorize", command.reference(), () ->
+                deadlines.callWithin("mockpsp.authorize", () -> {
+                    try {
+                        return client.post()
+                                .uri("/psp/v1/authorize")
+                                .body(request)
+                                .retrieve()
+                                .body(ProviderResponse.class);
+                    } catch (RestClientException e) {
+                        // Deliberately thrown with the RestClientException as its
+                        // cause: FailureClassifier walks the cause chain, and a
+                        // 5xx and a refused connection must classify differently
+                        // even though both arrive as "no answer" here.
+                        throw new ProviderUnavailableException(PSP_ID, e);
+                    }
+                }));
         if (response == null) {
             throw new ProviderUnavailableException(PSP_ID, null);
         }

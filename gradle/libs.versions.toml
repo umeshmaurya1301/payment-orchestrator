@@ -77,6 +77,7 @@ flyway-mysql = { module = "org.flywaydb:flyway-mysql" }
 
 # --- observability (phase 4, wired empty in phase 0) ----------------------
 micrometer-registry-prometheus = { module = "io.micrometer:micrometer-registry-prometheus" }
+micrometer-core = { module = "io.micrometer:micrometer-core" }
 
 # --- identifiers ----------------------------------------------------------
 uuid-creator = { module = "com.github.f4b6a3:uuid-creator", version.ref = "uuidCreator" }

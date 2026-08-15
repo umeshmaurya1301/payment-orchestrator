@@ -3,6 +3,11 @@ package com.payorch.infra.resilience;
 import com.payorch.infra.resilience.deadline.DeadlineExecutor;
 import com.payorch.infra.resilience.deadline.DeadlineFilter;
 import com.payorch.infra.resilience.deadline.DeadlinePropagation;
+import com.payorch.infra.resilience.retry.Backoff;
+import com.payorch.infra.resilience.retry.FailureClassifier;
+import com.payorch.infra.resilience.retry.RetryBudget;
+import com.payorch.infra.resilience.retry.RetryMetrics;
+import com.payorch.infra.resilience.retry.Retrier;
 import jakarta.servlet.Filter;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -16,9 +21,10 @@ import org.springframework.web.client.RestClient;
  * Wires the resilience layer into any service that has a web stack.
  *
  * <p>Phase 3 builds this up one sub-step at a time, and each one lands only
- * after the experiment that justifies it is written. Right now that is 3a: the
- * deadline budget. Retry, circuit breaker, bulkhead and the rate limiters follow
- * in order, each with its own before/after graph.
+ * after the experiment that justifies it is written. So far: <strong>3a</strong>
+ * the deadline budget, and <strong>3b</strong> retry - classification, full
+ * jitter and a retry budget. Circuit breaker, bulkhead and the rate limiters
+ * follow in order, each with its own before/after graph.
  */
 @AutoConfiguration
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -50,7 +56,46 @@ public class ResilienceAutoConfiguration {
             log.info("deadline budget: {}ms (max {}ms, min slice {}ms, inbound header {})",
                     d.budgetMs(), d.maxBudgetMs(), d.minSliceMs(),
                     d.trustInboundHeader() ? "trusted" : "IGNORED");
+
+            ResilienceProperties.Retry r = properties.retry();
+            log.info("retry: up to {} retries, backoff {}-{}ms full jitter, budget {}% of traffic",
+                    r.maxRetries(), r.baseDelayMs(), r.maxDelayMs(),
+                    Math.round(r.budgetRatio() * 100));
         };
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public FailureClassifier failureClassifier() {
+        return new FailureClassifier();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public RetryBudget retryBudget(ResilienceProperties properties) {
+        ResilienceProperties.Retry retry = properties.retry();
+        return new RetryBudget(retry.budgetMaxTokens(), retry.budgetRatio());
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public Retrier retrier(ResilienceProperties properties,
+                           FailureClassifier classifier,
+                           RetryBudget budget) {
+        ResilienceProperties.Retry retry = properties.retry();
+        return new Retrier(
+                retry.maxRetries(),
+                properties.deadline().minSliceMs(),
+                classifier,
+                budget,
+                new Backoff(retry.baseDelayMs(), retry.maxDelayMs()));
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnClass(io.micrometer.core.instrument.MeterRegistry.class)
+    public RetryMetrics retryMetrics(Retrier retrier) {
+        return new RetryMetrics(retrier);
     }
 
     @Bean

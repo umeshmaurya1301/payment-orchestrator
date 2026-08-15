@@ -11,4 +11,11 @@ dependencies {
     // already having a web stack.
     compileOnly(libs.spring.boot.starter.web)
     testImplementation(libs.spring.boot.starter.web)
+
+    // Retry metrics. compileOnly: a service without Micrometer simply does not
+    // get them, and the binder bean is conditional on the registry being there.
+    // Without these the retry layer is unfalsifiable - "capped at 10% of
+    // traffic" is a claim about a number nobody can see.
+    compileOnly(libs.micrometer.core)
+    testImplementation(libs.micrometer.core)
 }

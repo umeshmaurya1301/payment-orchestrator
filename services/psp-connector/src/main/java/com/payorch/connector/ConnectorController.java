@@ -2,6 +2,7 @@ package com.payorch.connector;
 
 import com.payorch.connector.api.ConnectorApi;
 import com.payorch.connector.provider.PspAdapter;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import com.payorch.infra.logging.LogEvent;
 import com.payorch.infra.logging.LogFields;
 import jakarta.validation.Valid;
@@ -38,6 +39,31 @@ public class ConnectorController {
     public ConnectorApi.AuthorizeResponse authorize(
             @Valid @RequestBody ConnectorApi.AuthorizeRequest request) {
         return authorizations.authorize(request);
+    }
+
+    /**
+     * The circuit breaker is open, so <strong>nothing was sent</strong>.
+     *
+     * <p>503, deliberately distinct from the 502 below. The two look similar and
+     * mean opposite things to a payment: 502 says the provider may have acted
+     * and the outcome is unknown; 503 says the request never left this service
+     * and the card was definitely not charged. Collapsing them would turn every
+     * fast rejection into an {@code UNKNOWN} payment needing a status poll -
+     * manufacturing exactly the uncertainty the breaker exists to avoid.
+     */
+    @ExceptionHandler(CallNotPermittedException.class)
+    public ProblemDetail handleCircuitOpen(CallNotPermittedException ex) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.SERVICE_UNAVAILABLE);
+        problem.setTitle("Provider circuit open");
+        problem.setDetail("The circuit breaker for this provider is open. "
+                + "The request was not sent and the card was not charged.");
+        problem.setProperty(LogFields.ERROR_CODE, "circuit_open");
+
+        // DEBUG, not WARN. An open breaker rejects every call for its whole open
+        // window - at load that is thousands of lines saying the same thing. The
+        // state TRANSITION is logged once, at WARN, by CircuitBreakers.
+        log.debug("circuit open, call not permitted");
+        return problem;
     }
 
     /**

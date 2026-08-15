@@ -26,9 +26,16 @@ import org.springframework.stereotype.Service;
  * transition table would describe three services' behaviour instead of one, and
  * no single place would be able to enforce it.
  *
- * <p>The flow is synchronous and has no resilience of any kind: no timeout, no
- * retry, no breaker, no fallback. Phase 2 breaks exactly this path and measures
- * what happens; phase 3 adds one defence at a time against those measurements.
+ * <p>The flow is synchronous. Resilience lives below it - the deadline budget
+ * (3a) bounds it, and {@code psp-connector} retries (3b) behind a circuit
+ * breaker (3c). What this class owns is the consequence: translating each way a
+ * call can fail into the right state.
+ *
+ * <p>That translation is the interesting part, and every branch turns on one
+ * question - <em>was the request sent?</em> Nothing sent is {@code FAILED} and a
+ * merchant may retry freely; sent and unanswered is {@code UNKNOWN} and they
+ * must not. Three different failures reach here and only one of them is
+ * {@code UNKNOWN}.
  */
 @Service
 public class PaymentService {
@@ -122,6 +129,26 @@ public class PaymentService {
             // and calling that a failure is how a caller is invited to retry
             // into a double charge.
             return recordUnresolved(paymentId, attempt, "connector_unavailable", startedAt);
+
+        } catch (ConnectorClient.ConnectorRejectedException e) {
+            // 3c. The connector's breaker is open, so nothing was sent. The card
+            // was definitely not charged - FAILED, and safely retryable by the
+            // merchant. Recording UNKNOWN here would manufacture the very
+            // uncertainty the breaker exists to prevent, and hand phase 8's
+            // poller a reference that was never issued.
+            Payment failed = persistence.recordDeclined(
+                    paymentId, attempt.getId(), null, "circuit_open", elapsedMs(startedAt));
+
+            log.warn("authorization refused: provider circuit open",
+                    LogEvent.event()
+                            .with(LogFields.PAYMENT_ID, paymentId.toString())
+                            .with(LogFields.ATTEMPT_NO, attempt.getAttemptNo())
+                            .with(LogFields.PSP_ID, attempt.getPspId())
+                            .with(LogFields.STATE, failed.getState().name())
+                            .with(LogFields.OUTCOME, "FAILED")
+                            .with(LogFields.ERROR_CODE, "circuit_open")
+                            .args());
+            return toResponse(failed);
 
         } catch (DeadlineExceededException e) {
             // 3a. The budget ran out - and which of the two ways it ran out

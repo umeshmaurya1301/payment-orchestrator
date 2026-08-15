@@ -4,6 +4,7 @@ import java.time.Instant;
 
 import com.payorch.infra.resilience.deadline.DeadlineExecutor;
 import com.payorch.infra.resilience.deadline.DeadlinePropagation;
+import com.payorch.infra.resilience.breaker.CircuitBreakers;
 import com.payorch.infra.resilience.retry.Retrier;
 import com.payorch.infra.tokenization.DetokenizedCard;
 import org.springframework.web.client.RestClient;
@@ -12,16 +13,26 @@ import org.springframework.web.client.RestClientException;
 /**
  * The adapter for {@code mock-psp-simulator}.
  *
- * <p><strong>Phase 3a and 3b.</strong> The call is bounded by whatever is left
- * of the request's budget, and retried - subject to classification, an
- * idempotency reference, a budget and the deadline. Still no circuit breaker;
- * that is 3c, after its own measurement.
+ * <p><strong>Phase 3a, 3b and 3c.</strong> The call is bounded by the remaining
+ * budget, retried subject to classification and a budget, and gated by a circuit
+ * breaker for this provider and operation.
  *
- * <p><strong>Retry outside, deadline inside.</strong> Each attempt gets its own
- * slice of the remaining budget rather than all attempts sharing one bound, so
- * a retry cannot overrun the request and the slice naturally shrinks as time is
- * spent. The retrier consults the deadline again before backing off, so a
- * backoff that would not leave room for another call is never slept through.
+ * <p><strong>Retry outside, breaker in the middle, deadline innermost.</strong>
+ * The nesting is a real decision:
+ *
+ * <ul>
+ *   <li>The breaker sits <em>inside</em> the retry so it counts every network
+ *       attempt. With the retry inside, three retried failures would reach the
+ *       breaker as one, and it would take three times the sustained failure to
+ *       open.</li>
+ *   <li>Once the breaker is open, the retry does not fight it:
+ *       {@code CallNotPermittedException} is unrecognised by
+ *       {@code FailureClassifier}, which defaults to not retrying. The two
+ *       components compose into fast failure without either knowing about the
+ *       other.</li>
+ *   <li>The deadline is innermost, so each attempt gets its own slice of the
+ *       remaining budget.</li>
+ * </ul>
  *
  * <p>The {@code reference} passed to the retrier is the same value carried in
  * the request body - the orchestrator's attempt id, which the provider treats
@@ -36,11 +47,13 @@ public class MockPspAdapter implements PspAdapter {
     private final RestClient client;
     private final DeadlineExecutor deadlines;
     private final Retrier retrier;
+    private final CircuitBreakers breakers;
 
     public MockPspAdapter(String baseUrl,
                           DeadlinePropagation propagation,
                           DeadlineExecutor deadlines,
-                          Retrier retrier) {
+                          Retrier retrier,
+                          CircuitBreakers breakers) {
         // The request factory still has no read timeout, and that is now
         // deliberate rather than an omission: a factory-level timeout is shared
         // by every call, and a budget is per request by definition. The bound
@@ -51,6 +64,7 @@ public class MockPspAdapter implements PspAdapter {
                 .build();
         this.deadlines = deadlines;
         this.retrier = retrier;
+        this.breakers = breakers;
     }
 
     @Override
@@ -74,21 +88,23 @@ public class MockPspAdapter implements PspAdapter {
         // processed - the provider recognises the repeat and returns the
         // original authorization instead of creating a second.
         ProviderResponse response = retrier.call("mockpsp.authorize", command.reference(), () ->
-                deadlines.callWithin("mockpsp.authorize", () -> {
-                    try {
-                        return client.post()
-                                .uri("/psp/v1/authorize")
-                                .body(request)
-                                .retrieve()
-                                .body(ProviderResponse.class);
-                    } catch (RestClientException e) {
-                        // Deliberately thrown with the RestClientException as its
-                        // cause: FailureClassifier walks the cause chain, and a
-                        // 5xx and a refused connection must classify differently
-                        // even though both arrive as "no answer" here.
-                        throw new ProviderUnavailableException(PSP_ID, e);
-                    }
-                }));
+                breakers.call(PSP_ID, "authorize", () ->
+                        deadlines.callWithin("mockpsp.authorize", () -> {
+                            try {
+                                return client.post()
+                                        .uri("/psp/v1/authorize")
+                                        .body(request)
+                                        .retrieve()
+                                        .body(ProviderResponse.class);
+                            } catch (RestClientException e) {
+                                // Thrown with the RestClientException as its
+                                // cause: both FailureClassifier and ProviderFault
+                                // walk the cause chain, and a 5xx, a refused
+                                // connection and a 429 must be told apart even
+                                // though all three arrive as "no answer" here.
+                                throw new ProviderUnavailableException(PSP_ID, e);
+                            }
+                        })));
         if (response == null) {
             throw new ProviderUnavailableException(PSP_ID, null);
         }

@@ -27,7 +27,7 @@ uuidCreator = "6.1.1"        # UUIDv7 generation (phase 1)
 
 # Phase 2+: declared now so the catalog is the place versions live,
 # even before the first import.
-resilience4j = "2.4.0"       # resilience4j-spring-boot4 (phase 3)
+resilience4j = "2.4.0"       # resilience4j-circuitbreaker (phase 3c)
 
 [libraries]
 # --- platform -------------------------------------------------------------
@@ -83,7 +83,17 @@ micrometer-core = { module = "io.micrometer:micrometer-core" }
 uuid-creator = { module = "com.github.f4b6a3:uuid-creator", version.ref = "uuidCreator" }
 
 # --- phase 2+ (declared, not yet used) ------------------------------------
-resilience4j-spring-boot4 = { module = "io.github.resilience4j:resilience4j-spring-boot4", version.ref = "resilience4j" }
+# The CORE circuit breaker, not resilience4j-spring-boot4.
+#
+# The Boot integration exists and does target Boot 4 (its 2.4.0 POM declares
+# spring-boot-autoconfigure 4.0.0, checked before choosing). It is not used
+# because its value is the @CircuitBreaker annotation, and this system needs
+# breaker instances keyed dynamically by (provider, operation), configured from
+# the psp_config table in 3f, with a custom predicate for what counts as a
+# provider fault. None of that is expressible as an annotation on a method, and
+# taking the starter would add a second Boot-version coupling for machinery that
+# would then be bypassed.
+resilience4j-circuitbreaker = { module = "io.github.resilience4j:resilience4j-circuitbreaker", version.ref = "resilience4j" }
 # NOT chaos-monkey-spring-boot. Its latest release (4.0.0) declares Boot 4.0.2
 # in its POM but is inert on Boot 4.1: no startup banner, and a latency assault
 # configured at 2000ms produced a 76ms call. Its control endpoint is built on

@@ -9,7 +9,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * a readable summary of what has actually been built and measured so far.
  */
 @ConfigurationProperties(prefix = "payorch.resilience")
-public record ResilienceProperties(Deadline deadline, Retry retry) {
+public record ResilienceProperties(Deadline deadline, Retry retry, Breaker breaker) {
 
     public ResilienceProperties {
         if (deadline == null) {
@@ -17,6 +17,9 @@ public record ResilienceProperties(Deadline deadline, Retry retry) {
         }
         if (retry == null) {
             retry = new Retry(null, null, null, null, null);
+        }
+        if (breaker == null) {
+            breaker = new Breaker(null, null, null, null, null);
         }
     }
 
@@ -91,6 +94,50 @@ public record ResilienceProperties(Deadline deadline, Retry retry) {
             }
             if (budgetMaxTokens == null || budgetMaxTokens <= 0) {
                 budgetMaxTokens = 100.0;
+            }
+        }
+    }
+
+    /**
+     * @param failureRateThreshold  percentage of provider faults in the window
+     *                              that opens the breaker. 50 rather than
+     *                              something tighter because a healthy provider
+     *                              here runs at essentially 0% - the phase-2
+     *                              control saw 100% success and the 30-minute
+     *                              soak saw one failure in 36,001. Half the
+     *                              calls failing is unambiguous, and 3b's retry
+     *                              already absorbs transient blips, so the
+     *                              breaker should only fire on sustained
+     *                              failure.
+     * @param windowSeconds         time-based window. See CircuitBreakers for
+     *                              why time-based rather than count-based.
+     * @param minimumCalls          below this many calls in the window the rate
+     *                              is not meaningful and the breaker stays
+     *                              closed. Covers the low-traffic case a time
+     *                              window is weak at.
+     * @param waitInOpenSeconds     how long to stay open before probing
+     * @param halfOpenPermits       probe calls allowed in half-open. More than
+     *                              one, so a single unlucky probe cannot
+     *                              re-open a recovered provider.
+     */
+    public record Breaker(Integer failureRateThreshold, Integer windowSeconds, Integer minimumCalls,
+                          Integer waitInOpenSeconds, Integer halfOpenPermits) {
+
+        public Breaker {
+            if (failureRateThreshold == null || failureRateThreshold <= 0 || failureRateThreshold > 100) {
+                failureRateThreshold = 50;
+            }
+            if (windowSeconds == null || windowSeconds <= 0) {
+                windowSeconds = 30;
+            }
+            if (minimumCalls == null || minimumCalls <= 0) {
+                minimumCalls = 20;
+            }
+            if (waitInOpenSeconds == null || waitInOpenSeconds <= 0) {
+                waitInOpenSeconds = 10;
+            }
+            if (halfOpenPermits == null || halfOpenPermits <= 0) {
+                halfOpenPermits = 5;
             }
         }
     }

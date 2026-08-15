@@ -70,6 +70,23 @@ payorch:
       budget-ratio: ${RETRY_BUDGET_RATIO:0.1}
       budget-max-tokens: 100
 
+    breaker:
+      # 3c. Thresholds from the baseline, not from feel.
+      #
+      # 50% because a healthy provider here runs at essentially zero: the phase-2
+      # control saw 100% success and the 30-minute soak saw one failure in
+      # 36,001. Half the calls failing is unambiguous. 3b's retry already absorbs
+      # transient blips, so this should only fire on sustained failure - and a
+      # threshold near the injected 40% error rate would flap continuously,
+      # which is the trap the phase-3 notes call out.
+      failure-rate-threshold: ${BREAKER_THRESHOLD:50}
+      window-seconds: ${BREAKER_WINDOW_S:30}
+      minimum-calls: ${BREAKER_MIN_CALLS:20}
+      wait-in-open-seconds: ${BREAKER_OPEN_S:10}
+      half-open-permits: 5
+      # BREAKER_THRESHOLD=100 makes the breaker unreachable, which is the
+      # 'before' arm for the experiment: one variable, same build.
+
 management:
   endpoints:
     web:

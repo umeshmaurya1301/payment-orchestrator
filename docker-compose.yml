@@ -250,6 +250,10 @@ services:
       # (RETRY_MAX=0) as the 'before' arm, one variable at a time.
       RETRY_MAX: ${RETRY_MAX:-2}
       RETRY_BUDGET_RATIO: ${RETRY_BUDGET_RATIO:-0.1}
+      BREAKER_THRESHOLD: ${BREAKER_THRESHOLD:-50}
+      BREAKER_WINDOW_S: ${BREAKER_WINDOW_S:-30}
+      BREAKER_MIN_CALLS: ${BREAKER_MIN_CALLS:-20}
+      BREAKER_OPEN_S: ${BREAKER_OPEN_S:-10}
       # Overridable so an experiment can run the same build with and without an
       # effective bound - set it to an hour and the deadline is the "before".
       # One variable between the two runs is the whole point.

@@ -2,6 +2,8 @@ package com.payorch.orchestrator.connector;
 
 import com.payorch.infra.resilience.deadline.DeadlineExecutor;
 import com.payorch.infra.resilience.deadline.DeadlinePropagation;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
@@ -58,6 +60,13 @@ public class ConnectorClient {
                     throw new ConnectorUnavailableException(null);
                 }
                 return response;
+            } catch (HttpServerErrorException e) {
+                // 503 from the connector means its breaker is open and nothing
+                // was sent. That is a definite non-event, not an unknown.
+                if (e.getStatusCode() == HttpStatus.SERVICE_UNAVAILABLE) {
+                    throw new ConnectorRejectedException(e);
+                }
+                throw new ConnectorUnavailableException(e);
             } catch (RestClientException e) {
                 throw new ConnectorUnavailableException(e);
             }
@@ -69,6 +78,20 @@ public class ConnectorClient {
 
         public ConnectorUnavailableException(Throwable cause) {
             super("no usable response from psp-connector", cause);
+        }
+    }
+
+    /**
+     * The connector refused to send the request at all.
+     *
+     * <p>Its circuit breaker is open. The provider was not contacted, so unlike
+     * {@link ConnectorUnavailableException} this is a definite non-event: the
+     * payment is {@code FAILED} and a merchant may retry it freely.
+     */
+    public static class ConnectorRejectedException extends RuntimeException {
+
+        public ConnectorRejectedException(Throwable cause) {
+            super("psp-connector refused the request; its circuit is open", cause);
         }
     }
 }

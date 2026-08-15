@@ -1,5 +1,7 @@
 package com.payorch.infra.resilience;
 
+import com.payorch.infra.resilience.breaker.CircuitBreakerMetrics;
+import com.payorch.infra.resilience.breaker.CircuitBreakers;
 import com.payorch.infra.resilience.deadline.DeadlineExecutor;
 import com.payorch.infra.resilience.deadline.DeadlineFilter;
 import com.payorch.infra.resilience.deadline.DeadlinePropagation;
@@ -61,6 +63,12 @@ public class ResilienceAutoConfiguration {
             log.info("retry: up to {} retries, backoff {}-{}ms full jitter, budget {}% of traffic",
                     r.maxRetries(), r.baseDelayMs(), r.maxDelayMs(),
                     Math.round(r.budgetRatio() * 100));
+
+            ResilienceProperties.Breaker b = properties.breaker();
+            log.info("circuit breaker: opens at {}% faults over {}s (min {} calls), "
+                            + "{}s open then {} half-open probes",
+                    b.failureRateThreshold(), b.windowSeconds(), b.minimumCalls(),
+                    b.waitInOpenSeconds(), b.halfOpenPermits());
         };
     }
 
@@ -96,6 +104,35 @@ public class ResilienceAutoConfiguration {
     @ConditionalOnClass(io.micrometer.core.instrument.MeterRegistry.class)
     public RetryMetrics retryMetrics(Retrier retrier) {
         return new RetryMetrics(retrier);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnClass(io.micrometer.core.instrument.MeterRegistry.class)
+    public CircuitBreakerMetrics circuitBreakerMetrics(CircuitBreakers breakers) {
+        return new CircuitBreakerMetrics(breakers);
+    }
+
+    /**
+     * Breaker state changes are republished as Spring application events, so
+     * phase 5's routing can consume them by declaring a listener rather than by
+     * reaching into the registry. Nothing listens yet; emitting now makes that a
+     * wiring change later instead of a redesign.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public CircuitBreakers circuitBreakers(
+            ResilienceProperties properties,
+            org.springframework.context.ApplicationEventPublisher events) {
+        ResilienceProperties.Breaker b = properties.breaker();
+        return new CircuitBreakers(
+                CircuitBreakers.config(
+                        b.failureRateThreshold(),
+                        java.time.Duration.ofSeconds(b.windowSeconds()),
+                        b.minimumCalls(),
+                        java.time.Duration.ofSeconds(b.waitInOpenSeconds()),
+                        b.halfOpenPermits()),
+                events::publishEvent);
     }
 
     @Bean

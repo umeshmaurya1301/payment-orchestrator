@@ -18,4 +18,8 @@ dependencies {
     // traffic" is a claim about a number nobody can see.
     compileOnly(libs.micrometer.core)
     testImplementation(libs.micrometer.core)
+
+    // 3c. `api`, because a consuming service's own code names CircuitBreaker
+    // and its State enum when it reacts to the breaker being open.
+    api(libs.resilience4j.circuitbreaker)
 }

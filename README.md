@@ -144,19 +144,23 @@ output, and fails if any Luhn-valid card number appears.
 
 ## Phases
 
-| Phase | | Status |
-|---|---|---|
-| 0 | Foundations - build, logging, compose skeleton | done |
-| 1 | Vertical slice: one payment, happy path, tokenization | next |
-| 2 | Chaos harness and load - the baseline failure report | |
-| 3 | Resilience layer, one component at a time | |
-| 4 | Observability - SigNoz, trace/log correlation, PAN-leak test | |
-| 5 | Health-driven routing - the differentiator | |
-| 6 | Async spine - Kafka, outbox, CDC, saga | |
-| 7 | Concurrency and idempotency hardening | |
-| 8 | Data layer depth - indexing, reconciliation | |
-| 9 | gRPC migration, Vault, encryption, audit, erasure | |
-| 10 | Packaging: ADRs, experiment writeups, demo script | |
+Full implementation guide for each phase lives in
+**[`docs/phases/`](docs/phases/)** - goal, build steps, key decisions, exit
+criteria, traps and interview payload.
+
+| Phase | | Est. | Status |
+|---|---|---|---|
+| 0 | [Foundations](docs/phases/00-foundations.md) - build, logging, compose skeleton | 1 wk | **done** |
+| 1 | [Vertical slice](docs/phases/01-vertical-slice.md) - one payment, tokenization | 2 wk | next |
+| 2 | [Chaos harness and load](docs/phases/02-chaos-harness.md) - the baseline failure report | 1 wk | |
+| 3 | [Resilience layer](docs/phases/03-resilience.md) - one component at a time | 3-4 wk | |
+| 4 | [Observability](docs/phases/04-observability.md) - SigNoz, trace/log correlation, PAN-leak test | 2 wk | |
+| 5 | [Health-driven routing](docs/phases/05-health-routing.md) - the differentiator | 2 wk | |
+| 6 | [Async spine](docs/phases/06-async-spine.md) - Kafka, outbox, CDC, saga | 3 wk | |
+| 7 | [Concurrency and idempotency](docs/phases/07-concurrency-idempotency.md) | 2-3 wk | |
+| 8 | [Data layer depth](docs/phases/08-data-layer.md) - indexing, reconciliation | 2 wk | |
+| 9 | [gRPC, security, data protection](docs/phases/09-grpc-security.md) | 3 wk | |
+| 10 | [Packaging](docs/phases/10-packaging.md) - ADRs, writeups, demo script | 1 wk | |
 
 The rule that holds across all of them: **never add a resilience component
 without first observing the failure it prevents.** Break it, measure it, then

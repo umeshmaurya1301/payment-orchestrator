@@ -9,6 +9,16 @@ plugins {
 // inside the `subprojects` lambda, where it is not in scope.
 val catalog = extensions.getByType<VersionCatalogsExtension>().named("libs")
 
+// Without this, `./gradlew build` silently skips every test in infra-core.
+// Gradle only runs tasks in an included build when the consuming build needs
+// their output, and what the services need is the starters' jars - not their
+// test results. That made the phase-0 exit criterion ("a unit test proves
+// @Sensitive fields are masked") pass locally off stale results while a clean
+// clone ran six tests instead of thirty.
+tasks.named("build") {
+    dependsOn(gradle.includedBuild("infra-core").task(":buildAll"))
+}
+
 allprojects {
     group = "com.payorch"
     version = "0.1.0-SNAPSHOT"

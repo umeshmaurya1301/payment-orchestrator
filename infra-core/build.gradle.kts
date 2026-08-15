@@ -16,6 +16,17 @@ allprojects {
     version = "0.1.0-SNAPSHOT"
 }
 
+// An included build only ever runs the tasks the consuming build asks it for.
+// The services depend on the starters' *jars*, so a plain `./gradlew build` at
+// the root compiles and packages these modules but never runs a single test
+// here. Exposing one aggregate task gives the root build something to depend
+// on - see the `build` wiring in ../build.gradle.kts.
+tasks.register("buildAll") {
+    group = "build"
+    description = "Builds and tests every starter in this build."
+    dependsOn(subprojects.map { "${it.path}:build" })
+}
+
 subprojects {
     apply(plugin = "java-library")
     apply(plugin = "maven-publish")

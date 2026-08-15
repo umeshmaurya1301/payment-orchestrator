@@ -19,13 +19,32 @@ produces a before/after graph in [`docs/experiments/`](docs/experiments/).
 | Docker | Engine 29+ with Compose v2 |
 | Gradle | none - use the wrapper |
 
+### Cloning on Windows
+
+Run this once, or the clone silently fails to check out four files:
+
+```bash
+git config --global core.longpaths true
+```
+
+Spring's autoconfiguration registration file
+(`META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`)
+pushes those paths past the 260-character `MAX_PATH` limit. The failure is
+quiet in the worst way: `git clone` reports "Filename too long" but still
+leaves a repo behind, and `./gradlew build` on the half-checked-out tree
+reports BUILD SUCCESSFUL because there is almost nothing left to build.
+
 ## Run it
 
 ```bash
-./gradlew build          # compiles, runs tests
+./gradlew build          # compiles, runs ALL tests - including infra-core's
 ./gradlew bootJar        # produces one runnable jar per service
 docker compose up -d --build
 ```
+
+`build` at the root explicitly depends on `infra-core:buildAll`. Without that
+dependency Gradle runs no tests in the included build at all, because the
+services need the starters' jars and nothing more.
 
 The Docker images copy a jar built on the host rather than building inside a
 builder stage, so `bootJar` must run first. See the comment at the top of

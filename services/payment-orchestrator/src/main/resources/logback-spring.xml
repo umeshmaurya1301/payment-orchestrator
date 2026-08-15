@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <springProperty scope="context" name="SERVICE_NAME"
+                    source="spring.application.name" defaultValue="payment-orchestrator"/>
+
+    <include resource="com/payorch/infra/logging/logback-payorch.xml"/>
+
+</configuration>

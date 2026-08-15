@@ -1,0 +1,29 @@
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Runtime / local
+*.log
+logs/
+.env
+.env.local
+
+# Chaos + load test output (phase 2 onward) - results are committed
+# deliberately as docs/experiments/*, raw dumps are not.
+tools/loadtest/results/
+docker/**/data/

@@ -1,0 +1,6 @@
+# The build context is the repo root so the Dockerfile can reach
+# services/<name>/build/libs. Everything that is not a built jar is excluded,
+# otherwise the whole source tree and the Gradle caches get shipped to the
+# daemon on every build.
+*
+!services/*/build/libs/*.jar

@@ -1,0 +1,30 @@
+spring:
+  application:
+    name: psp-router
+  threads:
+    virtual:
+      # Enabled from day one, deliberately. It changes how pool sizing behaves,
+      # and phase 7 depends on having felt that from the start: virtual threads
+      # do not fix a bounded resource, they move where the queue forms.
+      enabled: true
+  mvc:
+    problemdetails:
+      # Lets Spring render its own MVC exceptions as RFC-7807, alongside the
+      # ProblemDetailHandler that web-starter contributes.
+      enabled: true
+
+server:
+  port: 8082
+  # The in-flight drain this enables is demonstrated and tested in phase 7.
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,loggers,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true

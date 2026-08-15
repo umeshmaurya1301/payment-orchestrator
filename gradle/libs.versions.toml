@@ -1,0 +1,88 @@
+# Single source of truth for dependency versions across BOTH builds:
+#   - the root build (services)
+#   - the `infra-core` included build (starters)
+#
+# infra-core/settings.gradle.kts points at this exact file, so there is one
+# catalog, not two that drift.
+#
+# Entries WITHOUT a version are resolved by the Spring Boot BOM
+# (org.springframework.boot:spring-boot-dependencies), which every module
+# applies as a platform in the root build.gradle.kts subprojects block.
+# Verified against spring-boot-dependencies:4.1.0 before pinning.
+
+[versions]
+# Spring Boot 4.1.0 is the latest GA and targets Java 25.
+# NOTE: Boot 4.x manages Jackson 3 (tools.jackson, 3.1.4) as the primary
+# Jackson, with Jackson 2 (com.fasterxml.jackson, 2.21.4) available for
+# compatibility. All our code targets Jackson 3.
+springBoot = "4.1.0"
+java = "25"
+
+# Not managed by the Boot BOM - must be pinned here.
+# 9.0 is the first release built against Jackson 3 (tools.jackson.core),
+# which is why it lines up with Boot 4.x rather than fighting it.
+logstashEncoder = "9.0"
+
+# Phase 1+: declared now so the catalog is the place versions live,
+# even before the first import.
+uuidCreator = "6.1.1"        # UUIDv7 generation (phase 1)
+resilience4j = "2.4.0"       # resilience4j-spring-boot4 (phase 3)
+chaosMonkey = "4.0.0"        # chaos-monkey-spring-boot (phase 2)
+
+[libraries]
+# --- platform -------------------------------------------------------------
+spring-boot-bom = { module = "org.springframework.boot:spring-boot-dependencies", version.ref = "springBoot" }
+
+# --- spring (versions from BOM) ------------------------------------------
+spring-boot-starter-web = { module = "org.springframework.boot:spring-boot-starter-web" }
+spring-boot-starter-actuator = { module = "org.springframework.boot:spring-boot-starter-actuator" }
+spring-boot-starter-validation = { module = "org.springframework.boot:spring-boot-starter-validation" }
+spring-boot-starter-data-jpa = { module = "org.springframework.boot:spring-boot-starter-data-jpa" }
+spring-boot-starter-test = { module = "org.springframework.boot:spring-boot-starter-test" }
+# Gradle 9 no longer puts the JUnit Platform launcher on the test runtime
+# classpath implicitly; without it every test task fails to start.
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+spring-boot-autoconfigure = { module = "org.springframework.boot:spring-boot-autoconfigure" }
+spring-boot-configuration-processor = { module = "org.springframework.boot:spring-boot-configuration-processor" }
+
+# --- logging --------------------------------------------------------------
+logstash-logback-encoder = { module = "net.logstash.logback:logstash-logback-encoder", version.ref = "logstashEncoder" }
+logback-classic = { module = "ch.qos.logback:logback-classic" }
+logback-core = { module = "ch.qos.logback:logback-core" }
+jackson-databind = { module = "tools.jackson.core:jackson-databind" }
+slf4j-api = { module = "org.slf4j:slf4j-api" }
+
+# --- persistence ----------------------------------------------------------
+mysql-connector = { module = "com.mysql:mysql-connector-j" }
+# Boot 4 moved autoconfiguration into per-technology modules. Depending on
+# org.flywaydb:flyway-core alone puts Flyway on the classpath but never
+# triggers it - no error, no log line, and no migrations. The starter is what
+# carries spring-boot-flyway (the autoconfiguration) with it.
+spring-boot-starter-flyway = { module = "org.springframework.boot:spring-boot-starter-flyway" }
+# Dialect support. Flyway refuses to run against MySQL 9 without it.
+flyway-mysql = { module = "org.flywaydb:flyway-mysql" }
+
+# --- observability (phase 4, wired empty in phase 0) ----------------------
+micrometer-registry-prometheus = { module = "io.micrometer:micrometer-registry-prometheus" }
+
+# --- phase 1+ (declared, not yet used) ------------------------------------
+uuid-creator = { module = "com.github.f4b6a3:uuid-creator", version.ref = "uuidCreator" }
+resilience4j-spring-boot4 = { module = "io.github.resilience4j:resilience4j-spring-boot4", version.ref = "resilience4j" }
+chaos-monkey-spring-boot = { module = "de.codecentric:chaos-monkey-spring-boot", version.ref = "chaosMonkey" }
+
+# --- infra-core starters --------------------------------------------------
+# Ordinary module coordinates. The root settings.gradle.kts substitutes each of
+# these for the local project in the `infra-core` included build, so the version
+# below is only consulted if that substitution is removed and a published
+# snapshot is used instead.
+payorch-logging-starter = { module = "com.payorch.infra:logging-starter", version = "0.1.0-SNAPSHOT" }
+payorch-web-starter = { module = "com.payorch.infra:web-starter", version = "0.1.0-SNAPSHOT" }
+payorch-resilience-starter = { module = "com.payorch.infra:resilience-starter", version = "0.1.0-SNAPSHOT" }
+payorch-idempotency-starter = { module = "com.payorch.infra:idempotency-starter", version = "0.1.0-SNAPSHOT" }
+payorch-observability-starter = { module = "com.payorch.infra:observability-starter", version = "0.1.0-SNAPSHOT" }
+
+# --- test -----------------------------------------------------------------
+h2 = { module = "com.h2database:h2" }
+
+[plugins]
+spring-boot = { id = "org.springframework.boot", version.ref = "springBoot" }

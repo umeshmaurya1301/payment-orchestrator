@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <!-- Derived from spring.application.name so the shared config does not need
+         an environment variable to tell six services apart. -->
+    <springProperty scope="context" name="SERVICE_NAME"
+                    source="spring.application.name" defaultValue="ledger-notifier"/>
+
+    <include resource="com/payorch/infra/logging/logback-payorch.xml"/>
+
+</configuration>

@@ -1,0 +1,306 @@
+# Profiles
+# --------
+#   (default)  core  - mysql, redis, and the five services needed for a payment
+#                      to flow end to end. Started by plain `docker compose up`,
+#                      which is why these carry no `profiles:` key.
+#   async            - kafka x3 (KRaft), mongo, ledger-notifier.  Phase 6.
+#   obs              - see the note at the bottom of this file.               Phase 4.
+#
+# Usage:
+#   ./gradlew bootJar && docker compose up -d --build
+#   docker compose --profile async up -d
+#
+name: payorch
+
+x-java-service: &java-service
+  restart: unless-stopped
+  # A limit, so -XX:MaxRAMPercentage=70 in the Dockerfile has something to
+  # compute a heap from. 640m x 70% is roughly a 448m heap, which is the ~450m
+  # per service the resource budget assumes.
+  mem_limit: 640m
+  networks: [payorch]
+  environment: &java-env
+    JAVA_OPTS: "-XX:MaxRAMPercentage=70 -XX:+ExitOnOutOfMemoryError"
+    LOG_LEVEL: INFO
+
+services:
+
+  # ---------------------------------------------------------------- core ----
+
+  mysql:
+    image: mysql:8.4
+    container_name: payorch-mysql
+    mem_limit: 512m
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: payorch
+      MYSQL_USER: payorch
+      MYSQL_PASSWORD: payorch
+    ports: ["3306:3306"]
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+    networks: [payorch]
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: payorch-redis
+    mem_limit: 256m
+    # noeviction, deliberately, and not the usual allkeys-lru.
+    #
+    # From phase 3 Redis holds rate-limiter buckets, and from phase 7 it holds
+    # idempotency in-flight markers. Under an LRU policy a memory spike silently
+    # evicts those markers, and duplicate suppression quietly degrades into a
+    # coin flip at exactly the moment load is highest. Failing writes loudly is
+    # the correct behaviour for a correctness control.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 192mb
+      - --maxmemory-policy
+      - noeviction
+    ports: ["6379:6379"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    networks: [payorch]
+
+  payment-orchestrator:
+    <<: *java-service
+    container_name: payorch-payment-orchestrator
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        SERVICE: payment-orchestrator
+    environment:
+      <<: *java-env
+      # Points at the MySQL service name. Phase 2 repoints this at Toxiproxy's
+      # listener instead, which is a compose change and no code change.
+      ORCHESTRATOR_DB_URL: jdbc:mysql://mysql:3306/payorch
+      ORCHESTRATOR_DB_USER: payorch
+      ORCHESTRATOR_DB_PASSWORD: payorch
+    ports: ["8081:8081"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/actuator/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 60s
+
+  payments-edge:
+    <<: *java-service
+    container_name: payorch-payments-edge
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        SERVICE: payments-edge
+    ports: ["8080:8080"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 60s
+
+  psp-router:
+    <<: *java-service
+    container_name: payorch-psp-router
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        SERVICE: psp-router
+    ports: ["8082:8082"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8082/actuator/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 60s
+
+  psp-connector:
+    <<: *java-service
+    container_name: payorch-psp-connector
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        SERVICE: psp-connector
+    ports: ["8083:8083"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8083/actuator/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 60s
+
+  mock-psp-simulator:
+    <<: *java-service
+    container_name: payorch-mock-psp-simulator
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        SERVICE: mock-psp-simulator
+    ports: ["8085:8085"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8085/actuator/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 60s
+
+  # --------------------------------------------------------------- async ----
+  # Defined now so the profile exists, exercised from phase 6. Only the `core`
+  # profile is covered by the phase-0 exit criteria.
+
+  kafka-1: &kafka
+    image: apache/kafka:4.1.0
+    container_name: payorch-kafka-1
+    profiles: ["async"]
+    mem_limit: 768m
+    environment: &kafka-env
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-1:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # These three default to 1, which silently undoes the durability the rest
+      # of the phase-6 design depends on: internal topics would live on a single
+      # broker, so killing that broker loses consumer offsets and transaction
+      # state even though the data topics are replicated three ways.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms512m"
+      CLUSTER_ID: payorch-local-cluster-01
+    volumes:
+      - kafka-1-data:/var/lib/kafka/data
+    networks: [payorch]
+
+  kafka-2:
+    <<: *kafka
+    container_name: payorch-kafka-2
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 2
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:9092
+    volumes:
+      - kafka-2-data:/var/lib/kafka/data
+
+  kafka-3:
+    <<: *kafka
+    container_name: payorch-kafka-3
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 3
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-3:9092
+    volumes:
+      - kafka-3-data:/var/lib/kafka/data
+
+  mongo:
+    image: mongo:8.0
+    container_name: payorch-mongo
+    profiles: ["async"]
+    mem_limit: 1g
+    # A replica set of one. Standalone mongod cannot do transactions, and the
+    # phase-6 ledger write path needs them - so even a single node has to be
+    # initiated as a replica set.
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    ports: ["27017:27017"]
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    networks: [payorch]
+
+  mongo-init:
+    image: mongo:8.0
+    container_name: payorch-mongo-init
+    profiles: ["async"]
+    depends_on:
+      mongo:
+        condition: service_healthy
+    # Idempotent: rs.initiate() throws once the set is already initiated, so the
+    # status check keeps a re-run from failing the whole compose up.
+    entrypoint:
+      - bash
+      - -c
+      - >
+        mongosh --host mongo --quiet --eval
+        'try { rs.status() } catch (e) { rs.initiate({_id:"rs0",members:[{_id:0,host:"mongo:27017"}]}) }'
+    restart: on-failure
+    networks: [payorch]
+
+  ledger-notifier:
+    <<: *java-service
+    container_name: payorch-ledger-notifier
+    profiles: ["async"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        SERVICE: ledger-notifier
+    ports: ["8084:8084"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8084/actuator/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 60s
+
+  # ----------------------------------------------------------------- obs ----
+  #
+  # Intentionally empty in phase 0.
+  #
+  # SigNoz is not defined here because phase 4 attaches it on an EXTERNAL docker
+  # network rather than merging its compose file into this one. SigNoz ships its
+  # own multi-container stack (ClickHouse, collector, query service, frontend);
+  # vendoring a copy of it here would mean re-reconciling it by hand on every
+  # SigNoz upgrade. Phase 4 adds:
+  #
+  #     networks:
+  #       signoz-net:
+  #         external: true
+  #
+  # and attaches each service to it, so the two stacks stay independently
+  # upgradeable. ClickHouse is also the single largest memory consumer in the
+  # budget (3-4 GB), which is exactly why it sits behind a profile and is not
+  # started during phases 1-3.
+
+networks:
+  payorch:
+    driver: bridge
+
+volumes:
+  mysql-data:
+  redis-data:
+  kafka-1-data:
+  kafka-2-data:
+  kafka-3-data:
+  mongo-data:

@@ -1,0 +1,26 @@
+# Normalize text files to LF in the repository, check out native on Windows.
+* text=auto
+
+# gradlew is executed by /bin/sh on Linux and in CI. With CRLF endings the
+# shebang line reads as "/bin/sh\r" and the whole build dies with an
+# "interpreter not found" error that names a file which plainly exists. It was
+# authored on Windows, so this is pinned rather than left to chance.
+gradlew text eol=lf
+*.sh text eol=lf
+
+# Entrypoint scripts and anything else copied into a Linux container.
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Windows batch files genuinely need CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Never touch these.
+*.jar binary
+*.zip binary
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary

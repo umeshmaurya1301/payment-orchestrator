@@ -1,0 +1,50 @@
+spring:
+  application:
+    name: payment-orchestrator
+  threads:
+    virtual:
+      # Enabled from day one, deliberately. It changes how pool sizing behaves,
+      # and phase 7 depends on having felt that from the start: virtual threads
+      # do not fix a bounded resource, they move where the queue forms. The
+      # Hikari pool below is exactly such a bounded resource.
+      enabled: true
+  mvc:
+    problemdetails:
+      enabled: true
+
+  datasource:
+    # Driven by environment so that phase 2 can point this at Toxiproxy's port
+    # instead of MySQL's with a compose change and no code change.
+    url: ${ORCHESTRATOR_DB_URL:jdbc:mysql://localhost:3306/payorch}
+    username: ${ORCHESTRATOR_DB_USER:payorch}
+    password: ${ORCHESTRATOR_DB_PASSWORD:payorch}
+    hikari:
+      pool-name: orchestrator-pool
+      maximum-pool-size: ${ORCHESTRATOR_DB_POOL_SIZE:20}
+
+  jpa:
+    # Off by default: it hides lazy-loading cost inside view rendering and makes
+    # connection hold times impossible to reason about under load.
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+server:
+  port: 8081
+  # The in-flight drain this enables is demonstrated and tested in phase 7.
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,loggers,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true

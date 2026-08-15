@@ -150,6 +150,12 @@ services:
       ORCHESTRATOR_DB_USER: payorch
       ORCHESTRATOR_DB_PASSWORD: payorch
       CONNECTOR_BASE_URL: http://psp-connector:8083
+      # Overridable so an experiment can run the same build with and without an
+      # effective bound - set it to an hour and the deadline is the "before".
+      # One variable between the two runs is the whole point.
+      DEADLINE_BUDGET_MS: ${DEADLINE_BUDGET_MS:-30000}
+      DEADLINE_MAX_BUDGET_MS: ${DEADLINE_MAX_BUDGET_MS:-60000}
+      DEADLINE_MIN_SLICE_MS: ${DEADLINE_MIN_SLICE_MS:-50}
     ports: ["8081:8081"]
     depends_on:
       toxiproxy:
@@ -175,6 +181,12 @@ services:
       EDGE_DB_USER: payorch
       EDGE_DB_PASSWORD: payorch
       ORCHESTRATOR_BASE_URL: http://payment-orchestrator:8081
+      # Overridable so an experiment can run the same build with and without an
+      # effective bound - set it to an hour and the deadline is the "before".
+      # One variable between the two runs is the whole point.
+      DEADLINE_BUDGET_MS: ${DEADLINE_BUDGET_MS:-30000}
+      DEADLINE_MAX_BUDGET_MS: ${DEADLINE_MAX_BUDGET_MS:-60000}
+      DEADLINE_MIN_SLICE_MS: ${DEADLINE_MIN_SLICE_MS:-50}
       # The vault, on its own credentials. vault_writer holds SELECT and INSERT
       # on payorch_vault.token_vault and nothing else; the payorch user above
       # has no grant on that schema at all.
@@ -234,6 +246,12 @@ services:
       VAULT_DB_PASSWORD: vault_reader_pw
       VAULT_KEY: *vault-key
       MOCK_PSP_BASE_URL: http://mock-psp-simulator:8085
+      # Overridable so an experiment can run the same build with and without an
+      # effective bound - set it to an hour and the deadline is the "before".
+      # One variable between the two runs is the whole point.
+      DEADLINE_BUDGET_MS: ${DEADLINE_BUDGET_MS:-30000}
+      DEADLINE_MAX_BUDGET_MS: ${DEADLINE_MAX_BUDGET_MS:-60000}
+      DEADLINE_MIN_SLICE_MS: ${DEADLINE_MIN_SLICE_MS:-50}
     ports: ["8083:8083"]
     depends_on:
       toxiproxy:

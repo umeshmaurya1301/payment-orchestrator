@@ -1,5 +1,7 @@
 package com.payorch.orchestrator.connector;
 
+import com.payorch.infra.resilience.deadline.DeadlineExecutor;
+import com.payorch.infra.resilience.deadline.DeadlinePropagation;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
@@ -11,17 +13,25 @@ import org.springframework.web.client.RestClientException;
  * exists if the REST version is built first, measured, and kept - which is a
  * concrete data point rather than an opinion about protobuf.
  *
- * <p><strong>No timeouts, no retries, no breaker.</strong> Phase 1 has no
- * resilience anywhere. This client is the second half of the call chain phase 2
- * saturates on purpose, and every defence added here before that measurement
- * erases the "before" half of the graph.
+ * <p><strong>Phase 3a: bounded by the deadline budget.</strong> Still no retry
+ * and no breaker - those are 3b and 3c, each after its own measurement. What
+ * this call now has is an upper bound derived from the remaining budget rather
+ * than from a number someone picked per hop, and a real abort when that bound is
+ * reached.
  */
 public class ConnectorClient {
 
     private final RestClient client;
+    private final DeadlineExecutor deadlines;
 
-    public ConnectorClient(String baseUrl) {
-        this.client = RestClient.builder().baseUrl(baseUrl).build();
+    public ConnectorClient(String baseUrl, DeadlinePropagation propagation, DeadlineExecutor deadlines) {
+        this.client = RestClient.builder()
+                .baseUrl(baseUrl)
+                // Puts the remaining budget on the wire, so the connector knows
+                // how long it has rather than assuming it has forever.
+                .requestInterceptor(propagation)
+                .build();
+        this.deadlines = deadlines;
     }
 
     /**
@@ -32,20 +42,26 @@ public class ConnectorClient {
      *         already have been charged.
      */
     public ConnectorApi.AuthorizeResponse authorize(ConnectorApi.AuthorizeRequest request) {
-        try {
-            ConnectorApi.AuthorizeResponse response = client.post()
-                    .uri("/internal/v1/authorize")
-                    .body(request)
-                    .retrieve()
-                    .body(ConnectorApi.AuthorizeResponse.class);
+        // The DeadlineExceededException this can throw is deliberately NOT
+        // caught here. PaymentService needs its `wasStarted` flag to decide
+        // between FAILED and UNKNOWN, and wrapping it in
+        // ConnectorUnavailableException would erase exactly that distinction.
+        return deadlines.callWithin("connector.authorize", () -> {
+            try {
+                ConnectorApi.AuthorizeResponse response = client.post()
+                        .uri("/internal/v1/authorize")
+                        .body(request)
+                        .retrieve()
+                        .body(ConnectorApi.AuthorizeResponse.class);
 
-            if (response == null || response.outcome() == null) {
-                throw new ConnectorUnavailableException(null);
+                if (response == null || response.outcome() == null) {
+                    throw new ConnectorUnavailableException(null);
+                }
+                return response;
+            } catch (RestClientException e) {
+                throw new ConnectorUnavailableException(e);
             }
-            return response;
-        } catch (RestClientException e) {
-            throw new ConnectorUnavailableException(e);
-        }
+        });
     }
 
     /** No usable response. Deliberately not the same thing as a decline. */

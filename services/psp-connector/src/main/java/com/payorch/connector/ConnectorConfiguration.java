@@ -1,6 +1,8 @@
 package com.payorch.connector;
 
 import com.payorch.connector.provider.MockPspAdapter;
+import com.payorch.infra.resilience.deadline.DeadlineExecutor;
+import com.payorch.infra.resilience.deadline.DeadlinePropagation;
 import com.payorch.connector.provider.PspProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -18,7 +20,10 @@ import org.springframework.context.annotation.Configuration;
 public class ConnectorConfiguration {
 
     @Bean
-    public MockPspAdapter mockPspAdapter(PspProperties properties) {
-        return new MockPspAdapter(properties.require(MockPspAdapter.PSP_ID).baseUrl());
+    public MockPspAdapter mockPspAdapter(PspProperties properties,
+                                         DeadlinePropagation propagation,
+                                         DeadlineExecutor deadlines) {
+        return new MockPspAdapter(
+                properties.require(MockPspAdapter.PSP_ID).baseUrl(), propagation, deadlines);
     }
 }

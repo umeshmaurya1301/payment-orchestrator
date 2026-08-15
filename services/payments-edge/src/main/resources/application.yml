@@ -41,6 +41,25 @@ spring:
     enabled: false
 
 payorch:
+  resilience:
+    deadline:
+      # The edge STAMPS the budget. It does not accept one.
+      #
+      # trust-inbound-header is false because this service's callers are
+      # merchants: an X-Deadline-Ms of 600000 from an authenticated merchant
+      # would hold a connection and its heap for ten minutes per request, which
+      # is a denial of service that needs one header and no exploit.
+      budget-ms: ${DEADLINE_BUDGET_MS:30000}
+      # A hard ceiling on any budget, including a trusted inbound one. Also
+      # overridable, because it clamps the internal hops and would otherwise
+      # silently cap an experiment that only raised budget-ms.
+      max-budget-ms: ${DEADLINE_MAX_BUDGET_MS:60000}
+      # Below this, a hop declines rather than starting a call it cannot
+      # finish. Overridable so the decline path can be demonstrated on a
+      # live stack rather than only in a unit test.
+      min-slice-ms: ${DEADLINE_MIN_SLICE_MS:50}
+      trust-inbound-header: false
+
   orchestrator:
     # No timeout, on purpose. Phase 2 has to watch this call hang before phase 3
     # is allowed to put a deadline on it.

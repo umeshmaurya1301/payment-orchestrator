@@ -6,6 +6,7 @@ import java.util.UUID;
 import com.payorch.infra.logging.LogEvent;
 import com.payorch.infra.logging.LogFields;
 import com.payorch.infra.persistence.Uuid7;
+import com.payorch.infra.resilience.deadline.DeadlineExceededException;
 import com.payorch.infra.web.ApiException;
 import com.payorch.orchestrator.api.OrchestratorApi;
 import com.payorch.orchestrator.connector.ConnectorApi;
@@ -120,19 +121,35 @@ public class PaymentService {
             // have authorized the card and lost the response on the way home,
             // and calling that a failure is how a caller is invited to retry
             // into a double charge.
-            result = persistence.recordUnknown(
-                    paymentId, attempt.getId(), "connector_unavailable", elapsedMs(startedAt));
+            return recordUnresolved(paymentId, attempt, "connector_unavailable", startedAt);
 
-            log.warn("authorization outcome unknown",
+        } catch (DeadlineExceededException e) {
+            // 3a. The budget ran out - and which of the two ways it ran out
+            // decides the payment's state, which is why DeadlineExceededException
+            // carries the flag rather than being one undifferentiated "timeout".
+            if (e.wasStarted()) {
+                // The request went out and was abandoned mid-flight. The
+                // provider may already have authorized the card.
+                return recordUnresolved(paymentId, attempt, "deadline_abandoned", startedAt);
+            }
+            // There was too little budget left to send anything at all, so the
+            // card was demonstrably not charged. That makes this FAILED, and a
+            // FAILED payment is one a merchant may safely retry - which is the
+            // entire practical value of drawing the distinction.
+            Payment failed = persistence.recordDeclined(
+                    paymentId, attempt.getId(), null, "deadline_exceeded", elapsedMs(startedAt));
+
+            log.warn("authorization not attempted: out of budget",
                     LogEvent.event()
                             .with(LogFields.PAYMENT_ID, paymentId.toString())
                             .with(LogFields.ATTEMPT_NO, attempt.getAttemptNo())
                             .with(LogFields.PSP_ID, attempt.getPspId())
-                            .with(LogFields.STATE, result.getState().name())
-                            .with(LogFields.OUTCOME, "UNKNOWN")
-                            .with(LogFields.ERROR_CODE, "connector_unavailable")
+                            .with(LogFields.STATE, failed.getState().name())
+                            .with(LogFields.OUTCOME, "FAILED")
+                            .with(LogFields.ERROR_CODE, "deadline_exceeded")
+                            .with(LogFields.DEADLINE_REMAINING_MS, e.remainingMs())
                             .args());
-            return toResponse(result);
+            return toResponse(failed);
         }
 
         log.info("authorization completed",
@@ -145,6 +162,34 @@ public class PaymentService {
                         .with(LogFields.LATENCY_MS, elapsedMs(startedAt))
                         .args());
 
+        return toResponse(result);
+    }
+
+    /**
+     * The payment may or may not have been charged. Records {@code UNKNOWN} and
+     * says so.
+     *
+     * <p>Shared by the two paths that reach it - no answer from the connector,
+     * and a call abandoned when the budget ran out - because they are the same
+     * fact about the world, and letting them drift apart is how one of them
+     * eventually gets recorded as {@code FAILED} by accident.
+     */
+    private OrchestratorApi.PaymentResponse recordUnresolved(UUID paymentId,
+                                                             PaymentAttempt attempt,
+                                                             String errorCode,
+                                                             long startedAt) {
+        Payment result = persistence.recordUnknown(
+                paymentId, attempt.getId(), errorCode, elapsedMs(startedAt));
+
+        log.warn("authorization outcome unknown",
+                LogEvent.event()
+                        .with(LogFields.PAYMENT_ID, paymentId.toString())
+                        .with(LogFields.ATTEMPT_NO, attempt.getAttemptNo())
+                        .with(LogFields.PSP_ID, attempt.getPspId())
+                        .with(LogFields.STATE, result.getState().name())
+                        .with(LogFields.OUTCOME, "UNKNOWN")
+                        .with(LogFields.ERROR_CODE, errorCode)
+                        .args());
         return toResponse(result);
     }
 

@@ -38,6 +38,25 @@ payorch:
       mockpsp:
         base-url: ${MOCK_PSP_BASE_URL:http://localhost:8085}
 
+  resilience:
+    deadline:
+      # Internal hop: it MUST trust the inbound header, because the remaining
+      # budget arriving from upstream is the entire mechanism. A hop that
+      # ignored it would restart the clock and the budget would never shrink.
+      #
+      # Still clamped to max-budget-ms. "Internal" describes today's network
+      # topology, not a guarantee about who can reach this port.
+      budget-ms: ${DEADLINE_BUDGET_MS:30000}
+      # A hard ceiling on any budget, including a trusted inbound one. Also
+      # overridable, because it clamps the internal hops and would otherwise
+      # silently cap an experiment that only raised budget-ms.
+      max-budget-ms: ${DEADLINE_MAX_BUDGET_MS:60000}
+      # Below this, a hop declines rather than starting a call it cannot
+      # finish. Overridable so the decline path can be demonstrated on a
+      # live stack rather than only in a unit test.
+      min-slice-ms: ${DEADLINE_MIN_SLICE_MS:50}
+      trust-inbound-header: true
+
 management:
   endpoints:
     web:

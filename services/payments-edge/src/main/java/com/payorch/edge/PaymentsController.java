@@ -10,6 +10,7 @@ import com.payorch.infra.idempotency.IdempotencyKeys;
 import com.payorch.infra.idempotency.ReplayableResponse;
 import com.payorch.infra.logging.LogEvent;
 import com.payorch.infra.logging.LogFields;
+import com.payorch.infra.resilience.deadline.DeadlineExceededException;
 import com.payorch.infra.tokenization.TokenVault;
 import com.payorch.infra.tokenization.TokenizedCard;
 import com.payorch.infra.web.ApiException;
@@ -215,6 +216,35 @@ public class PaymentsController {
      * merchant is invited to retry into a double charge - the same mistake the
      * {@code UNKNOWN} state exists to prevent one layer down.
      */
+    /**
+     * The request ran out of budget.
+     *
+     * <p>504, and the wording depends on which way it ran out. If nothing was
+     * ever sent the payment definitely does not exist and the merchant can
+     * simply try again; if a call was abandoned in flight it may exist, and the
+     * merchant must retry with the <em>same</em> Idempotency-Key or risk paying
+     * twice. Telling a merchant "it failed" when the truth is "we stopped
+     * waiting" is how a duplicate charge gets made by a well-behaved client.
+     */
+    @ExceptionHandler(DeadlineExceededException.class)
+    public ProblemDetail handleDeadlineExceeded(DeadlineExceededException ex) {
+        log.warn("request exceeded its deadline budget",
+                LogEvent.event()
+                        .with(LogFields.OUTCOME, ex.wasStarted() ? "UNKNOWN" : "FAILED")
+                        .with(LogFields.ERROR_CODE, "deadline_exceeded")
+                        .with(LogFields.DEADLINE_REMAINING_MS, ex.remainingMs())
+                        .args());
+
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.GATEWAY_TIMEOUT);
+        problem.setTitle("Deadline exceeded");
+        problem.setDetail(ex.wasStarted()
+                ? "The payment could not be confirmed within the time budget. It may or may not "
+                        + "have been created. Retry with the same Idempotency-Key rather than a new one."
+                : "The request ran out of time before the payment was created. No payment exists.");
+        problem.setProperty(LogFields.ERROR_CODE, "deadline_exceeded");
+        return problem;
+    }
+
     @ExceptionHandler(OrchestratorClient.OrchestratorUnavailableException.class)
     public ProblemDetail handleOrchestratorUnavailable(
             OrchestratorClient.OrchestratorUnavailableException ex) {

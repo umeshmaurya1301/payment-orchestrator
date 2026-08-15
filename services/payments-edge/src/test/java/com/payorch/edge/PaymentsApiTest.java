@@ -10,6 +10,8 @@ import java.util.UUID;
 import com.payorch.edge.merchant.ApiKeyAuthFilter;
 import com.payorch.edge.orchestrator.OrchestratorClient;
 import com.payorch.infra.persistence.Uuid7;
+import com.payorch.infra.resilience.deadline.DeadlineExecutor;
+import com.payorch.infra.resilience.deadline.DeadlinePropagation;
 import com.payorch.infra.tokenization.VaultConnection;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -354,7 +356,7 @@ class PaymentsApiTest {
         String merchantIdOverride;
 
         StubOrchestrator() {
-            super("http://localhost:1");
+            super("http://localhost:1", new DeadlinePropagation(30_000), new DeadlineExecutor(50, 30_000));
         }
 
         @Override

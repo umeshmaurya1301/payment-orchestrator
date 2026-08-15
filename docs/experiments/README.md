@@ -83,3 +83,4 @@ completes, the numbers look interesting, and they are describing two faults.
 |---|---|---|---|
 | — | [Hypotheses](hypotheses.md) | 2 | Predictions, written before the runs and left unedited |
 | 00 | [Baseline](00-baseline.md) | 2 | The system collapses with no chaos at all: 1,037 threads queued for 20 connections at 200 rps, and an OOM at 500 |
+| 01 | [Deadline budget](01-deadline-budget.md) | 3a | Against a provider that never answers: 2,112 payments stranded in `AUTHORIZING` becomes 2,372 recorded `UNKNOWN`, and throughput rises 60% |

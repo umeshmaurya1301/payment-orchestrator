@@ -5,6 +5,9 @@ import java.time.Instant;
 import java.util.UUID;
 
 import com.payorch.infra.persistence.Uuid7;
+import com.payorch.infra.resilience.deadline.DeadlineExceededException;
+import com.payorch.infra.resilience.deadline.DeadlineExecutor;
+import com.payorch.infra.resilience.deadline.DeadlinePropagation;
 import com.payorch.orchestrator.connector.ConnectorApi;
 import com.payorch.orchestrator.connector.ConnectorClient;
 import org.junit.jupiter.api.BeforeEach;
@@ -165,6 +168,44 @@ class PaymentFlowTest {
     }
 
     /**
+     * 3a. The budget ran out before anything was sent, so the card was
+     * demonstrably not charged. That is FAILED, and a FAILED payment is one a
+     * merchant may safely retry.
+     */
+    @Test
+    void aDeadlineThatExpiredBeforeSendingIsFailed() throws Exception {
+        connector.deadlineNotStarted = true;
+
+        mvc.perform(create(1000, "INR"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.state").value("FAILED"))
+                .andExpect(jsonPath("$.errorCode").value("deadline_exceeded"));
+
+        String outcome = jdbc.sql("SELECT outcome FROM payment_attempt").query(String.class).single();
+        assertThat(outcome).isEqualTo("FAILED");
+    }
+
+    /**
+     * The same exception type, the opposite state - and this is exactly why
+     * DeadlineExceededException carries `wasStarted` instead of being one
+     * undifferentiated timeout. The request went out and was abandoned, so the
+     * provider may already have authorized the card. Calling this FAILED would
+     * invite the merchant to retry into a double charge.
+     */
+    @Test
+    void aDeadlineThatExpiredAfterSendingIsUnknown() throws Exception {
+        connector.deadlineAbandoned = true;
+
+        mvc.perform(create(1000, "INR"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.state").value("UNKNOWN"))
+                .andExpect(jsonPath("$.errorCode").value("deadline_abandoned"));
+
+        String outcome = jdbc.sql("SELECT outcome FROM payment_attempt").query(String.class).single();
+        assertThat(outcome).isEqualTo("UNKNOWN");
+    }
+
+    /**
      * The tokenization boundary, checked at the database rather than in a
      * comment: no table this service owns has anywhere to put a card number.
      */
@@ -245,9 +286,15 @@ class PaymentFlowTest {
         ConnectorApi.AuthorizeResponse response;
         ConnectorApi.AuthorizeRequest lastRequest;
         boolean unavailable;
+        boolean deadlineNotStarted;
+        boolean deadlineAbandoned;
 
         StubConnector() {
-            super("http://localhost:1");
+            // Real collaborators even though authorize() is overridden: they are
+            // cheap, and constructing the stub the way production constructs the
+            // real client keeps this from compiling after a signature change
+            // that would break production.
+            super("http://localhost:1", new DeadlinePropagation(30_000), new DeadlineExecutor(50, 30_000));
         }
 
         @Override
@@ -256,6 +303,12 @@ class PaymentFlowTest {
             if (unavailable) {
                 throw new ConnectorUnavailableException(null);
             }
+            if (deadlineNotStarted) {
+                throw DeadlineExceededException.notStarted("connector.authorize", 10, 50);
+            }
+            if (deadlineAbandoned) {
+                throw DeadlineExceededException.abandoned("connector.authorize", 5_000);
+            }
             return response;
         }
 
@@ -263,6 +316,8 @@ class PaymentFlowTest {
             response = null;
             lastRequest = null;
             unavailable = false;
+            deadlineNotStarted = false;
+            deadlineAbandoned = false;
         }
     }
 }

@@ -65,6 +65,10 @@ subprojects {
         add("annotationProcessor", bom)
         add("testImplementation", bom)
         add("testImplementation", catalog.findLibrary("spring-boot-starter-test").get())
+        // Every service here is a servlet application, and MockMvc is how their
+        // controllers are tested. Boot 4 moved that support out of
+        // spring-boot-starter-test into a separate module - see the catalog.
+        add("testImplementation", catalog.findLibrary("spring-boot-webmvc-test").get())
         add("testRuntimeOnly", catalog.findLibrary("junit-platform-launcher").get())
     }
 }

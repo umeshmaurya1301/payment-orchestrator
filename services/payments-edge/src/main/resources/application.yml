@@ -13,6 +13,54 @@ spring:
       # ProblemDetailHandler that web-starter contributes.
       enabled: true
 
+  datasource:
+    # The ordinary application database: merchant and idempotency_record. It has
+    # no grant on the vault schema, which is a separate connection below.
+    url: ${EDGE_DB_URL:jdbc:mysql://localhost:3306/payorch}
+    username: ${EDGE_DB_USER:payorch}
+    password: ${EDGE_DB_PASSWORD:payorch}
+    hikari:
+      pool-name: edge-pool
+      maximum-pool-size: ${EDGE_DB_POOL_SIZE:20}
+
+  jpa:
+    # Off by default: it hides lazy-loading cost inside view rendering and makes
+    # connection hold times impossible to reason about under load.
+    open-in-view: false
+    hibernate:
+      # payment-orchestrator owns the migrations for this schema. This service
+      # reads two of its tables and must fail loudly if its entities and those
+      # migrations ever disagree.
+      ddl-auto: validate
+
+  flyway:
+    # Deliberately off. One service owns the schema, and two Flyway instances
+    # racing to apply the same migrations on startup is a genuinely unpleasant
+    # failure. payment-orchestrator is the migration owner; compose starts this
+    # service after it.
+    enabled: false
+
+payorch:
+  orchestrator:
+    # No timeout, on purpose. Phase 2 has to watch this call hang before phase 3
+    # is allowed to put a deadline on it.
+    base-url: ${ORCHESTRATOR_BASE_URL:http://localhost:8081}
+
+  vault:
+    # A SECOND connection, with its own credentials. vault_writer is granted
+    # SELECT and INSERT on payorch_vault.token_vault and nothing else - see
+    # docker/mysql/init/01-vault.sql. The application user above has no grant on
+    # that schema at all.
+    datasource:
+      url: ${VAULT_DB_URL:jdbc:mysql://localhost:3306/payorch_vault}
+      username: ${VAULT_DB_USER:vault_writer}
+      password: ${VAULT_DB_PASSWORD:vault_writer_pw}
+      pool-size: ${VAULT_DB_POOL_SIZE:5}
+    # Local development key, and it must match psp-connector's or every
+    # detokenization fails the GCM tag check. Phase 9c replaces the whole
+    # static-key arrangement with envelope encryption.
+    key: ${VAULT_KEY:MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
+
 server:
   port: 8080
   # The in-flight drain this enables is demonstrated and tested in phase 7.
@@ -22,7 +70,20 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,loggers,metrics,prometheus
+        include: health,info,loggers,metrics,prometheus,chaosbeans,chaosseams
+  metrics:
+    tags:
+      # Every series carries the service that emitted it, so one scrape file can
+      # hold all of them without the names colliding.
+      application: ${spring.application.name}
+  distribution:
+    percentiles-histogram:
+      # Server-side latency distribution. Enabled for measurement, not for
+      # resilience - phase 2 needs percentiles from inside the process, because
+      # k6 only ever sees the edge and the interesting number is one hop in.
+      http.server.requests: true
+    percentiles:
+      http.server.requests: 0.5,0.95,0.99
   endpoint:
     health:
       show-details: always

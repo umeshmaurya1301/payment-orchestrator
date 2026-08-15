@@ -16,8 +16,10 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * not yet known, and a background poller resolves it into a terminal state
  * later. Systems that conflate "timed out" with "failed" double-charge people.
  *
- * <p>Phase 0: bare skeleton with a health endpoint and an empty Flyway
- * baseline. No business logic.
+ * <p>Phase 1: the machine is implemented and drives one payment end to end over
+ * REST, with routing decided by {@code psp_config.priority}. No outbox, no saga
+ * and no resilience - the outbox and saga are phase 6, and every defence waits
+ * until phase 2 has measured the failure it prevents.
  */
 @SpringBootApplication
 public class PaymentOrchestratorApplication {

@@ -1,0 +1,234 @@
+package com.payorch.edge;
+
+import java.util.UUID;
+
+import com.payorch.edge.api.EdgeApi;
+import com.payorch.edge.merchant.ApiKeyAuthFilter;
+import com.payorch.edge.orchestrator.OrchestratorClient;
+import com.payorch.infra.idempotency.IdempotencyGuard;
+import com.payorch.infra.idempotency.IdempotencyKeys;
+import com.payorch.infra.idempotency.ReplayableResponse;
+import com.payorch.infra.logging.LogEvent;
+import com.payorch.infra.logging.LogFields;
+import com.payorch.infra.tokenization.TokenVault;
+import com.payorch.infra.tokenization.TokenizedCard;
+import com.payorch.infra.web.ApiException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ProblemDetail;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+import tools.jackson.databind.ObjectMapper;
+
+/**
+ * The merchant-facing API.
+ *
+ * <p>Two things happen here that happen nowhere else: a raw card number is
+ * turned into a token, and a response is rendered to bytes so it can be replayed
+ * verbatim. Both are explained below, and both are the reason this controller
+ * returns {@code byte[]} instead of a DTO.
+ */
+@RestController
+@RequestMapping("/v1/payments")
+public class PaymentsController {
+
+    private static final Logger log = LoggerFactory.getLogger(PaymentsController.class);
+
+    private static final String IDEMPOTENCY_HEADER = "Idempotency-Key";
+
+    private final TokenVault vault;
+    private final IdempotencyGuard idempotency;
+    private final OrchestratorClient orchestrator;
+    private final ObjectMapper json;
+
+    public PaymentsController(TokenVault vault,
+                              IdempotencyGuard idempotency,
+                              OrchestratorClient orchestrator,
+                              ObjectMapper json) {
+        this.vault = vault;
+        this.idempotency = idempotency;
+        this.orchestrator = orchestrator;
+        this.json = json;
+    }
+
+    /**
+     * Creates a payment.
+     *
+     * <p>Returns {@code byte[]} rather than {@link EdgeApi.PaymentResponse}, and
+     * that is the design rather than a shortcut. The bytes written on the first
+     * request are the bytes stored, and the bytes stored are what every later
+     * request with the same key receives. Returning a DTO would mean the replay
+     * path re-serializes a stored object and merely hopes the output matches -
+     * it will not, the first time field ordering shifts or a timestamp formats
+     * differently, and nothing would notice.
+     */
+    @PostMapping
+    public ResponseEntity<byte[]> create(
+            @RequestHeader(name = IDEMPOTENCY_HEADER, required = false) String idempotencyKey,
+            @Valid @RequestBody EdgeApi.CreatePaymentRequest request,
+            HttpServletRequest httpRequest) {
+
+        if (!IdempotencyKeys.isValid(idempotencyKey)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "invalid_idempotency_key",
+                    "An Idempotency-Key header of 1-" + IdempotencyKeys.MAX_LENGTH
+                            + " printable non-whitespace characters is required.");
+        }
+        UUID merchantId = authenticatedMerchant(httpRequest);
+
+        ReplayableResponse response = idempotency.execute(merchantId, idempotencyKey,
+                () -> render(HttpStatus.CREATED, process(merchantId, idempotencyKey, request)));
+
+        return toEntity(response);
+    }
+
+    @GetMapping("/{id}")
+    public EdgeApi.PaymentResponse get(@PathVariable String id, HttpServletRequest httpRequest) {
+        UUID merchantId = authenticatedMerchant(httpRequest);
+
+        OrchestratorClient.PaymentResponse payment = orchestrator.find(id)
+                .filter(found -> merchantId.toString().equals(found.merchantId()))
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "payment_not_found",
+                        "no payment with that id"));
+
+        return toEdgeResponse(payment);
+    }
+
+    /**
+     * The tokenization boundary.
+     *
+     * <p>The card is swapped for a token before anything else touches the
+     * request - before the orchestrator is called, before any log line is
+     * written about the payment, and before any row exists that could hold it.
+     * The CVV is used for nothing and is never referenced again after
+     * validation; it dies with the request object.
+     */
+    private EdgeApi.PaymentResponse process(UUID merchantId,
+                                            String idempotencyKey,
+                                            EdgeApi.CreatePaymentRequest request) {
+        TokenizedCard card = tokenize(request.card());
+
+        // The first log line about this payment, and it already carries no card
+        // number - only the token and the two displayable fragments. Named
+        // fields, never the request object: LogEvent's allowlist is the control,
+        // but `log.info("req={}", request)` would sidestep the intent of it.
+        log.info("payment request accepted",
+                LogEvent.event()
+                        .with(LogFields.MERCHANT_ID, merchantId.toString())
+                        .with(LogFields.IDEMPOTENCY_KEY, idempotencyKey)
+                        .with(LogFields.AMOUNT_MINOR, request.amountMinor())
+                        .with(LogFields.CURRENCY, request.currency())
+                        .with(LogFields.TOKEN, card.token())
+                        .with(LogFields.BIN, card.bin())
+                        .with(LogFields.LAST4, card.last4())
+                        .args());
+
+        OrchestratorClient.PaymentResponse created = orchestrator.create(
+                new OrchestratorClient.CreatePaymentRequest(
+                        merchantId.toString(),
+                        request.amountMinor(),
+                        request.currency(),
+                        card.token(),
+                        card.bin(),
+                        card.last4(),
+                        request.merchantReference()));
+
+        return toEdgeResponse(created);
+    }
+
+    private TokenizedCard tokenize(EdgeApi.Card card) {
+        try {
+            return vault.tokenize(card.number(), card.expiryMonth(), card.expiryYear());
+        } catch (IllegalArgumentException e) {
+            // The message from Pan.of is written not to contain the input, which
+            // is what makes it safe to hand back to the caller.
+            throw new ApiException(HttpStatus.BAD_REQUEST, "invalid_card", e.getMessage());
+        }
+    }
+
+    private ReplayableResponse render(HttpStatus status, EdgeApi.PaymentResponse body) {
+        return new ReplayableResponse(
+                status.value(), MediaType.APPLICATION_JSON_VALUE, json.writeValueAsBytes(body));
+    }
+
+    private static ResponseEntity<byte[]> toEntity(ReplayableResponse response) {
+        return ResponseEntity.status(response.status())
+                .header("Content-Type", response.contentType())
+                .body(response.body());
+    }
+
+    private static EdgeApi.PaymentResponse toEdgeResponse(OrchestratorClient.PaymentResponse payment) {
+        return new EdgeApi.PaymentResponse(
+                payment.id(),
+                payment.state(),
+                payment.amountMinor(),
+                payment.currency(),
+                payment.cardBin(),
+                payment.cardLast4(),
+                payment.merchantReference(),
+                payment.createdAt());
+    }
+
+    private static UUID authenticatedMerchant(HttpServletRequest request) {
+        Object merchantId = request.getAttribute(ApiKeyAuthFilter.MERCHANT_ATTRIBUTE);
+        if (merchantId instanceof UUID id) {
+            return id;
+        }
+        // Unreachable while the filter guards /v1/**. Kept as a hard failure
+        // rather than an assumption, because the failure mode of getting this
+        // wrong is processing a payment with no merchant attached to it.
+        throw new IllegalStateException("no authenticated merchant on the request");
+    }
+
+    /**
+     * A duplicate arriving while the first request is still running.
+     *
+     * <p>409 with no body to replay, because there is nothing to replay yet.
+     * Phase 7 replaces this with a considered answer: a Redis in-flight marker,
+     * a bounded wait, and request-body fingerprinting so that a reused key with
+     * a changed payload is rejected rather than silently replayed.
+     */
+    @ExceptionHandler(IdempotencyGuard.InFlightException.class)
+    public ProblemDetail handleInFlight(IdempotencyGuard.InFlightException ex) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Request in progress");
+        problem.setDetail("A request with this Idempotency-Key is still being processed.");
+        problem.setProperty(LogFields.ERROR_CODE, "idempotency_in_flight");
+        return problem;
+    }
+
+    /**
+     * The orchestrator did not answer.
+     *
+     * <p>502, and the wording matters: the payment may exist. Telling a merchant
+     * their payment failed when the truth is that we do not know is how a
+     * merchant is invited to retry into a double charge - the same mistake the
+     * {@code UNKNOWN} state exists to prevent one layer down.
+     */
+    @ExceptionHandler(OrchestratorClient.OrchestratorUnavailableException.class)
+    public ProblemDetail handleOrchestratorUnavailable(
+            OrchestratorClient.OrchestratorUnavailableException ex) {
+        log.warn("orchestrator unavailable",
+                LogEvent.event()
+                        .with(LogFields.OUTCOME, "UNKNOWN")
+                        .with(LogFields.ERROR_CODE, "orchestrator_unavailable")
+                        .args());
+
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_GATEWAY);
+        problem.setTitle("Payment status unknown");
+        problem.setDetail("The payment could not be confirmed. It may or may not have been created. "
+                + "Retry with the same Idempotency-Key rather than a new one.");
+        problem.setProperty(LogFields.ERROR_CODE, "orchestrator_unavailable");
+        return problem;
+    }
+}

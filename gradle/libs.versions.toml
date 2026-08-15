@@ -23,11 +23,11 @@ java = "25"
 # which is why it lines up with Boot 4.x rather than fighting it.
 logstashEncoder = "9.0"
 
-# Phase 1+: declared now so the catalog is the place versions live,
-# even before the first import.
 uuidCreator = "6.1.1"        # UUIDv7 generation (phase 1)
+
+# Phase 2+: declared now so the catalog is the place versions live,
+# even before the first import.
 resilience4j = "2.4.0"       # resilience4j-spring-boot4 (phase 3)
-chaosMonkey = "4.0.0"        # chaos-monkey-spring-boot (phase 2)
 
 [libraries]
 # --- platform -------------------------------------------------------------
@@ -38,7 +38,20 @@ spring-boot-starter-web = { module = "org.springframework.boot:spring-boot-start
 spring-boot-starter-actuator = { module = "org.springframework.boot:spring-boot-starter-actuator" }
 spring-boot-starter-validation = { module = "org.springframework.boot:spring-boot-starter-validation" }
 spring-boot-starter-data-jpa = { module = "org.springframework.boot:spring-boot-starter-data-jpa" }
+# The JDBC libraries WITHOUT spring-boot-starter-jdbc, and therefore without
+# DataSourceAutoConfiguration. psp-connector has no application database - only
+# a read-only token-vault connection - and the starter would fail its startup
+# demanding a `spring.datasource.url` that has no business existing there.
+spring-jdbc = { module = "org.springframework:spring-jdbc" }
+hikaricp = { module = "com.zaxxer:HikariCP" }
 spring-boot-starter-test = { module = "org.springframework.boot:spring-boot-starter-test" }
+# The same Boot 4 module split that bit Flyway in phase 0, in the test
+# dimension. `@AutoConfigureMockMvc` and the `@WebMvcTest` slice used to arrive
+# with spring-boot-starter-test; in Boot 4 they live in a per-technology test
+# module and the starter no longer carries them. The symptom is a compile error
+# saying the package does not exist, which is at least louder than the runtime
+# version of this trap.
+spring-boot-webmvc-test = { module = "org.springframework.boot:spring-boot-webmvc-test" }
 # Gradle 9 no longer puts the JUnit Platform launcher on the test runtime
 # classpath implicitly; without it every test task fails to start.
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
@@ -65,10 +78,24 @@ flyway-mysql = { module = "org.flywaydb:flyway-mysql" }
 # --- observability (phase 4, wired empty in phase 0) ----------------------
 micrometer-registry-prometheus = { module = "io.micrometer:micrometer-registry-prometheus" }
 
-# --- phase 1+ (declared, not yet used) ------------------------------------
+# --- identifiers ----------------------------------------------------------
 uuid-creator = { module = "com.github.f4b6a3:uuid-creator", version.ref = "uuidCreator" }
+
+# --- phase 2+ (declared, not yet used) ------------------------------------
 resilience4j-spring-boot4 = { module = "io.github.resilience4j:resilience4j-spring-boot4", version.ref = "resilience4j" }
-chaos-monkey-spring-boot = { module = "de.codecentric:chaos-monkey-spring-boot", version.ref = "chaosMonkey" }
+# NOT chaos-monkey-spring-boot. Its latest release (4.0.0) declares Boot 4.0.2
+# in its POM but is inert on Boot 4.1: no startup banner, and a latency assault
+# configured at 2000ms produced a 76ms call. Its control endpoint is built on
+# @RestControllerEndpoint, which Boot 4 no longer auto-configures a discoverer
+# for, so it cannot be toggled at runtime either. infra-core/chaos-core
+# implements the in-process layer instead - see the note in its build file.
+# spring-aop + aspectjweaver, NOT spring-boot-starter-aop - that starter does
+# not exist in Boot 4 (404 on Maven Central, absent from the BOM). Both of these
+# are managed by the BOM, and Boot's AopAutoConfiguration switches on AspectJ
+# auto-proxying as soon as aspectjweaver is present, so the starter's only real
+# contribution is replaced.
+spring-aop = { module = "org.springframework:spring-aop" }
+aspectjweaver = { module = "org.aspectj:aspectjweaver" }
 
 # --- infra-core starters --------------------------------------------------
 # Ordinary module coordinates. The root settings.gradle.kts substitutes each of
@@ -80,6 +107,9 @@ payorch-web-starter = { module = "com.payorch.infra:web-starter", version = "0.1
 payorch-resilience-starter = { module = "com.payorch.infra:resilience-starter", version = "0.1.0-SNAPSHOT" }
 payorch-idempotency-starter = { module = "com.payorch.infra:idempotency-starter", version = "0.1.0-SNAPSHOT" }
 payorch-observability-starter = { module = "com.payorch.infra:observability-starter", version = "0.1.0-SNAPSHOT" }
+payorch-persistence-starter = { module = "com.payorch.infra:persistence-starter", version = "0.1.0-SNAPSHOT" }
+payorch-tokenization-starter = { module = "com.payorch.infra:tokenization-starter", version = "0.1.0-SNAPSHOT" }
+payorch-chaos-core = { module = "com.payorch.infra:chaos-core", version = "0.1.0-SNAPSHOT" }
 
 # --- test -----------------------------------------------------------------
 h2 = { module = "com.h2database:h2" }

@@ -18,9 +18,9 @@ One document per phase. Each carries the same sections:
 | Phase | Document | Est. | Status |
 |---|---|---|---|
 | 0 | [Foundations](00-foundations.md) | 1 wk | **done** |
-| 1 | [Vertical slice](01-vertical-slice.md) | 2 wk | next |
-| 2 | [Chaos harness and load](02-chaos-harness.md) | 1 wk | |
-| 3 | [Resilience layer](03-resilience.md) | 3-4 wk | |
+| 1 | [Vertical slice](01-vertical-slice.md) | 2 wk | **done** |
+| 2 | [Chaos harness and load](02-chaos-harness.md) | 1 wk | **done** |
+| 3 | [Resilience layer](03-resilience.md) | 3-4 wk | next |
 | 4 | [Observability](04-observability.md) | 2 wk | |
 | 5 | [Health-driven routing](05-health-routing.md) | 2 wk | |
 | 6 | [Async spine](06-async-spine.md) | 3 wk | |

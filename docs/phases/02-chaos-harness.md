@@ -126,13 +126,19 @@ within a window. Faults applied without load are merely faults.
 
 ## Exit criteria
 
-- [ ] All four k6 scripts run and produce comparable output
-- [ ] Toxiproxy in front of MySQL and Redis; services connect through it
-- [ ] Chaos Monkey togglable at runtime, off by default
-- [ ] Pumba can kill, pause and SIGTERM a container
-- [ ] **`docs/experiments/00-baseline.md` written** — what broke, in what order,
-      with numbers and screenshots: thread pools, connection pools, response
-      times, error rates
+- [x] All four k6 scripts run and produce comparable output
+- [x] Toxiproxy in front of MySQL and Redis; services connect through it
+- [x] ~~Chaos Monkey~~ **`chaos-core` bean assault** togglable at runtime, off by
+      default. Chaos Monkey 4.0.0 is inert on Boot 4.1 and its endpoint cannot be
+      reached; the layer was replaced rather than pinning a service to Boot 3,
+      exactly as this page allowed for. See `docs/experiments/README.md`.
+- [x] Pumba can kill, pause and SIGTERM a container (needs 1.1.7+; 0.11.6 speaks
+      Docker API 1.42 and Engine 29 requires 1.44)
+- [x] **`docs/experiments/00-baseline.md` written** - what broke, in what order,
+      with numbers: connection pools, response times, error rates, heap. There
+      are no thread-pool numbers because virtual threads mean there is no
+      bounded thread pool to exhaust, and that absence turned out to be the
+      finding rather than a gap in the capture.
 
 The document is the deliverable. Tooling that produced no writeup has produced
 nothing.

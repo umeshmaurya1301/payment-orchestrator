@@ -52,6 +52,12 @@ includeBuild("infra-core") {
             .using(project(":idempotency-starter"))
         substitute(module("com.payorch.infra:observability-starter"))
             .using(project(":observability-starter"))
+        substitute(module("com.payorch.infra:persistence-starter"))
+            .using(project(":persistence-starter"))
+        substitute(module("com.payorch.infra:tokenization-starter"))
+            .using(project(":tokenization-starter"))
+        substitute(module("com.payorch.infra:chaos-core"))
+            .using(project(":chaos-core"))
     }
 }
 

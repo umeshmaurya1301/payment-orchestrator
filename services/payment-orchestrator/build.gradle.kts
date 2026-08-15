@@ -13,6 +13,22 @@ dependencies {
     implementation(libs.payorch.logging.starter)
     implementation(libs.payorch.web.starter)
 
+    // UUIDv7 primary keys and the BINARY(16) JPA converter. This service owns
+    // every table that carries one.
+    implementation(libs.payorch.persistence.starter)
+
+    // The in-process chaos layer: bean-level latency and exception assaults,
+    // plus the bespoke seams. Installed always, injecting nothing until
+    // /actuator/chaosbeans or /actuator/chaosseams says otherwise - being
+    // togglable without a restart is the point, because a restart resets the
+    // pools an experiment is measuring.
+    implementation(libs.payorch.chaos.core)
+
+    // The Prometheus registry, so /actuator/prometheus actually answers. Phase 2
+    // reads Hikari and JVM state out of it during a run; phase 4 points SigNoz
+    // at the same endpoint.
+    runtimeOnly(libs.micrometer.registry.prometheus)
+
     // The starter, not org.flywaydb:flyway-core on its own. Boot 4 keeps the
     // Flyway autoconfiguration in a separate spring-boot-flyway module that
     // only the starter pulls in; with bare flyway-core the migrations are

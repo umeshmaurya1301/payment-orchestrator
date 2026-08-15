@@ -9,7 +9,34 @@ dependencies {
     implementation(libs.spring.boot.starter.actuator)
     implementation(libs.spring.boot.starter.validation)
 
+    // merchant and idempotency_record. The payment tables belong to
+    // payment-orchestrator; this service only owns what it is the authority on.
+    implementation(libs.spring.boot.starter.data.jpa)
+
     // Resolved to the local project by the substitutions in settings.gradle.kts.
     implementation(libs.payorch.logging.starter)
     implementation(libs.payorch.web.starter)
+    implementation(libs.payorch.persistence.starter)
+
+    // The single entry point for a raw card number. This is the only service
+    // that writes to the vault, and it holds credentials granted INSERT.
+    implementation(libs.payorch.tokenization.starter)
+
+    implementation(libs.payorch.idempotency.starter)
+
+    // The in-process chaos layer: bean-level latency and exception assaults,
+    // plus the bespoke seams. Installed always, injecting nothing until
+    // /actuator/chaosbeans or /actuator/chaosseams says otherwise - being
+    // togglable without a restart is the point, because a restart resets the
+    // pools an experiment is measuring.
+    implementation(libs.payorch.chaos.core)
+
+    // The Prometheus registry, so /actuator/prometheus actually answers. Phase 2
+    // reads Hikari and JVM state out of it during a run; phase 4 points SigNoz
+    // at the same endpoint.
+    runtimeOnly(libs.micrometer.registry.prometheus)
+
+    runtimeOnly(libs.mysql.connector)
+
+    testRuntimeOnly(libs.h2)
 }

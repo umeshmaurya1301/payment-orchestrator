@@ -149,13 +149,13 @@ path is still an excellent story.
 
 ## Exit criteria
 
-- [ ] `POST /v1/payments` with `Idempotency-Key` → 201, `INITIATED` row in MySQL
-- [ ] Orchestrator → connector → simulator → success; payment reaches `AUTHORIZED`
-- [ ] `GET /v1/payments/{id}` returns it
-- [ ] Replaying the same key returns a **byte-identical** body; exactly one row exists
-- [ ] Chaos endpoint responds and changes behaviour
-- [ ] Cold `docker compose up` plus a k6 smoke script passes
-- [ ] A `grep` of every table outside `token_vault` and of all captured log
+- [x] `POST /v1/payments` with `Idempotency-Key` → 201, `INITIATED` row in MySQL
+- [x] Orchestrator → connector → simulator → success; payment reaches `AUTHORIZED`
+- [x] `GET /v1/payments/{id}` returns it
+- [x] Replaying the same key returns a **byte-identical** body; exactly one row exists
+- [x] Chaos endpoint responds and changes behaviour
+- [x] Cold `docker compose up` plus a k6 smoke script passes
+- [x] A `grep` of every table outside `token_vault` and of all captured log
       output finds **zero** Luhn-valid card numbers
 
 Automate the last one now. It is the seed of the phase-4 PAN-leak build test,

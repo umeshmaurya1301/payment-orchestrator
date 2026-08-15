@@ -26,6 +26,9 @@ dependencyResolutionManagement {
 include(
     "logging-starter",
     "web-starter",
+    "persistence-starter",
+    "tokenization-starter",
+    "chaos-core",
     "resilience-starter",
     "idempotency-starter",
     "observability-starter",

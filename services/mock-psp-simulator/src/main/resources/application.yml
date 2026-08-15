@@ -23,6 +23,19 @@ management:
     web:
       exposure:
         include: health,info,loggers,metrics,prometheus
+  metrics:
+    tags:
+      # Every series carries the service that emitted it, so one scrape file can
+      # hold all of them without the names colliding.
+      application: ${spring.application.name}
+  distribution:
+    percentiles-histogram:
+      # Server-side latency distribution. Enabled for measurement, not for
+      # resilience - phase 2 needs percentiles from inside the process, because
+      # k6 only ever sees the edge and the interesting number is one hop in.
+      http.server.requests: true
+    percentiles:
+      http.server.requests: 0.5,0.95,0.99
   endpoint:
     health:
       show-details: always

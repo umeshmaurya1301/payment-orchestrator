@@ -27,3 +27,6 @@ logs/
 # deliberately as docs/experiments/*, raw dumps are not.
 tools/loadtest/results/
 docker/**/data/
+
+# PAN scan captures (dumps and logs are transient, never committed)
+tools/panscan/out/

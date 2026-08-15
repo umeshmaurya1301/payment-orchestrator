@@ -6,8 +6,17 @@ Built in phases, where each resilience component is added **only after the
 failure it prevents has been observed and measured**. Every phase from 3 onward
 produces a before/after graph in [`docs/experiments/`](docs/experiments/).
 
-> **Status: phase 0 complete.** Skeleton, build, logging foundation and compose
-> stack. No business logic yet - phase 1 is the first payment.
+> **Status: phase 2 complete.** One payment succeeds end to end, and the chaos
+> harness has measured exactly how the system falls over without any resilience
+> in it. The baseline report is
+> [`docs/experiments/00-baseline.md`](docs/experiments/00-baseline.md), and it is
+> the "before" half of every graph from phase 3 onward.
+>
+> The headline: **it does not need chaos to fail.** At 200 rps with a healthy
+> downstream, 1,037 threads are queued for 20 database connections and p95 is
+> 13.2 s; at 500 rps `payments-edge` exhausts its heap and the process dies.
+> Virtual threads removed the ceiling that used to reject work, so the queue
+> moved into the heap. Phase 3 fixes that, one measured component at a time.
 
 ---
 
@@ -42,6 +51,12 @@ reports BUILD SUCCESSFUL because there is almost nothing left to build.
 docker compose up -d --build
 ```
 
+> **Upgrading from a phase-0 checkout?** Run `docker compose down -v` first.
+> The token vault's database, table and credentials are created by
+> `docker/mysql/init/01-vault.sql`, and MySQL runs that script **only** on the
+> first start against an empty data directory. On a volume that predates it,
+> `payments-edge` refuses to start and says so.
+
 `build` at the root explicitly depends on `infra-core:buildAll`. Without that
 dependency Gradle runs no tests in the included build at all, because the
 services need the starters' jars and nothing more.
@@ -57,6 +72,103 @@ docker compose ps
 curl -s localhost:8080/actuator/health   # payments-edge
 ```
 
+## Make a payment
+
+The API key below is seeded by `V3__dev_seed.sql` and is public by design - it
+is a local test credential.
+
+```bash
+curl -sX POST localhost:8080/v1/payments \
+  -H 'Content-Type: application/json' \
+  -H 'X-Api-Key: pk_test_dev_merchant_key' \
+  -H 'Idempotency-Key: order-0001' \
+  -d '{"amountMinor":1000,"currency":"INR","merchantReference":"order-1",
+       "card":{"number":"4242424242424242","expiryMonth":12,"expiryYear":2030,"cvv":"123"}}'
+```
+
+```json
+{"id":"01a004a8-86c4-764d-975b-7a6367bd5518","state":"AUTHORIZED","amountMinor":1000,
+ "currency":"INR","cardBin":"424242","cardLast4":"4242","merchantReference":"order-1",
+ "createdAt":"2026-08-15T09:02:28.579Z"}
+```
+
+Repeat that command with the same `Idempotency-Key` and a completely different
+body: the response is **byte-identical** and no second payment is created.
+
+Then `curl -s localhost:8080/v1/payments/<id> -H 'X-Api-Key: pk_test_dev_merchant_key'`.
+
+### Reaching the other states
+
+| Want | Do |
+|---|---|
+| `FAILED` (a decline) | send an `amountMinor` ending in `05`, e.g. `1005` |
+| `UNKNOWN` (no answer) | `curl -XPOST localhost:8085/_chaos -H 'content-type: application/json' -d '{"latencyMs":0,"errorRate":1,"hangRate":0,"duplicateRate":0}'` |
+| back to healthy | `curl -XDELETE localhost:8085/_chaos` |
+
+`UNKNOWN` is the interesting one. The provider failed, so the outcome is not
+known - the card may have been authorized and the response lost. It is
+deliberately **not** `FAILED`; see [`PaymentState`](services/payment-orchestrator/src/main/java/com/payorch/orchestrator/domain/PaymentState.java).
+
+### The chaos endpoint
+
+`mock-psp-simulator` is reconfigurable at runtime, with no restart:
+
+```bash
+curl -XPOST localhost:8085/_chaos -H 'content-type: application/json' \
+     -d '{"latencyMs":0,"errorRate":0.3,"hangRate":0,"duplicateRate":0}'
+curl localhost:8085/_chaos          # what is active
+curl -XDELETE localhost:8085/_chaos # reset
+```
+
+| Knob | Finds |
+|---|---|
+| `latencyMs` | missing deadline budgets, connection-pool exhaustion |
+| `errorRate` | missing retries; what a circuit breaker counts |
+| `hangRate` | **never responds** - missing read timeouts. A slow response frees the thread eventually; a hang does not |
+| `duplicateRate` | missing provider-side idempotency - the failure that ends in a double charge |
+
+### Verify it
+
+```bash
+k6 run tools/loadtest/smoke.js   # the phase-1 exit criteria, as checks
+tools/panscan/pan-scan.sh        # zero Luhn-valid card numbers outside the vault
+```
+
+Run the scan *after* traffic has flowed. Scanning an idle stack proves nothing.
+
+## Break it
+
+Five chaos layers, and they are not interchangeable - Toxiproxy breaks the
+**link**, Pumba breaks the **process**, `chaos-core` breaks the **bean**.
+
+```bash
+# downstream provider: latency, errors, hangs, duplicate authorizations
+curl -XPOST localhost:8085/_chaos -H 'content-type: application/json'      -d '{"latencyMs":0,"errorRate":0.4,"hangRate":0,"duplicateRate":0}'
+
+# the network to MySQL or Redis
+tools/chaos/toxic.sh latency mysql 500
+tools/chaos/toxic.sh clear-all
+
+# this service's own beans
+curl -XPOST localhost:8081/actuator/chaosbeans -H 'content-type: application/json'      -d '{"latencyMs":2000,"latencyRate":1.0,"exceptionRate":0}'
+
+# the process
+tools/chaos/pumba.sh sigterm payorch-psp-connector   # graceful drain
+tools/chaos/pumba.sh kill    payorch-psp-connector   # no drain at all
+tools/chaos/pumba.sh pause   payorch-psp-connector 20s
+```
+
+A whole experiment, with chaos reset either side and metrics captured
+throughout:
+
+```bash
+CHAOS_LATENCY_MS=3000 MAX_RATE=200   tools/loadtest/run-experiment.sh 01-downstream-latency ramp.js
+```
+
+**Chaos without k6 concurrency is invisible.** A fault applied to an idle system
+is merely a fault; it takes load to make it chaotic. See
+[`docs/experiments/`](docs/experiments/).
+
 ### Compose profiles
 
 | Profile | Contains | From |
@@ -69,14 +181,14 @@ curl -s localhost:8080/actuator/health   # payments-edge
 docker compose --profile async up -d
 ```
 
-Profiles exist so ClickHouse is not booting during phase 1. Only the default
-profile is covered by the phase-0 exit criteria.
+Profiles exist so ClickHouse is not booting during phases 1-3. Only the default
+profile is covered by the phase-1 exit criteria.
 
 ## Services
 
 | Service | Port | Owns |
 |---|---|---|
-| `payments-edge` | 8080 | REST, API-key auth, rate limiting, idempotency, deadline budget origin |
+| `payments-edge` | 8080 | REST, API-key auth, tokenization, idempotency, rate limiting, deadline budget origin |
 | `payment-orchestrator` | 8081 | Payment state machine, MySQL, transactional outbox, saga coordination |
 | `psp-router` | 8082 | Health-based provider selection |
 | `psp-connector` | 8083 | All resilience. Provider adapters, per-provider config |
@@ -91,13 +203,20 @@ payment-orchestrator/
 ├── infra-core/                   a SEPARATE gradle build, wired via includeBuild
 │   ├── logging-starter           structured JSON logging + PII masking
 │   ├── web-starter               RFC-7807 errors + correlation-ID filter
+│   ├── persistence-starter       UUIDv7 identifiers and their BINARY(16) form
+│   ├── tokenization-starter      the token vault and the one detokenization path
+│   ├── chaos-core                bean-level assaults and bespoke fault seams
+│   ├── idempotency-starter       keys, replay; hardened in phase 7
 │   ├── resilience-starter        empty until phase 3
-│   ├── idempotency-starter       empty until phases 1 and 7
 │   └── observability-starter     empty until phase 4
 ├── services/                     the six Spring Boot applications
-├── docker/                       one shared Dockerfile, selected by build arg
-├── docs/experiments/             one page per chaos experiment, from phase 2
-└── tools/loadtest/               k6 scripts, from phase 2
+├── docker/
+│   ├── Dockerfile                one shared image, selected by build arg
+│   └── mysql/init/               provisions the vault schema and its credentials
+├── docs/experiments/             one page per chaos experiment
+├── tools/loadtest/               k6 profiles, metrics capture and the run harness
+├── tools/chaos/                  Toxiproxy toxics and Pumba process chaos
+└── tools/panscan/                the PAN-leak scan, seed of the phase-4 build test
 ```
 
 ### Why `infra-core` is an included build
@@ -115,9 +234,11 @@ snapshots when a pinned version is wanted instead.
 The rules the code is built around, in force from phase 0 rather than added as a
 cleanup pass:
 
-- **Raw PAN never leaves the edge.** From phase 1, `payments-edge` tokenizes on
-  arrival. Every downstream service, log line, Kafka message and database row
-  carries `bin + token + last4` and nothing else.
+- **Raw PAN never leaves the edge.** `payments-edge` tokenizes on arrival. Every
+  downstream service, log line, Kafka message and database row carries
+  `bin + token + last4` and nothing else. The card expiry lives in the vault too,
+  and comes back with the PAN at detokenization time, so that sentence stays
+  literally true rather than nearly true.
 - **CVV is never stored.** Not encrypted, not hashed, not logged. In transit
   only, then discarded.
 - **Allowlist, not denylist.** `LogEvent` accepts only field names declared in
@@ -136,9 +257,33 @@ Layer 3 is **not** the primary control and is not treated as one. It runs on
 every value written to the JSON log output, and gates card-number masking behind
 a Luhn checksum so that order IDs and trace IDs survive intact.
 
-Phase 4 adds the enforcement that turns this from a claim into a fact: a build
-test that runs the k6 suite against a live stack, captures all container log
-output, and fails if any Luhn-valid card number appears.
+### Where a card number actually exists
+
+Being precise about this is worth more than overclaiming. There are three
+places, not one:
+
+| Where | When | Guarded by |
+|---|---|---|
+| `payments-edge` | at intake, for the few statements before tokenization | it is the only service that accepts one |
+| `token_vault` | at rest, AES-256-GCM | a **separate database with its own credentials** - the application user has no grant on it at all |
+| `psp-connector` | in memory, immediately before the provider call | credentials granted `SELECT` only; one audited reversal path in `TokenVault` |
+
+Claiming "only one component sees a card number" invites an interviewer to find
+the connector. Three components with one audited reversal path is the honest
+version, and it is still a good story. The separation is a `GRANT`, not a
+comment - `docker/mysql/init/01-vault.sql` is where it lives, and it is
+demonstrable:
+
+```bash
+docker compose exec mysql mysql -upayorch -ppayorch \
+  -e "SELECT COUNT(*) FROM payorch_vault.token_vault"
+# ERROR 1142: SELECT command denied to user 'payorch'
+```
+
+`tools/panscan/pan-scan.sh` turns the claim into a check, using the same
+`Masking.isLuhnValid` the runtime masking filter uses. Phase 4 promotes it into
+a build test that runs the k6 suite against a live stack and fails the build if
+any Luhn-valid card number appears in the captured output.
 
 ---
 
@@ -151,9 +296,9 @@ criteria, traps and interview payload.
 | Phase | | Est. | Status |
 |---|---|---|---|
 | 0 | [Foundations](docs/phases/00-foundations.md) - build, logging, compose skeleton | 1 wk | **done** |
-| 1 | [Vertical slice](docs/phases/01-vertical-slice.md) - one payment, tokenization | 2 wk | next |
-| 2 | [Chaos harness and load](docs/phases/02-chaos-harness.md) - the baseline failure report | 1 wk | |
-| 3 | [Resilience layer](docs/phases/03-resilience.md) - one component at a time | 3-4 wk | |
+| 1 | [Vertical slice](docs/phases/01-vertical-slice.md) - one payment, tokenization | 2 wk | **done** |
+| 2 | [Chaos harness and load](docs/phases/02-chaos-harness.md) - the baseline failure report | 1 wk | **done** |
+| 3 | [Resilience layer](docs/phases/03-resilience.md) - one component at a time | 3-4 wk | next |
 | 4 | [Observability](docs/phases/04-observability.md) - SigNoz, trace/log correlation, PAN-leak test | 2 wk | |
 | 5 | [Health-driven routing](docs/phases/05-health-routing.md) - the differentiator | 2 wk | |
 | 6 | [Async spine](docs/phases/06-async-spine.md) - Kafka, outbox, CDC, saga | 3 wk | |

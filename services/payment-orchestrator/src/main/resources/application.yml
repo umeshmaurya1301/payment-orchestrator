@@ -33,6 +33,13 @@ spring:
     enabled: true
     locations: classpath:db/migration
 
+payorch:
+  connector:
+    # No timeout setting here, and that is the phase-1 constraint rather than an
+    # omission: phase 2 has to watch this call hang before phase 3 is allowed to
+    # put a deadline on it.
+    base-url: ${CONNECTOR_BASE_URL:http://localhost:8083}
+
 server:
   port: 8081
   # The in-flight drain this enables is demonstrated and tested in phase 7.
@@ -42,7 +49,20 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,loggers,metrics,prometheus
+        include: health,info,loggers,metrics,prometheus,chaosbeans,chaosseams
+  metrics:
+    tags:
+      # Every series carries the service that emitted it, so one scrape file can
+      # hold all of them without the names colliding.
+      application: ${spring.application.name}
+  distribution:
+    percentiles-histogram:
+      # Server-side latency distribution. Enabled for measurement, not for
+      # resilience - phase 2 needs percentiles from inside the process, because
+      # k6 only ever sees the edge and the interesting number is one hop in.
+      http.server.requests: true
+    percentiles:
+      http.server.requests: 0.5,0.95,0.99
   endpoint:
     health:
       show-details: always

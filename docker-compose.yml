@@ -12,6 +12,13 @@
 #
 name: payorch
 
+# The vault's AES-256 key, shared by the only two services allowed to reach the
+# vault. They MUST agree: the token is used as GCM additional authenticated
+# data, so a mismatched key fails the tag check and every detokenization throws.
+# A local development value in a committed file, deliberately - phase 9c is where
+# secrets stop being literals and the static key becomes envelope encryption.
+x-vault-key: &vault-key "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+
 x-java-service: &java-service
   restart: unless-stopped
   # A limit, so -XX:MaxRAMPercentage=70 in the Dockerfile has something to
@@ -39,6 +46,12 @@ services:
     ports: ["3306:3306"]
     volumes:
       - mysql-data:/var/lib/mysql
+      # Creates the isolated payorch_vault database and its vault_writer /
+      # vault_reader credentials. MySQL runs this ONCE, on the first start
+      # against an empty data directory - a volume that predates the file will
+      # not have the vault, and payments-edge refuses to start with a message
+      # saying so. `docker compose down -v` is the fix.
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
       interval: 5s
@@ -77,6 +90,48 @@ services:
       start_period: 10s
     networks: [payorch]
 
+  # Sits between the services and their datastores so the LINK can be broken
+  # independently of the process and of the bean. Phase 0 made this a
+  # compose-only change: every datastore URL is driven by an environment
+  # variable, so repointing at a proxy port needs no code change and no rebuild.
+  #
+  # It is always in the path, even with no toxics applied. Running it only during
+  # experiments would mean the baseline and the chaos run had different network
+  # topologies, and the extra hop - about 0.2 ms locally - would be silently
+  # folded into whatever the toxic did. An always-present proxy is a constant
+  # that cancels out; an occasionally-present one is a confound.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    container_name: payorch-toxiproxy
+    mem_limit: 128m
+    ports:
+      - "8474:8474"   # control API
+      - "23306:23306" # -> mysql:3306
+      - "26379:26379" # -> redis:6379
+    command: ["-host=0.0.0.0", "-config=/config/proxies.json"]
+    volumes:
+      - ./docker/toxiproxy:/config:ro
+    healthcheck:
+      # The image's own CLI, because the image is distroless: no shell, no wget,
+      # no curl. A `wget` healthcheck here does not fail loudly - the container
+      # runs perfectly and simply never reports healthy, and everything that
+      # depends_on it refuses to start with a message about toxiproxy being
+      # unhealthy rather than about the healthcheck being wrong.
+      #
+      # `list` also proves more than /version would: it returns the configured
+      # proxies, so a healthy container is one whose proxies are actually loaded.
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [payorch]
+
   payment-orchestrator:
     <<: *java-service
     container_name: payorch-payment-orchestrator
@@ -89,12 +144,15 @@ services:
       <<: *java-env
       # Points at the MySQL service name. Phase 2 repoints this at Toxiproxy's
       # listener instead, which is a compose change and no code change.
-      ORCHESTRATOR_DB_URL: jdbc:mysql://mysql:3306/payorch
+      # Through Toxiproxy, not straight at MySQL. Always, not only during an
+      # experiment - see the comment on the toxiproxy service.
+      ORCHESTRATOR_DB_URL: jdbc:mysql://toxiproxy:23306/payorch
       ORCHESTRATOR_DB_USER: payorch
       ORCHESTRATOR_DB_PASSWORD: payorch
+      CONNECTOR_BASE_URL: http://psp-connector:8083
     ports: ["8081:8081"]
     depends_on:
-      mysql:
+      toxiproxy:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8081/actuator/health"]
@@ -111,7 +169,29 @@ services:
       dockerfile: docker/Dockerfile
       args:
         SERVICE: payments-edge
+    environment:
+      <<: *java-env
+      EDGE_DB_URL: jdbc:mysql://toxiproxy:23306/payorch
+      EDGE_DB_USER: payorch
+      EDGE_DB_PASSWORD: payorch
+      ORCHESTRATOR_BASE_URL: http://payment-orchestrator:8081
+      # The vault, on its own credentials. vault_writer holds SELECT and INSERT
+      # on payorch_vault.token_vault and nothing else; the payorch user above
+      # has no grant on that schema at all.
+      # The vault goes through the proxy too. It is the same MySQL instance, so
+      # a latency toxic that did not affect tokenization would be modelling a
+      # database that does not exist.
+      VAULT_DB_URL: jdbc:mysql://toxiproxy:23306/payorch_vault
+      VAULT_DB_USER: vault_writer
+      VAULT_DB_PASSWORD: vault_writer_pw
+      VAULT_KEY: *vault-key
     ports: ["8080:8080"]
+    depends_on:
+      # Not just mysql. payment-orchestrator owns the Flyway migrations, and this
+      # service starts with `ddl-auto: validate` - so it has to come up after the
+      # tables it validates against exist, or it fails startup on a cold volume.
+      payment-orchestrator:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
       interval: 5s
@@ -143,7 +223,21 @@ services:
       dockerfile: docker/Dockerfile
       args:
         SERVICE: psp-connector
+    environment:
+      <<: *java-env
+      # Read-only vault credentials. This service can reverse a token and can do
+      # nothing else to the vault - no INSERT, no UPDATE, no DELETE - and that is
+      # enforced by the grants in docker/mysql/init/01-vault.sql rather than by
+      # any code here. It has no application database at all.
+      VAULT_DB_URL: jdbc:mysql://toxiproxy:23306/payorch_vault
+      VAULT_DB_USER: vault_reader
+      VAULT_DB_PASSWORD: vault_reader_pw
+      VAULT_KEY: *vault-key
+      MOCK_PSP_BASE_URL: http://mock-psp-simulator:8085
     ports: ["8083:8083"]
+    depends_on:
+      toxiproxy:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8083/actuator/health"]
       interval: 5s

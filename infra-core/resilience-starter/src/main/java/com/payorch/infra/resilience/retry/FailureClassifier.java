@@ -8,6 +8,7 @@ import java.net.UnknownHostException;
 
 import com.payorch.infra.resilience.bulkhead.BulkheadFullException;
 import com.payorch.infra.resilience.deadline.DeadlineExceededException;
+import com.payorch.infra.resilience.ratelimit.RateLimitedException;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.ResourceAccessException;
@@ -62,6 +63,15 @@ public class FailureClassifier {
             // system is already at its concurrency limit; retrying adds load to
             // a saturated system and takes a permit a fresh request could have
             // used. Shedding load means shedding it.
+            return FailureClass.NONE;
+        }
+
+        if (failure instanceof RateLimitedException) {
+            // Our own egress limiter. Nothing was sent, so a retry could not
+            // duplicate anything - and retrying spends the request's deadline
+            // arguing with arithmetic we control. The limit will not have moved
+            // by the time the backoff elapses, because we are the one enforcing
+            // it. Phase 5 routes this elsewhere instead.
             return FailureClass.NONE;
         }
 

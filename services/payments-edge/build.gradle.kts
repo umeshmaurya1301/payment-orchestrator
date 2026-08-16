@@ -29,6 +29,11 @@ dependencies {
     // starting a call it cannot finish.
     implementation(libs.payorch.resilience.starter)
 
+    // 3e: the rate limiters' shared store. The starter is what carries the
+    // autoconfiguration that builds the connection factory and the template -
+    // resilience-starter only compiles against those types.
+    implementation(libs.spring.boot.starter.data.redis)
+
     // The in-process chaos layer: bean-level latency and exception assaults,
     // plus the bespoke seams. Installed always, injecting nothing until
     // /actuator/chaosbeans or /actuator/chaosseams says otherwise - being

@@ -22,4 +22,13 @@ dependencies {
     // 3c. `api`, because a consuming service's own code names CircuitBreaker
     // and its State enum when it reacts to the breaker being open.
     api(libs.resilience4j.circuitbreaker)
+
+    // 3e. compileOnly, and the conditional beans matter here more than usual:
+    // psp-connector has an egress limiter but no ingress, payment-orchestrator
+    // has neither, and neither should be forced to configure a Redis connection
+    // to depend on this starter. A service that wants limiters adds the starter
+    // itself and the beans appear; one that does not gets UnlimitedRateLimiter
+    // and no Redis client at all.
+    compileOnly(libs.spring.boot.starter.data.redis)
+    testImplementation(libs.spring.boot.starter.data.redis)
 }

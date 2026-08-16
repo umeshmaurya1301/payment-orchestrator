@@ -24,6 +24,12 @@ dependencies {
     // starting a call it cannot finish.
     implementation(libs.payorch.resilience.starter)
 
+    // 3e's egress limiter. The same Redis the edge uses, deliberately: a
+    // provider's contracted TPS is a global number, and enforcing it from a
+    // per-instance counter would multiply the limit by the replica count and
+    // breach the contract at exactly the moment we scaled out to handle load.
+    implementation(libs.spring.boot.starter.data.redis)
+
     // The in-process chaos layer: bean-level latency and exception assaults,
     // plus the bespoke seams. Installed always, injecting nothing until
     // /actuator/chaosbeans or /actuator/chaosseams says otherwise - being

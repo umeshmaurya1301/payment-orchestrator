@@ -9,13 +9,25 @@ import com.payorch.infra.resilience.breaker.CircuitBreakers;
 import com.payorch.infra.resilience.deadline.DeadlineExecutor;
 import com.payorch.infra.resilience.deadline.DeadlineFilter;
 import com.payorch.infra.resilience.deadline.DeadlinePropagation;
+import com.payorch.infra.resilience.ratelimit.EndpointCosts;
+import com.payorch.infra.resilience.ratelimit.EndpointRateLimiter;
+import com.payorch.infra.resilience.ratelimit.RateLimitMetrics;
+import com.payorch.infra.resilience.ratelimit.RateLimiter;
+import com.payorch.infra.resilience.ratelimit.RateLimiters;
+import com.payorch.infra.resilience.ratelimit.ReadModifyWriteRateLimiter;
+import com.payorch.infra.resilience.ratelimit.RedisTokenBucketRateLimiter;
+import com.payorch.infra.resilience.ratelimit.UnlimitedRateLimiter;
 import com.payorch.infra.resilience.retry.Backoff;
 import com.payorch.infra.resilience.retry.FailureClassifier;
 import com.payorch.infra.resilience.retry.RetryBudget;
 import com.payorch.infra.resilience.retry.RetryMetrics;
 import com.payorch.infra.resilience.retry.Retrier;
+import java.util.Map;
+
 import jakarta.servlet.Filter;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
@@ -78,6 +90,24 @@ public class ResilienceAutoConfiguration {
             log.info("bulkhead: {}, {} concurrent calls per provider, wait up to {}ms{}",
                     bh.kind(), bh.maxConcurrentCalls(), bh.maxWaitMs(),
                     "threadpool".equals(bh.kind()) ? ", queue " + bh.queueCapacity() : "");
+
+            ResilienceProperties.RateLimit rl = properties.rateLimit();
+            if (!rl.enabled()) {
+                log.info("rate limiters: DISABLED - every layer admits unconditionally");
+            } else {
+                log.info("rate limiters ({}): merchant {}/s burst {}, write {}/s burst {}, "
+                                + "read {}/s, egress {}/s",
+                        rl.kind(), rl.merchantPerSec(), rl.merchantBurst(),
+                        rl.writePerSec(), rl.writeBurst(), rl.readPerSec(), rl.egressPerSec());
+                if ("read-modify-write".equalsIgnoreCase(rl.kind())) {
+                    // WARN, because this implementation is only ever correct as
+                    // an experiment arm and a service left running on it would
+                    // over-admit silently. The whole failure mode is that
+                    // nothing looks wrong.
+                    log.warn("rate limiter is the NON-ATOMIC read-modify-write implementation "
+                            + "- it over-admits under concurrency and is for experiments only");
+                }
+            }
         };
     }
 
@@ -172,6 +202,82 @@ public class ResilienceAutoConfiguration {
                     b.maxConcurrentCalls(), b.queueCapacity(), b.maxWaitMs(), minSlice);
         }
         return new SemaphoreBulkhead(b.maxConcurrentCalls(), b.maxWaitMs(), minSlice);
+    }
+
+    /**
+     * 3e's limiters, isolated in a nested configuration.
+     *
+     * <p>Nested rather than declared alongside everything else, and the reason is
+     * a Boot trap worth naming. {@code @ConditionalOnClass} on a {@code @Bean}
+     * method is evaluated <em>after</em> the declaring class is introspected, and
+     * introspection resolves every method signature - so a parameter of type
+     * {@code StringRedisTemplate} makes the whole autoconfiguration fail to load
+     * in any service without Redis on its classpath, condition or no condition.
+     * {@code payment-orchestrator} is exactly that service, and the symptom was
+     * eleven unrelated context-load failures pointing at
+     * {@code failureClassifier}.
+     *
+     * <p>A nested class annotated at the type level is skipped whole, so its
+     * signatures are never resolved. The general rule: a condition guards the
+     * class it annotates, never the class that declares it.
+     */
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnClass(StringRedisTemplate.class)
+    @org.springframework.context.annotation.Configuration(proxyBeanMethods = false)
+    public static class RateLimiterConfiguration {
+
+        /**
+         * The three limiter layers, keyed by the name their metrics carry.
+         *
+         * <p>Built by one factory rather than as three independent beans so that the
+         * {@code kind} switch applies to all of them at once. An experiment that
+         * swapped the implementation of only the layer it remembered would compare
+         * two systems that differ in more than one place, which is how 3d's first
+         * thread-pool run wasted an afternoon.
+         */
+        @Bean
+        @ConditionalOnMissingBean
+        public RateLimiters rateLimiters(ResilienceProperties properties,
+                                         ObjectProvider<StringRedisTemplate> redis) {
+            ResilienceProperties.RateLimit r = properties.rateLimit();
+            StringRedisTemplate template = redis.getIfAvailable();
+
+            if (!r.enabled() || template == null) {
+                // Both paths land here on purpose. "Turned off for the control arm"
+                // and "this service has no Redis" behave identically, and both
+                // behave like a limiter that admits everything rather than like a
+                // missing bean that fails startup.
+                return new RateLimiters(
+                        new UnlimitedRateLimiter(), new UnlimitedRateLimiter(), new UnlimitedRateLimiter());
+            }
+
+            return new RateLimiters(
+                    limiter(template, r, "rl:merchant", r.merchantBurst(), r.merchantPerSec()),
+                    new EndpointRateLimiter(
+                            Map.of(
+                                    EndpointCosts.PAYMENTS_WRITE,
+                                    limiter(template, r, "rl:ep:write", r.writeBurst(), r.writePerSec()),
+                                    EndpointCosts.PAYMENTS_READ,
+                                    limiter(template, r, "rl:ep:read",
+                                            (int) Math.ceil(r.readPerSec() * 2), r.readPerSec())),
+                            new UnlimitedRateLimiter()),
+                    limiter(template, r, "rl:egress",
+                            (int) Math.ceil(r.egressPerSec()), r.egressPerSec()));
+        }
+
+        private static RateLimiter limiter(StringRedisTemplate template, ResilienceProperties.RateLimit r,
+                                           String prefix, int burst, double perSec) {
+            if ("read-modify-write".equalsIgnoreCase(r.kind())) {
+                return new ReadModifyWriteRateLimiter(template, prefix, burst, perSec, r.bucketTtlSeconds());
+            }
+            return new RedisTokenBucketRateLimiter(template, prefix, burst, perSec, r.bucketTtlSeconds());
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        @ConditionalOnClass(io.micrometer.core.instrument.MeterRegistry.class)
+        public RateLimitMetrics rateLimitMetrics(RateLimiters rateLimiters) {
+            return new RateLimitMetrics(rateLimiters.asMap());
+        }
     }
 
     @Bean

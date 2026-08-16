@@ -63,6 +63,8 @@ the **bean**. They are not interchangeable.
 |---|---|
 | `tools/loadtest/run-experiment.sh` | One experiment end to end: resets every chaos layer, starts the metrics capture, runs the k6 profile, captures the recovery tail, resets again |
 | `tools/loadtest/{smoke,ramp,spike,soak}.js` | The four load profiles |
+| `tools/loadtest/fairness.js` | Two merchants, one flooding. The only profile that can answer whether per-merchant limiting works, because every other one sends as a single merchant |
+| `tools/loadtest/burst.js` | N requests fired simultaneously through `http.batch`. Measures what a limiter admits when callers genuinely race, which sustained load does not |
 | `tools/loadtest/capture-metrics.sh` | Samples every service's `/actuator/prometheus` into one CSV |
 | `tools/loadtest/summarise-metrics.py` | The peaks a writeup needs, out of a 40,000-row CSV |
 | `tools/loadtest/plot-metrics.py` | ASCII time series, so a graph survives in a diff |
@@ -87,3 +89,4 @@ completes, the numbers look interesting, and they are describing two faults.
 | 02 | [Retry](02-retry.md) | 3b | Uncapped retries buy 61%→94% success and cost 54% more load on a failing provider; the 10% budget takes 67% for 12% |
 | 03 | [Circuit breaker](03-circuit-breaker.md) | 3c | Against a dead provider: 94% less load on it, and 2,701 unresolvable `UNKNOWN` payments become 4 |
 | 04 | [Bulkhead](04-bulkhead.md) | 3d | The first component the experiment did not justify: 92% less provider load, but 100%→6.8% success against a merely slow provider, and the edge still OOM'd. Semaphore beats thread pool 3.7× on tail latency |
+| 05 | [Rate limiters](05-rate-limiters.md) | 3e | The layer that finally stopped the edge dying: 1 OOM → 0, 5,858 unanswered requests → 0, p99 22.5s → 3.2s. Checking the shared limit before the per-merchant one cost a blameless merchant 75% of their traffic |

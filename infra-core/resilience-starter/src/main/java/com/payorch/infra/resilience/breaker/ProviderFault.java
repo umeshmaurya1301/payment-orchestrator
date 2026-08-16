@@ -9,6 +9,7 @@ import java.util.function.Predicate;
 
 import com.payorch.infra.resilience.bulkhead.BulkheadFullException;
 import com.payorch.infra.resilience.deadline.DeadlineExceededException;
+import com.payorch.infra.resilience.ratelimit.RateLimitedException;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.ResourceAccessException;
@@ -86,6 +87,15 @@ public final class ProviderFault implements Predicate<Throwable> {
             // whenever WE were saturated, removing the working dependency at
             // exactly the wrong moment - and it would look like the provider's
             // fault in every dashboard.
+            return false;
+        }
+        if (failure instanceof RateLimitedException) {
+            // Our own egress limiter, and the same trap with a sharper edge:
+            // this limit exists because the provider asked us to respect it, so
+            // counting it as their fault would open a circuit against a provider
+            // for the offence of having a contract. Worse, it is self-sustaining
+            // - throttling raises the fault rate, the breaker opens, and the
+            // dashboard blames the one party that behaved correctly.
             return false;
         }
         if (failure instanceof ConnectException

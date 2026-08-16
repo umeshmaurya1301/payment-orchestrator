@@ -60,6 +60,37 @@ payorch:
       min-slice-ms: ${DEADLINE_MIN_SLICE_MS:50}
       trust-inbound-header: false
 
+    rate-limit:
+      # 3e. The layer 3d proved was missing: at 500 rps this service threw
+      # OutOfMemoryError twice, and the connector's bulkhead - three services
+      # downstream - reduced that to once. Nothing that refuses after the
+      # request thread and the pooled connection are already spent can fix it.
+      #
+      # RATELIMIT_ENABLED=false is the control arm: the filter stays in the
+      # chain, at the same position, doing everything except deciding.
+      enabled: ${RATELIMIT_ENABLED:true}
+      # read-modify-write is the deliberately non-atomic implementation, kept so
+      # 3e can measure over-admission rather than assert it. Never a default.
+      kind: ${RATELIMIT_KIND:atomic-lua}
+
+      # Per merchant: fairness. Sized well above one merchant's honest traffic
+      # and well below what one merchant could do to the others.
+      merchant-burst: ${RATELIMIT_MERCHANT_BURST:100}
+      merchant-per-sec: ${RATELIMIT_MERCHANT_RPS:50}
+
+      # Per endpoint, service-wide: survival. This is the number that bounds the
+      # process, and per-merchant limits cannot substitute for it - fifty
+      # merchants each inside their own allowance still sum to an outage.
+      #
+      # 150/s against a measured death at 500/s, with a 300 burst so an honest
+      # spike is absorbed rather than clipped.
+      write-burst: ${RATELIMIT_WRITE_BURST:300}
+      write-per-sec: ${RATELIMIT_WRITE_RPS:150}
+      # Reads are one indexed lookup. Holding them to the write limit would
+      # throttle merchants for polling payments we already accepted - which is
+      # the behaviour we want instead of a retried write.
+      read-per-sec: ${RATELIMIT_READ_RPS:500}
+
   orchestrator:
     # No timeout, on purpose. Phase 2 has to watch this call hang before phase 3
     # is allowed to put a deadline on it.

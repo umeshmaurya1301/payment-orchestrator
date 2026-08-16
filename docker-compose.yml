@@ -197,8 +197,21 @@ services:
       VAULT_DB_USER: vault_writer
       VAULT_DB_PASSWORD: vault_writer_pw
       VAULT_KEY: *vault-key
+      # 3e. The rate limiters' shared store. Redis rather than an in-process
+      # counter because a per-instance limit is not a per-merchant limit: it
+      # multiplies by the replica count and changes every time we scale.
+      SPRING_DATA_REDIS_HOST: redis
+      RATELIMIT_ENABLED: ${RATELIMIT_ENABLED:-true}
+      RATELIMIT_KIND: ${RATELIMIT_KIND:-atomic-lua}
+      RATELIMIT_MERCHANT_BURST: ${RATELIMIT_MERCHANT_BURST:-100}
+      RATELIMIT_MERCHANT_RPS: ${RATELIMIT_MERCHANT_RPS:-50}
+      RATELIMIT_WRITE_BURST: ${RATELIMIT_WRITE_BURST:-300}
+      RATELIMIT_WRITE_RPS: ${RATELIMIT_WRITE_RPS:-150}
+      RATELIMIT_READ_RPS: ${RATELIMIT_READ_RPS:-500}
     ports: ["8080:8080"]
     depends_on:
+      redis:
+        condition: service_healthy
       # Not just mysql. payment-orchestrator owns the Flyway migrations, and this
       # service starts with `ddl-auto: validate` - so it has to come up after the
       # tables it validates against exist, or it fails startup on a cold volume.
@@ -264,9 +277,18 @@ services:
       DEADLINE_BUDGET_MS: ${DEADLINE_BUDGET_MS:-30000}
       DEADLINE_MAX_BUDGET_MS: ${DEADLINE_MAX_BUDGET_MS:-60000}
       DEADLINE_MIN_SLICE_MS: ${DEADLINE_MIN_SLICE_MS:-50}
+      # 3e's egress layer, on the same Redis. A provider's contracted TPS is a
+      # global number; enforcing it per instance would multiply the limit by the
+      # replica count and breach the contract exactly when we scaled out.
+      SPRING_DATA_REDIS_HOST: redis
+      RATELIMIT_ENABLED: ${RATELIMIT_ENABLED:-true}
+      RATELIMIT_KIND: ${RATELIMIT_KIND:-atomic-lua}
+      RATELIMIT_EGRESS_RPS: ${RATELIMIT_EGRESS_RPS:-200}
     ports: ["8083:8083"]
     depends_on:
       toxiproxy:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8083/actuator/health"]

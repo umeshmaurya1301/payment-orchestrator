@@ -108,6 +108,19 @@ resilience4j-circuitbreaker = { module = "io.github.resilience4j:resilience4j-ci
 spring-aop = { module = "org.springframework:spring-aop" }
 aspectjweaver = { module = "org.aspectj:aspectjweaver" }
 
+# Phase 3e. The rate limiters' shared store.
+#
+# The starter rather than lettuce-core alone, for the same Boot 4 reason Flyway
+# taught in phase 0: the autoconfiguration that builds a connection factory and
+# a RedisTemplate lives in spring-boot-data-redis, which the starter carries and
+# the raw driver does not. Without it Redis is on the classpath and nothing is
+# ever wired.
+#
+# Lettuce, not Jedis: it is the BOM default, it is non-blocking underneath, and
+# a single shared connection is safe from many threads - which matters when the
+# callers are virtual threads and there are thousands of them.
+spring-boot-starter-data-redis = { module = "org.springframework.boot:spring-boot-starter-data-redis" }
+
 # --- infra-core starters --------------------------------------------------
 # Ordinary module coordinates. The root settings.gradle.kts substitutes each of
 # these for the local project in the `infra-core` included build, so the version

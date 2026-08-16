@@ -3,6 +3,7 @@ package com.payorch.connector;
 import com.payorch.connector.api.ConnectorApi;
 import com.payorch.connector.provider.PspAdapter;
 import com.payorch.infra.resilience.bulkhead.BulkheadFullException;
+import com.payorch.infra.resilience.ratelimit.RateLimitedException;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import com.payorch.infra.logging.LogEvent;
 import com.payorch.infra.logging.LogFields;
@@ -43,16 +44,6 @@ public class ConnectorController {
     }
 
     /**
-     * The circuit breaker is open, so <strong>nothing was sent</strong>.
-     *
-     * <p>503, deliberately distinct from the 502 below. The two look similar and
-     * mean opposite things to a payment: 502 says the provider may have acted
-     * and the outcome is unknown; 503 says the request never left this service
-     * and the card was definitely not charged. Collapsing them would turn every
-     * fast rejection into an {@code UNKNOWN} payment needing a status poll -
-     * manufacturing exactly the uncertainty the breaker exists to avoid.
-     */
-    /**
      * The bulkhead shed this call, so <strong>nothing was sent</strong>.
      *
      * <p>503, the same contract as an open breaker, because it is the same fact:
@@ -71,6 +62,43 @@ public class ConnectorController {
         return problem;
     }
 
+    /**
+     * The egress limiter refused: sending would breach the provider's contracted
+     * rate. <strong>Nothing was sent.</strong>
+     *
+     * <p>503 again, and the third exception mapped to it, which is the point
+     * rather than a smell: an open breaker, a full bulkhead and an exhausted rate
+     * budget are three different reasons for one fact the orchestrator cares
+     * about - the provider was not contacted, so the payment is definitely
+     * {@code FAILED} and not {@code UNKNOWN}. The distinction between them lives
+     * in {@code errorCode}, where an operator can act on it, rather than in the
+     * status, where the caller would have to.
+     *
+     * <p>{@code Retry-After} is carried through because unlike the other two this
+     * one knows exactly when capacity returns - it is our own arithmetic.
+     */
+    @ExceptionHandler(RateLimitedException.class)
+    public ProblemDetail handleEgressRateLimited(RateLimitedException ex) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.SERVICE_UNAVAILABLE);
+        problem.setTitle("Provider rate limit reached");
+        problem.setDetail("Sending this request would exceed the rate agreed with the provider. "
+                + "The request was not sent and the card was not charged.");
+        problem.setProperty(LogFields.ERROR_CODE, "provider_rate_limited");
+        problem.setProperty("retryAfterMs", ex.retryAfterMs());
+        log.debug("egress rate limit reached for {}", ex.key());
+        return problem;
+    }
+
+    /**
+     * The circuit breaker is open, so <strong>nothing was sent</strong>.
+     *
+     * <p>503, deliberately distinct from the 502 below. The two look similar and
+     * mean opposite things to a payment: 502 says the provider may have acted
+     * and the outcome is unknown; 503 says the request never left this service
+     * and the card was definitely not charged. Collapsing them would turn every
+     * fast rejection into an {@code UNKNOWN} payment needing a status poll -
+     * manufacturing exactly the uncertainty the breaker exists to avoid.
+     */
     @ExceptionHandler(CallNotPermittedException.class)
     public ProblemDetail handleCircuitOpen(CallNotPermittedException ex) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.SERVICE_UNAVAILABLE);

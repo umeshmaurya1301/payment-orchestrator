@@ -6,6 +6,8 @@ import com.payorch.infra.resilience.deadline.DeadlineExecutor;
 import com.payorch.infra.resilience.deadline.DeadlinePropagation;
 import com.payorch.infra.resilience.breaker.CircuitBreakers;
 import com.payorch.infra.resilience.bulkhead.Bulkhead;
+import com.payorch.infra.resilience.ratelimit.RateLimitedException;
+import com.payorch.infra.resilience.ratelimit.RateLimiter;
 import com.payorch.infra.resilience.retry.Retrier;
 import com.payorch.infra.tokenization.DetokenizedCard;
 import org.springframework.web.client.RestClient;
@@ -54,13 +56,15 @@ public class MockPspAdapter implements PspAdapter {
     private final Retrier retrier;
     private final CircuitBreakers breakers;
     private final Bulkhead bulkhead;
+    private final RateLimiter egressLimiter;
 
     public MockPspAdapter(String baseUrl,
                           DeadlinePropagation propagation,
                           DeadlineExecutor deadlines,
                           Retrier retrier,
                           CircuitBreakers breakers,
-                          Bulkhead bulkhead) {
+                          Bulkhead bulkhead,
+                          RateLimiter egressLimiter) {
         // The request factory still has no read timeout, and that is now
         // deliberate rather than an omission: a factory-level timeout is shared
         // by every call, and a budget is per request by definition. The bound
@@ -73,11 +77,35 @@ public class MockPspAdapter implements PspAdapter {
         this.retrier = retrier;
         this.breakers = breakers;
         this.bulkhead = bulkhead;
+        this.egressLimiter = egressLimiter;
     }
 
     @Override
     public String pspId() {
         return PSP_ID;
+    }
+
+    /**
+     * 3e's egress layer: spend a token from <em>the provider's</em> contracted
+     * TPS, or decline without sending.
+     *
+     * <p>Innermost of the four gates, and that placement is the decision. A token
+     * here is spent if and only if a request is about to go out - put the check
+     * outside the bulkhead and every call the bulkhead later refuses would still
+     * have consumed a token, throttling us below the contract we are trying to
+     * fill. The permit is held across one Redis round trip, which is the price of
+     * charging accurately.
+     *
+     * <p>Retries are charged too, and must be: the provider's rate limit counts
+     * requests it receives, and it has no interest in which of ours were second
+     * attempts.
+     */
+    private <T> T egress(java.util.concurrent.Callable<T> call) throws Exception {
+        RateLimiter.Decision decision = egressLimiter.tryAcquire(PSP_ID);
+        if (!decision.allowed()) {
+            throw new RateLimitedException(PSP_ID, decision.retryAfterMs());
+        }
+        return call.call();
     }
 
     @Override
@@ -98,6 +126,7 @@ public class MockPspAdapter implements PspAdapter {
         ProviderResponse response = retrier.call("mockpsp.authorize", command.reference(), () ->
                 breakers.call(PSP_ID, "authorize", () ->
                         bulkhead.call(PSP_ID, () ->
+                        egress(() ->
                         deadlines.callWithin("mockpsp.authorize", () -> {
                             try {
                                 return client.post()
@@ -113,7 +142,7 @@ public class MockPspAdapter implements PspAdapter {
                                 // though all three arrive as "no answer" here.
                                 throw new ProviderUnavailableException(PSP_ID, e);
                             }
-                        }))));
+                        })))));
         if (response == null) {
             throw new ProviderUnavailableException(PSP_ID, null);
         }

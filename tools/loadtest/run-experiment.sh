@@ -69,6 +69,8 @@ MSYS_NO_PATHCONV=1 docker run --rm \
     -e CHAOS_DUPLICATE_RATE="${CHAOS_DUPLICATE_RATE:-0}" \
     -e RATE="${RATE:-50}" \
     -e DURATION="${DURATION:-30m}" \
+    -e NOISY_RATE="${NOISY_RATE:-400}" \
+    -e POLITE_RATE="${POLITE_RATE:-10}" \
     grafana/k6:latest run --summary-export=/out/summary.json "/scripts/${SCRIPT}" \
     2>&1 | tee "${OUT}/k6.log"
 

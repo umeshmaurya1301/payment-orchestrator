@@ -99,6 +99,21 @@ payorch:
       max-concurrent-calls: ${BULKHEAD_LIMIT:20}
       max-wait-ms: ${BULKHEAD_WAIT_MS:250}
       queue-capacity: ${BULKHEAD_QUEUE:50}
+
+    rate-limit:
+      # 3e's third layer, and the only one this service has. The egress limiter
+      # enforces THEIR contracted TPS, not ours - it protects the downstream
+      # from us, so that we are never the reason a provider blocks the account.
+      #
+      # There is no ingress limiter here: psp-connector has no merchants and no
+      # public surface, so the merchant and endpoint buckets would be buckets
+      # nothing ever spends from.
+      enabled: ${RATELIMIT_ENABLED:true}
+      kind: ${RATELIMIT_KIND:atomic-lua}
+      # mockpsp's stand-in contract. 3f replaces this with the real per-provider
+      # number read from psp_config, which is what makes "different limits per
+      # provider" a fact about the system rather than about this file.
+      egress-per-sec: ${RATELIMIT_EGRESS_RPS:200}
       # BREAKER_THRESHOLD=100 makes the breaker unreachable, which is the
       # 'before' arm for the experiment: one variable, same build.
 

@@ -30,8 +30,9 @@
 # fault and is a missing user record.
 #
 # The UI presents this as a signup form, so it looks like a manual step. It is
-        curl -s -X POST "${UI}/api/v1/register" \n            -H "Content-Type: application/json" \n            -d "{\"name\":\"payorch-admin\",\"orgName\":\"payorch\",\"email\":\"${ADMIN_EMAIL}\",\"password\":\"${ADMIN_PASSWORD}\",\"token\":\"\",\"sourceUrl\":\"\"}" >/dev/null 2>&1
-# credentials are local development values, in the open, like the vault key and
+# not: the form POSTs /api/v1/register, and so does `up` below. The whole
+# install is one command. The admin credentials are local development values,
+# in the open, like the vault key and
 # the merchant API keys - phase 9c is where secrets stop being literals.
 # ---------------------------------------------------------------------------
 
@@ -86,7 +87,10 @@ up)
     # is why the result is reported rather than checked for success.
     if curl -s --max-time 10 "${UI}/api/v1/version" 2>/dev/null | grep -q '"setupCompleted":false'; then
         echo "=== creating the admin account ==="
-        curl -s -X POST "${UI}/api/v1/register" -H "Content-Type: application/json"             -d "{\"name\":\"payorch-admin\",\"orgName\":\"payorch\",\"email\":\"${ADMIN_EMAIL}\",\"password\":\"${ADMIN_PASSWORD}\",\"token\":\"\",\"sourceUrl\":\"\"}"             >/dev/null 2>&1
+        curl -s -X POST "${UI}/api/v1/register" \
+            -H "Content-Type: application/json" \
+            -d "{\"name\":\"payorch-admin\",\"orgName\":\"payorch\",\"email\":\"${ADMIN_EMAIL}\",\"password\":\"${ADMIN_PASSWORD}\",\"token\":\"\",\"sourceUrl\":\"\"}" \
+            >/dev/null 2>&1
     fi
 
     echo

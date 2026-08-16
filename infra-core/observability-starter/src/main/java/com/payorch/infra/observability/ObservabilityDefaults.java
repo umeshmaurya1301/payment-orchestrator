@@ -70,8 +70,13 @@ public class ObservabilityDefaults implements EnvironmentPostProcessor, Ordered 
         // Logs over OTLP as well, which Boot 4 can do natively and Boot 3 could
         // not. This is what makes a log line and its trace one click apart
         // inside SigNoz rather than two systems correlated by eye - the phase
-        // plan calls it the highest-value item, and it turns out to be a
-        // property rather than a Logback appender.
+        // plan calls it the highest-value item.
+        //
+        // This property is necessary and NOT sufficient. It builds the exporter;
+        // it does not feed it. Boot 4 ships no Logback bridge, so with only this
+        // line set the pipeline comes up clean and exports nothing. See
+        // LogbackOtelInstaller for the other half, and the catalog note on
+        // opentelemetry-logback-appender for what it costs.
         //
         // The JSON console output stays exactly as it is. Container logs are
         // what the PAN-leak test scans and what `docker compose logs` shows

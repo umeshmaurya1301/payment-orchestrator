@@ -1,0 +1,103 @@
+{
+  "_comment": [
+    "Phase 4. Payments that did not get authorised, as a share of payments that",
+    "reached a terminal state.",
+    "",
+    "THIS ALERT REPLACED AN HTTP ERROR RATE THAT COULD NOT FIRE",
+    "",
+    "The first version measured 5xx at payments-edge, which is the obvious thing",
+    "and is wrong. Measured during a chaos run with the provider failing 90% of",
+    "calls, the edge returned:",
+    "",
+    "    status=201  count=9,323",
+    "    status=5xx  count=0",
+    "",
+    "Every single one a 201, and correctly so. A declined payment is a business",
+    "outcome, not a transport error: the request was well formed, accepted and",
+    "processed, and the answer was no. Returning 5xx would tell the merchant's",
+    "own retry logic the failure was ours and worth retrying.",
+    "",
+    "So an HTTP error rate on a payments API stays flat through a total provider",
+    "outage. It is a textbook alert on a series that cannot move.",
+    "",
+    "UNKNOWN IS NOT COUNTED AS A FAILURE",
+    "",
+    "F is FAILED/(all terminal states). UNKNOWN is deliberately excluded from the",
+    "numerator, because it is not a failure - it is a payment that may well have",
+    "been charged and whose fate nobody knows. Experiment 01 exists entirely to",
+    "reduce that state, and folding it into an error rate would make the deadline",
+    "budget's whole contribution invisible. It gets its own alert if it needs",
+    "one; it does not get to hide inside this one.",
+    "",
+    "5% because the providers' own baselines are 0.1% to 4% declines, so a",
+    "threshold below 5 would fire on psp-b behaving exactly as configured."
+  ],
+  "version": "v5",
+  "schemaVersion": "v1",
+  "alert": "payment-failure-rate",
+  "alertType": "METRIC_BASED_ALERT",
+  "ruleType": "threshold_rule",
+  "frequency": "30s",
+  "evalWindow": "5m",
+  "condition": {
+    "compositeQuery": {
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "disabled": true,
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "payorch.payment.outcome",
+                "timeAggregation": "increase",
+                "spaceAggregation": "sum"
+              }
+            ],
+            "filter": { "expression": "state = 'FAILED'" }
+          }
+        },
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "B",
+            "signal": "metrics",
+            "disabled": true,
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "payorch.payment.outcome",
+                "timeAggregation": "increase",
+                "spaceAggregation": "sum"
+              }
+            ]
+          }
+        },
+        {
+          "type": "builder_formula",
+          "spec": {
+            "name": "F",
+            "expression": "A/B*100",
+            "legend": "failed %"
+          }
+        }
+      ]
+    },
+    "op": ">",
+    "target": 5,
+    "matchType": "1",
+    "selectedQueryName": "F",
+    "targetUnit": "percent"
+  },
+  "labels": {
+    "severity": "critical",
+    "component": "payments"
+  },
+  "annotations": {
+    "summary": "Payment failure rate above 5%",
+    "description": "More than 5% of payments reaching a terminal state were FAILED. UNKNOWN payments are excluded - those are a separate and more expensive problem, not a decline."
+  },
+  "preferredChannels": ["payorch-alert-sink"]
+}

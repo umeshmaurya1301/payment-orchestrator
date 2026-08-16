@@ -1,5 +1,6 @@
 package com.payorch.connector.config;
 
+import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tags;
@@ -30,18 +31,24 @@ public class ProviderConfigMetrics implements MeterBinder {
 
     @Override
     public void bindTo(MeterRegistry registry) {
-        Gauge.builder("payorch.psp.config.reloads", store, ProviderConfigStore::reloads)
+        // Counters, because every alert worth writing on these is about a RATE.
+        // "reload.failures is nonzero" fires once and then never clears, since
+        // the total never comes back down; "reload.failures increased in the
+        // last five minutes" is the actual question, and it needs a counter to
+        // be askable. See RetryMetrics for what this cost when it was wrong.
+        FunctionCounter.builder("payorch.psp.config.reloads", store, ProviderConfigStore::reloads)
                 .description("Successful polls of psp_config")
                 .register(registry);
 
-        Gauge.builder("payorch.psp.config.changes", store, ProviderConfigStore::changesApplied)
+        FunctionCounter.builder("payorch.psp.config.changes", store, ProviderConfigStore::changesApplied)
                 .description("Config changes actually pushed into the live components")
                 .register(registry);
 
-        Gauge.builder("payorch.psp.config.reload.failures", store, ProviderConfigStore::failures)
+        FunctionCounter.builder("payorch.psp.config.reload.failures", store, ProviderConfigStore::failures)
                 .description("Failed polls - the service is running on stale config and looks healthy")
                 .register(registry);
 
+        // A level, not a total: providers can be removed as well as added.
         Gauge.builder("payorch.psp.config.providers", store, s -> s.all().size())
                 .description("Providers known to this service")
                 .register(registry);

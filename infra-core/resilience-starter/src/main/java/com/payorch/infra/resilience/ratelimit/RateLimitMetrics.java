@@ -2,7 +2,7 @@ package com.payorch.infra.resilience.ratelimit;
 
 import java.util.Map;
 
-import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.binder.MeterBinder;
@@ -39,18 +39,23 @@ public class RateLimitMetrics implements MeterBinder {
         limitersByLayer.forEach((layer, limiter) -> {
             Tags tags = Tags.of("layer", layer, "kind", limiter.kind());
 
-            Gauge.builder("payorch.ratelimit.permitted", limiter, RateLimiter::permitted)
+            // FunctionCounter, not Gauge. This binder is where the cost of
+            // getting that wrong was actually found: "egress limiter
+            // saturating" is the phase-4 alert, saturation is rejections per
+            // unit time, and a cumulative total typed as a gauge cannot express
+            // per-unit-time at all. See RetryMetrics for the full account.
+            FunctionCounter.builder("payorch.ratelimit.permitted", limiter, RateLimiter::permitted)
                     .description("Requests admitted by this layer")
                     .tags(tags)
                     .register(registry);
 
-            Gauge.builder("payorch.ratelimit.rejected", limiter, RateLimiter::rejected)
+            FunctionCounter.builder("payorch.ratelimit.rejected", limiter, RateLimiter::rejected)
                     .description("Requests refused with 429 - load shed at the door")
                     .tags(tags)
                     .register(registry);
 
             if (limiter instanceof RedisTokenBucketRateLimiter redis) {
-                Gauge.builder("payorch.ratelimit.store.failures", redis,
+                FunctionCounter.builder("payorch.ratelimit.store.failures", redis,
                                 RedisTokenBucketRateLimiter::storeFailures)
                         .description("Requests admitted because Redis could not answer - "
                                 + "the limiter is failing open and is not limiting anything")

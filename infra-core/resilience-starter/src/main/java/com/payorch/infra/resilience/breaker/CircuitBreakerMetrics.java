@@ -1,6 +1,7 @@
 package com.payorch.infra.resilience.breaker;
 
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tags;
@@ -67,7 +68,10 @@ public class CircuitBreakerMetrics implements MeterBinder {
                 .tags(tags)
                 .register(registry);
 
-        Gauge.builder("payorch.breaker.calls.not.permitted", breaker,
+        // FunctionCounter: a cumulative total, and the one series here that a
+        // dashboard wants as "per minute" rather than "since start". State and
+        // failure rate above are levels and stay gauges. See RetryMetrics.
+        FunctionCounter.builder("payorch.breaker.calls.not.permitted", breaker,
                         b -> b.getMetrics().getNumberOfNotPermittedCalls())
                 .description("Calls the open breaker refused - load the provider did not receive")
                 .tags(tags)

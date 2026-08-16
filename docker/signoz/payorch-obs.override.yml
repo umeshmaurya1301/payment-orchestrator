@@ -31,11 +31,45 @@ x-otlp: &otlp
   # listens - and the traces went nowhere at all. That is the default in
   # ObservabilityDefaults precisely so a developer without SigNoz sees no
   # errors; this is where it gets pointed at something real.
-  # The base URL. ObservabilityDefaults appends /v1/traces and /v1/logs, so
-  # one variable configures both pipelines and they cannot drift apart.
+  # The base URL. ObservabilityDefaults appends /v1/traces, /v1/logs and
+  # /v1/metrics, so one variable configures all three pipelines and they cannot
+  # drift apart.
   OTLP_ENDPOINT: http://signoz-ingester:4318
 
+  # Metrics, on. Off by default (see ObservabilityDefaults) because a service
+  # with no collector logs a stack trace per export attempt; on here because
+  # this file IS the statement that a collector exists.
+  #
+  # Without this the phase-4 dashboards cannot be built at all. Breaker state,
+  # bulkhead saturation and the rolling P99 are gauges - there is no span that
+  # says "the breaker is open", and a trace pipeline cannot answer a question
+  # about something that did NOT happen because a breaker refused it.
+  MANAGEMENT_OTLP_METRICS_EXPORT_ENABLED: "true"
+
 services:
+
+  # Where alert notifications land. See docker/signoz/alert-sink/sink.py for
+  # why a stack with no Slack workspace still needs a notification channel.
+  #
+  # On signoz-network only. It has no business on the payorch network: nothing
+  # in the payment path calls it, and putting it there would let a bug in the
+  # sink affect a payment.
+  alert-sink:
+    image: python:3.13-alpine
+    container_name: payorch-alert-sink
+    command: ["python", "-u", "/app/sink.py"]
+    volumes:
+      - ./docker/signoz/alert-sink:/app:ro
+    networks: [signoz-network]
+    healthcheck:
+      # python, not curl or wget - the slim image has neither, and a
+      # healthcheck that always fails would hold up `docker compose up -d`
+      # with a timeout rather than an error.
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://localhost:9095')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   payments-edge:
     environment:

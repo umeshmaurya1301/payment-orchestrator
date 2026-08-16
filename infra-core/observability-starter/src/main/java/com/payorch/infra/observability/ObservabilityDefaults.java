@@ -91,17 +91,51 @@ public class ObservabilityDefaults implements EnvironmentPostProcessor, Ordered 
         defaults.put("management.opentelemetry.resource-attributes.service.name",
                 "${spring.application.name:payorch}");
 
-        // OTLP *metrics* push, off. The starter brings micrometer-registry-otlp
-        // with it, and it defaults to on - so every service began trying to POST
-        // metrics to a collector that does not exist yet, and logged a stack
-        // trace per attempt per shutdown. Metrics in this system are scraped
-        // from /actuator/prometheus, which phase 2's harness already reads;
-        // pushing them over OTLP as well would be a second pipeline nobody
-        // looks at, failing loudly.
+        // OTLP *metrics* push, off BY DEFAULT and turned on by the SigNoz
+        // override. The starter brings micrometer-registry-otlp with it, and it
+        // defaults to on - so every service began trying to POST metrics to a
+        // collector that did not exist yet, and logged a stack trace per attempt
+        // per shutdown.
         //
+        // Off is right for the default stack: phases 1-3 reproduce without
+        // SigNoz, and the harness reads /actuator/prometheus directly. It is
+        // wrong once SigNoz is attached, because the phase-4 dashboards are
+        // breaker state and bulkhead saturation - gauges, not spans. No amount
+        // of trace data answers "is the breaker open", so metrics have to
+        // arrive as metrics. docker/signoz/payorch-obs.override.yml flips it.
+        //
+        // The meters are the same objects either way. Micrometer publishes one
+        // set of instruments to every registry attached to it, so this is a
+        // second READER of one source, not a second pipeline that can disagree
+        // with the first.
+        //
+        // NOTE THE NAMESPACE. This one did NOT move in Boot 4: metrics still
+        // live under management.otlp.metrics.export, because Boot 4's native
+        // OpenTelemetry support covers tracing and logging and stops there.
+        // There is no management.opentelemetry.metrics.* to match the two
+        // properties above, and looking for one costs an afternoon.
+        defaults.put("management.otlp.metrics.export.enabled", "false");
+
+        // Set regardless, so turning the flag on is the only thing the override
+        // has to do. Boot 4 dropped the localhost default this had in Boot 3,
+        // so without a url an enabled registry exports to nowhere - the same
+        // silent-success shape as the tracing endpoint rename.
+        defaults.put("management.otlp.metrics.export.url", endpoint + "/v1/metrics");
+
+        // 1m is the default and it is too coarse to watch a chaos run with. A
+        // breaker opens and recloses inside 60s; at a 1m step that whole event
+        // can land between two samples and the dashboard shows a flat line
+        // through the incident.
+        defaults.put("management.otlp.metrics.export.step", "15s");
+
+        // DELTA, not the cumulative default. SigNoz's query model expects delta
+        // for counters, and feeding it cumulative does not error - it produces
+        // rate graphs that are wrong in a plausible-looking way, which is the
+        // worst failure mode available. Gauges are unaffected by this setting.
+        defaults.put("management.otlp.metrics.export.aggregation-temporality", "delta");
+
         // Tracing over OTLP stays on. Traces have no scrape endpoint - a trace
         // that is not exported does not exist anywhere.
-        defaults.put("management.otlp.metrics.export.enabled", "false");
 
         // Buckets. The reason is in RollingLatency's javadoc and it is the
         // difference between a fleet P99 that means something and one that does

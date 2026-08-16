@@ -1,0 +1,68 @@
+{
+  "_comment": [
+    "Phase 4. A breaker is open, which means a provider has been taken out of",
+    "rotation and traffic is being refused before it leaves this process.",
+    "",
+    "WHY payorch.breaker.state AND NOT payorch.breaker.failure.rate",
+    "",
+    "The failure rate is the more informative number and it is the wrong one to",
+    "alert on. It reports -1 below minimumCalls - 'not enough calls to judge',",
+    "which is a different thing from 0% - and CircuitBreakerMetrics maps that to",
+    "NaN so it graphs as a gap rather than as a healthy provider. NaN is dropped",
+    "by the OTLP exporter, so the series is simply absent whenever the breaker is",
+    "idle, and an alert on an absent series is an alert that cannot fire.",
+    "",
+    "state is 0 closed / 1 open / 2 half-open, always present, and says the thing",
+    "an operator actually needs to know.",
+    "",
+    "matchType 1 is 'at least once'. mockpsp's waitInOpenSeconds is 10, so a",
+    "breaker can open, half-open and reclose well inside one evaluation - 'all",
+    "the time' would miss exactly the incident this is for."
+  ],
+  "version": "v5",
+  "schemaVersion": "v1",
+  "alert": "breaker-open",
+  "alertType": "METRIC_BASED_ALERT",
+  "ruleType": "threshold_rule",
+  "frequency": "30s",
+  "evalWindow": "5m",
+  "condition": {
+    "compositeQuery": {
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "disabled": false,
+            "stepInterval": 30,
+            "aggregations": [
+              {
+                "metricName": "payorch.breaker.state",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "groupBy": [
+              { "name": "psp" },
+              { "name": "operation" }
+            ]
+          }
+        }
+      ]
+    },
+    "op": ">=",
+    "target": 1,
+    "matchType": "1",
+    "selectedQueryName": "A"
+  },
+  "labels": {
+    "severity": "critical",
+    "component": "circuit-breaker"
+  },
+  "annotations": {
+    "summary": "Circuit breaker open for {{$labels.psp}}",
+    "description": "The breaker for {{$labels.psp}}:{{$labels.operation}} is not closed (0=closed, 1=open, 2=half-open). Calls are being refused locally and the provider is receiving no traffic for this operation."
+  },
+  "preferredChannels": ["payorch-alert-sink"]
+}

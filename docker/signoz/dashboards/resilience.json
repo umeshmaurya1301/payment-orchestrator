@@ -1,0 +1,380 @@
+{
+  "_comment": [
+    "Phase 4. The four panels the phase plan names - per-provider latency",
+    "distribution, error rate, breaker state, bulkhead saturation - plus egress",
+    "limiter shedding, because it is alerted on and an alert with no panel",
+    "behind it leaves the responder with nothing to look at.",
+    "",
+    "The panels are deliberately the same series the alerts fire on. If the",
+    "dashboard and the alert read different metrics they can disagree, and the",
+    "person holding the pager finds out during the incident.",
+    "",
+    "Written as a file rather than clicked together in the UI so it survives a",
+    "`signoz.sh destroy`, which is a normal thing to do to a 4 GB ClickHouse on",
+    "a laptop. Applied by `tools/obs/signoz.sh apply`.",
+    "",
+    "Keys beginning with _ are stripped before POST - the v2 dashboard API",
+    "rejects unknown fields outright rather than ignoring them."
+  ],
+  "schemaVersion": "v6",
+  "_name_comment": [
+    "Top-level `name` is REQUIRED, is an RFC 1123 label (lowercase, hyphens - a",
+    "slug, not a title), and is absent from the published v2 example, which",
+    "shows only spec.display.name. Without it every POST fails with a bare",
+    "'name is required' that points at nothing - and since the API rejects",
+    "unknown fields outright, guessing costs a round trip each time.",
+    "schemaVersion v6 and layouts[].kind = Grid are missing from that example",
+    "too. spec.display.name below is the human-readable title."
+  ],
+  "name": "payments-resilience",
+  "tags": [
+    { "key": "phase", "value": "4" },
+    { "key": "owner", "value": "payorch" }
+  ],
+  "spec": {
+    "display": {
+      "name": "Payments - Resilience",
+      "description": "Provider latency, error rate, breaker state and admission control. The series here are the ones the phase-4 alerts fire on."
+    },
+    "variables": [],
+    "layouts": [
+      {
+        "kind": "Grid",
+        "spec": {
+          "items": [
+            { "x": 0, "y": 0, "width": 6, "height": 6, "content": { "$ref": "#/spec/panels/provider-latency" } },
+            { "x": 6, "y": 0, "width": 6, "height": 6, "content": { "$ref": "#/spec/panels/error-rate" } },
+            { "x": 0, "y": 6, "width": 6, "height": 6, "content": { "$ref": "#/spec/panels/breaker-state" } },
+            { "x": 6, "y": 6, "width": 6, "height": 6, "content": { "$ref": "#/spec/panels/bulkhead-saturation" } },
+            { "x": 0, "y": 12, "width": 12, "height": 6, "content": { "$ref": "#/spec/panels/ratelimit-shedding" } }
+          ]
+        }
+      }
+    ],
+    "panels": {
+      "provider-latency": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Provider latency — rolling P99 / P50 (ms)",
+            "description": "From RollingLatency's merged histogram buckets, per provider and operation. This is the number phase 5 routes on. -1 means no calls in the window, which is not the same as fast."
+          },
+          "plugin": {
+            "kind": "signoz/TimeSeriesPanel",
+            "spec": {
+              "visualization": { "timePreference": "global_time" },
+              "legend": { "position": "bottom" }
+            }
+          },
+          "queries": [
+            {
+              "kind": "time_series",
+              "spec": {
+                "plugin": {
+                  "kind": "signoz/CompositeQuery",
+                  "spec": {
+                    "queries": [
+                      {
+                        "type": "builder_query",
+                        "spec": {
+                          "name": "A",
+                          "signal": "metrics",
+                          "disabled": false,
+                          "stepInterval": 30,
+                          "legend": "p99 {{psp}}",
+                          "aggregations": [
+                            { "metricName": "payorch.provider.latency.p99", "timeAggregation": "max", "spaceAggregation": "max" }
+                          ],
+                          "groupBy": [{ "name": "psp" }, { "name": "operation" }]
+                        }
+                      },
+                      {
+                        "type": "builder_query",
+                        "spec": {
+                          "name": "B",
+                          "signal": "metrics",
+                          "disabled": false,
+                          "stepInterval": 30,
+                          "legend": "p50 {{psp}}",
+                          "aggregations": [
+                            { "metricName": "payorch.provider.latency.p50", "timeAggregation": "max", "spaceAggregation": "max" }
+                          ],
+                          "groupBy": [{ "name": "psp" }, { "name": "operation" }]
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+
+      "error-rate": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Payment outcomes (% failed, and counts)",
+            "description": "FAILED as a share of payments reaching a terminal state. NOT an HTTP error rate: during a chaos run with the provider failing 90% of calls the edge returned 9,323 x 201 and zero 5xx, because a decline is a business outcome rather than a transport error. UNKNOWN is plotted separately and deliberately excluded from the percentage - it is a payment that may have been charged, which is a different and more expensive problem than a decline."
+          },
+          "plugin": {
+            "kind": "signoz/TimeSeriesPanel",
+            "spec": {
+              "visualization": { "timePreference": "global_time" },
+              "legend": { "position": "bottom" }
+            }
+          },
+          "queries": [
+            {
+              "kind": "time_series",
+              "spec": {
+                "plugin": {
+                  "kind": "signoz/CompositeQuery",
+                  "spec": {
+                    "queries": [
+                      {
+                        "type": "builder_query",
+                        "spec": {
+                          "name": "A",
+                          "signal": "metrics",
+                          "disabled": true,
+                          "stepInterval": 60,
+                          "aggregations": [
+                            { "metricName": "payorch.payment.outcome", "timeAggregation": "increase", "spaceAggregation": "sum" }
+                          ],
+                          "filter": { "expression": "state = 'FAILED'" }
+                        }
+                      },
+                      {
+                        "type": "builder_query",
+                        "spec": {
+                          "name": "B",
+                          "signal": "metrics",
+                          "disabled": true,
+                          "stepInterval": 60,
+                          "aggregations": [
+                            { "metricName": "payorch.payment.outcome", "timeAggregation": "increase", "spaceAggregation": "sum" }
+                          ]
+                        }
+                      },
+                      {
+                        "type": "builder_formula",
+                        "spec": { "name": "F", "expression": "A/B*100", "legend": "failed %" }
+                      },
+                      {
+                        "type": "builder_query",
+                        "spec": {
+                          "name": "C",
+                          "signal": "metrics",
+                          "disabled": false,
+                          "stepInterval": 60,
+                          "legend": "{{state}}/min",
+                          "aggregations": [
+                            { "metricName": "payorch.payment.outcome", "timeAggregation": "increase", "spaceAggregation": "sum" }
+                          ],
+                          "groupBy": [{ "name": "state" }]
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+
+      "breaker-state": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Circuit breaker state",
+            "description": "0 closed, 1 open, 2 half-open, per provider and operation. Plotted rather than payorch.breaker.failure.rate because that series is NaN below minimumCalls and therefore absent exactly when a breaker is idle."
+          },
+          "plugin": {
+            "kind": "signoz/TimeSeriesPanel",
+            "spec": {
+              "visualization": { "timePreference": "global_time" },
+              "legend": { "position": "bottom" }
+            }
+          },
+          "queries": [
+            {
+              "kind": "time_series",
+              "spec": {
+                "plugin": {
+                  "kind": "signoz/CompositeQuery",
+                  "spec": {
+                    "queries": [
+                      {
+                        "type": "builder_query",
+                        "spec": {
+                          "name": "A",
+                          "signal": "metrics",
+                          "disabled": false,
+                          "stepInterval": 30,
+                          "legend": "{{psp}}:{{operation}}",
+                          "aggregations": [
+                            { "metricName": "payorch.breaker.state", "timeAggregation": "max", "spaceAggregation": "max" }
+                          ],
+                          "groupBy": [{ "name": "psp" }, { "name": "operation" }]
+                        }
+                      },
+                      {
+                        "type": "builder_query",
+                        "spec": {
+                          "name": "B",
+                          "signal": "metrics",
+                          "disabled": false,
+                          "stepInterval": 60,
+                          "legend": "refused/min {{psp}}",
+                          "aggregations": [
+                            { "metricName": "payorch.breaker.calls.not.permitted", "timeAggregation": "increase", "spaceAggregation": "sum" }
+                          ],
+                          "groupBy": [{ "name": "psp" }]
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+
+      "bulkhead-saturation": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Bulkhead — shed vs admitted per minute",
+            "description": "Rejections are not bad news: shed work is the point. The failure this component prevents does not appear as a rejection, it appears as a heap dump. Free permits are on the same panel so saturation is visible as the gap closing."
+          },
+          "plugin": {
+            "kind": "signoz/TimeSeriesPanel",
+            "spec": {
+              "visualization": { "timePreference": "global_time" },
+              "legend": { "position": "bottom" }
+            }
+          },
+          "queries": [
+            {
+              "kind": "time_series",
+              "spec": {
+                "plugin": {
+                  "kind": "signoz/CompositeQuery",
+                  "spec": {
+                    "queries": [
+                      {
+                        "type": "builder_query",
+                        "spec": {
+                          "name": "A",
+                          "signal": "metrics",
+                          "disabled": false,
+                          "stepInterval": 60,
+                          "legend": "rejected/min {{service.name}}",
+                          "aggregations": [
+                            { "metricName": "payorch.bulkhead.rejected", "timeAggregation": "increase", "spaceAggregation": "sum" }
+                          ],
+                          "groupBy": [{ "name": "service.name" }]
+                        }
+                      },
+                      {
+                        "type": "builder_query",
+                        "spec": {
+                          "name": "B",
+                          "signal": "metrics",
+                          "disabled": false,
+                          "stepInterval": 60,
+                          "legend": "permitted/min {{service.name}}",
+                          "aggregations": [
+                            { "metricName": "payorch.bulkhead.permitted", "timeAggregation": "increase", "spaceAggregation": "sum" }
+                          ],
+                          "groupBy": [{ "name": "service.name" }]
+                        }
+                      },
+                      {
+                        "type": "builder_query",
+                        "spec": {
+                          "name": "C",
+                          "signal": "metrics",
+                          "disabled": false,
+                          "stepInterval": 30,
+                          "legend": "permits free {{service.name}}",
+                          "aggregations": [
+                            { "metricName": "payorch.bulkhead.available.total", "timeAggregation": "min", "spaceAggregation": "sum" }
+                          ],
+                          "groupBy": [{ "name": "service.name" }]
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+
+      "ratelimit-shedding": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Rate limiters — rejections per minute by layer",
+            "description": "Three layers, three different pages. merchant: one caller is over their allowance. endpoint: this service is at capacity. egress: we are about to breach a provider's contract. Reporting them as one number would make all three unactionable."
+          },
+          "plugin": {
+            "kind": "signoz/TimeSeriesPanel",
+            "spec": {
+              "visualization": { "timePreference": "global_time" },
+              "legend": { "position": "bottom" }
+            }
+          },
+          "queries": [
+            {
+              "kind": "time_series",
+              "spec": {
+                "plugin": {
+                  "kind": "signoz/CompositeQuery",
+                  "spec": {
+                    "queries": [
+                      {
+                        "type": "builder_query",
+                        "spec": {
+                          "name": "A",
+                          "signal": "metrics",
+                          "disabled": false,
+                          "stepInterval": 60,
+                          "legend": "{{layer}} @ {{service.name}}",
+                          "aggregations": [
+                            { "metricName": "payorch.ratelimit.rejected", "timeAggregation": "increase", "spaceAggregation": "sum" }
+                          ],
+                          "groupBy": [{ "name": "layer" }, { "name": "service.name" }]
+                        }
+                      },
+                      {
+                        "type": "builder_query",
+                        "spec": {
+                          "name": "B",
+                          "signal": "metrics",
+                          "disabled": false,
+                          "stepInterval": 60,
+                          "legend": "fail-open {{service.name}}",
+                          "aggregations": [
+                            { "metricName": "payorch.ratelimit.store.failures", "timeAggregation": "increase", "spaceAggregation": "sum" }
+                          ],
+                          "groupBy": [{ "name": "service.name" }]
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

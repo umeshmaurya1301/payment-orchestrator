@@ -70,6 +70,8 @@ the **bean**. They are not interchangeable.
 | `tools/loadtest/plot-metrics.py` | ASCII time series, so a graph survives in a diff |
 | `tools/chaos/toxic.sh` | Toxiproxy toxics: latency, timeout, reset_peer, bandwidth |
 | `tools/chaos/pumba.sh` | Process chaos: SIGTERM, SIGKILL, pause |
+| `tools/obs/signoz.sh` | SigNoz lifecycle, plus `apply` — dashboards and alert rules pushed from files in `docker/signoz/` |
+| `tools/obs/alert-drill.sh` | Drives chaos specifically to make every alert fire and resolve, and fails if one does not |
 
 Bean-level chaos and the bespoke seams are actuator endpoints contributed by
 `infra-core/chaos-core`: `/actuator/chaosbeans` and `/actuator/chaosseams`.
@@ -91,3 +93,4 @@ completes, the numbers look interesting, and they are describing two faults.
 | 04 | [Bulkhead](04-bulkhead.md) | 3d | The first component the experiment did not justify: 92% less provider load, but 100%→6.8% success against a merely slow provider, and the edge still OOM'd. Semaphore beats thread pool 3.7× on tail latency |
 | 05 | [Rate limiters](05-rate-limiters.md) | 3e | The layer that finally stopped the edge dying: 1 OOM → 0, 5,858 unanswered requests → 0, p99 22.5s → 3.2s. Checking the shared limit before the per-merchant one cost a blameless merchant 75% of their traffic |
 | 06 | [Dynamic config](06-dynamic-config.md) | 3f | One UPDATE, mid-run, no restart: provider throughput 8.0/s -> 51.4/s, both sides Little's law to within 3%. The extra capacity stopped at the contracted 50 TPS - widening a limit hands the constraint to the next layer, not to infinity |
+| 07 | [Dashboards and alerts](07-alerts.md) | 4e | Three of four alerts could not have fired. One queried a counter registered as a gauge (`increase` = 36 over a window where the value never left 4); one thresholded a condition four nested limiters make unreachable; one measured HTTP 5xx, which stayed at **zero while 99.7% of payments failed** - because a decline is a `201`. That last one found there was **no payment-outcome metric at all** |

@@ -1,5 +1,6 @@
 package com.payorch.infra.resilience.bulkhead;
 
+import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tags;
@@ -31,12 +32,16 @@ public class BulkheadMetrics implements MeterBinder {
     public void bindTo(MeterRegistry registry) {
         Tags tags = Tags.of("kind", bulkhead.kind());
 
-        Gauge.builder("payorch.bulkhead.permitted", bulkhead, Bulkhead::permitted)
+        // FunctionCounter, not Gauge - see RetryMetrics for what a cumulative
+        // total typed as a gauge does to a rate query. Saturation is a question
+        // about a WINDOW ("how many did we shed in the last minute"), and that
+        // question is unanswerable unless the instrument says it is a counter.
+        FunctionCounter.builder("payorch.bulkhead.permitted", bulkhead, Bulkhead::permitted)
                 .description("Calls admitted")
                 .tags(tags)
                 .register(registry);
 
-        Gauge.builder("payorch.bulkhead.rejected", bulkhead, Bulkhead::rejected)
+        FunctionCounter.builder("payorch.bulkhead.rejected", bulkhead, Bulkhead::rejected)
                 .description("Calls shed because the concurrency limit was reached - work deliberately not done")
                 .tags(tags)
                 .register(registry);
@@ -44,6 +49,8 @@ public class BulkheadMetrics implements MeterBinder {
         // Per provider, because the whole point of keying by provider is that
         // one saturating must not starve another - and a single aggregate
         // number would hide exactly that.
+        //
+        // Genuinely a gauge: permits are taken and returned.
         Gauge.builder("payorch.bulkhead.available.total", bulkhead,
                         b -> b.available().values().stream().mapToInt(Integer::intValue).sum())
                 .description("Permits currently free across all providers")

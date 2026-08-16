@@ -1,0 +1,76 @@
+{
+  "_comment": [
+    "Phase 4. The egress limiter is shedding load, which means this system is at",
+    "the edge of a provider's contracted TPS and is refusing its own traffic to",
+    "stay inside it.",
+    "",
+    "WHY layer='egress' SPECIFICALLY",
+    "",
+    "RateLimitMetrics tags three layers and they are three different pages.",
+    "merchant means one caller is over their allowance - their problem, and the",
+    "system is working. endpoint means this service is at capacity - scale or",
+    "shed. egress means we are about to breach somebody else's contract, which",
+    "is the one with a commercial consequence and the only one worth waking",
+    "somebody for. Alerting on the untagged total would fire for a single noisy",
+    "merchant and read as an outage.",
+    "",
+    "THIS ALERT IS WHY THE METERS CHANGED",
+    "",
+    "increase over the window, not the raw total - 'saturating' is a rate, and a",
+    "cumulative total crossing a threshold once would latch the alert on forever",
+    "since counters do not come back down.",
+    "",
+    "That query was impossible until phase 4e. These counters were registered",
+    "with Gauge.builder, so SigNoz typed them as gauges and its increase summed",
+    "raw samples instead of differencing them: 36 over a window in which the",
+    "value never left 4. Declaring the metric a Sum through the metadata API did",
+    "not help, because the query path reads the temporality label written on each",
+    "sample at ingest. The fix was FunctionCounter at the emitter."
+  ],
+  "version": "v5",
+  "schemaVersion": "v1",
+  "alert": "egress-limiter-saturation",
+  "alertType": "METRIC_BASED_ALERT",
+  "ruleType": "threshold_rule",
+  "frequency": "30s",
+  "evalWindow": "5m",
+  "condition": {
+    "compositeQuery": {
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "disabled": false,
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "payorch.ratelimit.rejected",
+                "timeAggregation": "increase",
+                "spaceAggregation": "sum"
+              }
+            ],
+            "filter": { "expression": "layer = 'egress'" },
+            "groupBy": [
+              { "name": "service.name" }
+            ]
+          }
+        }
+      ]
+    },
+    "op": ">",
+    "target": 0,
+    "matchType": "1",
+    "selectedQueryName": "A"
+  },
+  "labels": {
+    "severity": "warning",
+    "component": "rate-limit-egress"
+  },
+  "annotations": {
+    "summary": "Egress limiter shedding on {{$labels.service_name}}",
+    "description": "The egress rate limiter refused calls in the last window. This system is at a provider's contracted TPS ceiling and is dropping its own traffic to avoid breaching it."
+  },
+  "preferredChannels": ["payorch-alert-sink"]
+}

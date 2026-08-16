@@ -1,0 +1,72 @@
+{
+  "_comment": [
+    "Phase 4. A provider's rolling P99 has broken its latency contract.",
+    "",
+    "THE THRESHOLD IS MEASURED, NOT CHOSEN",
+    "",
+    "1000ms, against an observed healthy P99 of 150ms for mockpsp:authorize.",
+    "That is ~6.7x headroom, which is deliberate: this alert exists to catch a",
+    "provider degrading, not to report normal variance, and an alert that cries",
+    "wolf during a clean run gets muted and then ignored - at which point it is",
+    "worse than absent, because the dashboard still shows it as configured.",
+    "",
+    "WHY THIS SERIES AND NOT http.client.requests",
+    "",
+    "payorch.provider.latency.p99 comes from RollingLatency, which merges",
+    "histogram buckets across a sliding window. It is the same number phase 5",
+    "routes on. Alerting on a different one would mean the alert and the router",
+    "could disagree about which provider is slow, and the router would win",
+    "silently.",
+    "",
+    "-1 means 'no calls in the window', which is not a breach and not a zero.",
+    "It is below the threshold so it cannot fire, which is the correct",
+    "behaviour and the reason the gauge returns -1 rather than 0."
+  ],
+  "version": "v5",
+  "schemaVersion": "v1",
+  "alert": "provider-p99-breach",
+  "alertType": "METRIC_BASED_ALERT",
+  "ruleType": "threshold_rule",
+  "frequency": "30s",
+  "evalWindow": "5m",
+  "condition": {
+    "compositeQuery": {
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "disabled": false,
+            "stepInterval": 30,
+            "aggregations": [
+              {
+                "metricName": "payorch.provider.latency.p99",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "groupBy": [
+              { "name": "psp" },
+              { "name": "operation" }
+            ]
+          }
+        }
+      ]
+    },
+    "op": ">",
+    "target": 1000,
+    "matchType": "1",
+    "selectedQueryName": "A",
+    "targetUnit": "ms"
+  },
+  "labels": {
+    "severity": "warning",
+    "component": "provider-latency"
+  },
+  "annotations": {
+    "summary": "P99 breach for {{$labels.psp}}",
+    "description": "Rolling P99 for {{$labels.psp}}:{{$labels.operation}} exceeded 1000ms (healthy is ~150ms). This is the same number phase 5 routes on, so routing decisions are being made against a degraded provider."
+  },
+  "preferredChannels": ["payorch-alert-sink"]
+}

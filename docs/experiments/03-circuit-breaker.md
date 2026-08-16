@@ -187,6 +187,12 @@ receive" is the provider's own request count, not the breaker's. Recorded here
 because the metric name promises something it does not deliver under a flapping
 breaker.
 
+> **Renamed in phase 4e** to `payorch_breaker_calls_not_permitted_total`: it is
+> a counter now rather than a gauge. That does not repair the finding above —
+> resilience4j still resets it on every state transition, so it under-reports
+> under a flapping breaker whatever its instrument type. See
+> [07 — Alerts](07-alerts.md).
+
 ---
 
 ## The open question this leaves

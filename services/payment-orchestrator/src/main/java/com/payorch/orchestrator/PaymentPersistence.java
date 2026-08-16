@@ -35,13 +35,16 @@ public class PaymentPersistence {
     private final PaymentRepository payments;
     private final PaymentAttemptRepository attempts;
     private final PspConfigRepository pspConfigs;
+    private final PaymentOutcomeMetrics outcomes;
 
     public PaymentPersistence(PaymentRepository payments,
                               PaymentAttemptRepository attempts,
-                              PspConfigRepository pspConfigs) {
+                              PspConfigRepository pspConfigs,
+                              PaymentOutcomeMetrics outcomes) {
         this.payments = payments;
         this.attempts = attempts;
         this.pspConfigs = pspConfigs;
+        this.outcomes = outcomes;
     }
 
     @Transactional
@@ -108,6 +111,7 @@ public class PaymentPersistence {
     public Payment markUnroutable(UUID paymentId) {
         Payment payment = require(paymentId);
         payment.transitionTo(PaymentState.FAILED);
+        outcomes.record(PaymentState.FAILED);
         return payment;
     }
 
@@ -118,6 +122,7 @@ public class PaymentPersistence {
 
         Payment payment = require(paymentId);
         payment.transitionTo(PaymentState.AUTHORIZED);
+        outcomes.record(PaymentState.AUTHORIZED);
         return payment;
     }
 
@@ -129,6 +134,7 @@ public class PaymentPersistence {
 
         Payment payment = require(paymentId);
         payment.transitionTo(PaymentState.FAILED);
+        outcomes.record(PaymentState.FAILED);
         return payment;
     }
 
@@ -146,6 +152,7 @@ public class PaymentPersistence {
 
         Payment payment = require(paymentId);
         payment.transitionTo(PaymentState.UNKNOWN);
+        outcomes.record(PaymentState.UNKNOWN);
         return payment;
     }
 

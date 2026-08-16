@@ -69,6 +69,14 @@ payorch_retry_refused_deadline         0
 payorch_retry_refused_no_reference     0
 ```
 
+> **Metric names changed in phase 4e.** Every total above except
+> `payorch_retry_budget_tokens` is now a counter rather than a gauge and carries
+> a `_total` suffix — `payorch_retry_attempted_total`, and so on. The numbers
+> are unchanged; only the instrument type is. The names are left as they were
+> measured, because this is a record of a run rather than a live query. See
+> [07 — Alerts](07-alerts.md) for what the gauge typing was doing to windowed
+> queries, and why finding it required trying to alert on one.
+
 1,617 failures were retryable and the budget permitted 453 of them — 28%. The
 bucket sat at 0.4 tokens for most of the run, which is what a working budget
 looks like: fully drained, refusing continuously, and refilling only as fast as

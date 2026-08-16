@@ -65,6 +65,31 @@ Alerts: breaker open, P99 breach, error-rate threshold, egress limiter saturatio
 
 An alert that never fires during a chaos run is not configured correctly.
 
+> **This line was the most expensive one in the phase, and it earned it.** Of
+> the four alerts written straight from the list above, **three could not have
+> fired** — see [experiment 07](../experiments/07-alerts.md):
+>
+> - **Egress limiter saturation** queried a counter registered with
+>   `Gauge.builder`, so `increase` summed raw samples instead of differencing
+>   them (36 over a window where the value never left 4). And even once fixed,
+>   the condition is unreachable by load: every layer is tighter than the one it
+>   protects, so the edge's 50 TPS per-merchant limit binds long before the
+>   connector's 200 TPS contract. It is a misconfiguration alarm, not a load
+>   alarm.
+> - **Error rate** measured HTTP 5xx at the edge, which stayed at **zero while
+>   99.7% of payments failed**, because a declined payment is a `201`. Chasing
+>   that down found there was **no payment-outcome metric at all** — six phases,
+>   twenty-odd series, every one about a mechanism and none about whether a
+>   payment worked.
+>
+> Metrics also had to be turned on: 4a disabled the OTLP metrics push because no
+> collector existed yet. Traces and logs alone cannot answer "is the breaker
+> open" — that is a gauge, and no span is emitted for work a breaker refused.
+>
+> Dashboards and rules live in `docker/signoz/`, applied by
+> `tools/obs/signoz.sh apply`, so they survive the `destroy` that a 4 GB
+> ClickHouse on a laptop periodically deserves.
+
 ### 5. Distributed logging pipeline
 
 **Trace ↔ log correlation.** The OTel Logback appender injects `traceId` and
@@ -111,7 +136,16 @@ Wire it so it fails loudly. A leak test that is allowed to warn is decoration.
 - [ ] A single trace in SigNoz spanning edge → orchestrator → connector →
       simulator with per-hop timing
 - [ ] That trace's log lines correlated to it by `traceId`
-- [ ] Alerts firing during a chaos run and resolving after
+- [x] Alerts firing during a chaos run and resolving after — `tools/obs/alert-drill.sh`
+      drives three chaos phases and requires all four alerts to fire *and*
+      resolve, pairing each resolution to a firing of the same instance by
+      `startsAt` so a stale one cannot be miscredited. Verified green:
+      breaker-open, provider-p99-breach, payment-failure-rate and
+      egress-limiter-saturation all fired and resolved, evidenced by webhook
+      deliveries rather than by rule state, because an alert that evaluates
+      correctly and notifies nobody is still a failure. Getting there needed
+      three of the four alerts rewritten — see
+      [experiment 07](../experiments/07-alerts.md)
 - [x] PAN-leak test green in CI, and demonstrably red when a PAN is injected
       — `./gradlew panLeakTest` drives the k6 smoke suite against a live stack,
       scans the database dump and every container's output, and fails the build.
@@ -136,6 +170,17 @@ correlation works, or you will debug the pipeline with 1% of the evidence.
 **Cardinality explosions.** `paymentId` as a *metric tag* creates one time series
 per payment and will take ClickHouse down. It belongs in logs and traces, never
 in a metric label. `merchantId` is borderline — bounded, but check the bound.
+
+**Cumulative totals registered as gauges.** Free under a Prometheus scrape, where
+you difference the samples yourself. Silently wrong the moment the same series is
+pushed to a system that dispatches on declared type — `increase` returns the sum
+of the samples, which has the right shape and no meaning. Use `FunctionCounter`
+for anything monotonic; it reads through a function exactly like a gauge and
+costs nothing extra. Declaring the type after the fact does not help, because the
+temporality is stamped on each sample at ingest.
+
+**Alerting on the transport when the domain is what failed.** An HTTP error rate
+on a payments API is flat through a total provider outage. Alert on outcomes.
 
 **ClickHouse memory.** Do not run the `obs` profile alongside `async` on 32 GB
 without checking the budget first.

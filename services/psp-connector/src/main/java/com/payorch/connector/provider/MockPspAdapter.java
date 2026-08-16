@@ -13,6 +13,9 @@ import com.payorch.infra.resilience.bulkhead.Bulkhead;
 import com.payorch.infra.resilience.ratelimit.RateLimitedException;
 import com.payorch.infra.resilience.ratelimit.RateLimiter;
 import com.payorch.infra.resilience.retry.Retrier;
+import com.payorch.infra.observability.ProviderLatency;
+import com.payorch.infra.observability.Seams;
+import io.micrometer.observation.ObservationRegistry;
 import com.payorch.infra.tokenization.DetokenizedCard;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
@@ -70,6 +73,9 @@ public class MockPspAdapter implements PspAdapter {
     private final CircuitBreakers breakers;
     private final Bulkhead bulkhead;
     private final RateLimiter egressLimiter;
+    private final ObservationRegistry observations;
+    private final ProviderLatency providerLatency;
+    private final Seams seams;
 
     /**
      * Rebuilt only when the configured address changes.
@@ -92,7 +98,10 @@ public class MockPspAdapter implements PspAdapter {
                           Retrier retrier,
                           CircuitBreakers breakers,
                           Bulkhead bulkhead,
-                          RateLimiter egressLimiter) {
+                          RateLimiter egressLimiter,
+                          ObservationRegistry observations,
+                          ProviderLatency providerLatency,
+                          Seams seams) {
         this.pspId = pspId;
         this.configs = configs;
         this.propagation = propagation;
@@ -101,6 +110,9 @@ public class MockPspAdapter implements PspAdapter {
         this.breakers = breakers;
         this.bulkhead = bulkhead;
         this.egressLimiter = egressLimiter;
+        this.observations = observations;
+        this.providerLatency = providerLatency;
+        this.seams = seams;
     }
 
     private ProviderConfig config() {
@@ -125,6 +137,22 @@ public class MockPspAdapter implements PspAdapter {
                 RestClient.builder()
                         .baseUrl(config.baseUrl())
                         .requestInterceptor(propagation)
+                        // Phase 4. Without this the trace stops at this service.
+                        //
+                        // Boot instruments RestClient through the container's
+                        // RestClient.Builder, and every client in this system is built
+                        // by hand with RestClient.builder() - the same reason 3a's
+                        // DeadlinePropagation is contributed as a bean rather than
+                        // through a RestClientCustomizer. A customizer would apply to
+                        // nothing at all, quietly, while looking like it covered
+                        // everything.
+                        //
+                        // The registry is what injects `traceparent` on the way out and
+                        // opens the client span. A missing one does not fail: it
+                        // produces a trace that ends at the caller and a downstream
+                        // service whose spans have a different trace id, which reads as
+                        // "the trace is broken" rather than "instrumentation is absent".
+                        .observationRegistry(observations)
                         .build());
         client.set(rebuilt);
         return rebuilt.client();
@@ -158,6 +186,53 @@ public class MockPspAdapter implements PspAdapter {
         return call.call();
     }
 
+
+    /**
+     * One provider attempt: spanned, and timed into the window phase 5 routes on.
+     *
+     * <p>A named method rather than another lambda in the chain. The gates above
+     * are already five deep, and a sixth would put the only line that actually
+     * talks to a provider behind six closing parentheses - which is how a
+     * misplaced bracket becomes a resilience bug nobody can see.
+     *
+     * <p>Both wrappers sit <strong>innermost</strong>, around the call itself, so
+     * they measure what the provider cost rather than what our own queueing did.
+     * Timing the bulkhead instead would fold permit-wait into the provider's
+     * latency, and phase 5 would route away from a fast provider because
+     * <em>we</em> were saturated - the same attribution error
+     * {@code ProviderFault} exists to prevent for the circuit breaker.
+     *
+     * <p>Failures are timed too. A provider taking four seconds to return a 500
+     * is slow, and a percentile computed only over successes reports it as
+     * healthy right up until it stops answering at all.
+     */
+    private ProviderResponse measured(RestClient client, ProviderRequest request) throws Exception {
+        long startedAt = System.nanoTime();
+        try {
+            return seams.inSpan(Seams.PROVIDER_CALL, () -> send(client, request),
+                    "psp", pspId, "operation", "authorize");
+        } finally {
+            providerLatency.record(pspId, "authorize",
+                    (System.nanoTime() - startedAt) / 1_000_000);
+        }
+    }
+
+    private ProviderResponse send(RestClient client, ProviderRequest request) {
+        try {
+            return client.post()
+                    .uri("/psp/v1/authorize")
+                    .body(request)
+                    .retrieve()
+                    .body(ProviderResponse.class);
+        } catch (RestClientException e) {
+            // Thrown with the RestClientException as its cause: both
+            // FailureClassifier and ProviderFault walk the cause chain, and a
+            // 5xx, a refused connection and a 429 must be told apart even though
+            // all three arrive as "no answer" here.
+            throw new ProviderUnavailableException(pspId, e);
+        }
+    }
+
     @Override
     public ProviderAuthorization authorize(AuthorizeCommand command, DetokenizedCard card) {
         ProviderRequest request = new ProviderRequest(
@@ -182,26 +257,12 @@ public class MockPspAdapter implements PspAdapter {
         // processed - the provider recognises the repeat and returns the
         // original authorization instead of creating a second.
         ProviderResponse response = retrier.call(operation, command.reference(),
-                config.retryMaxAttempts(), () ->
-                breakers.call(pspId, "authorize", () ->
-                        bulkhead.call(pspId, () ->
-                        egress(() ->
-                        deadlines.callWithin(operation, config.deadlineSliceMs(), () -> {
-                            try {
-                                return client.post()
-                                        .uri("/psp/v1/authorize")
-                                        .body(request)
-                                        .retrieve()
-                                        .body(ProviderResponse.class);
-                            } catch (RestClientException e) {
-                                // Thrown with the RestClientException as its
-                                // cause: both FailureClassifier and ProviderFault
-                                // walk the cause chain, and a 5xx, a refused
-                                // connection and a 429 must be told apart even
-                                // though all three arrive as "no answer" here.
-                                throw new ProviderUnavailableException(pspId, e);
-                            }
-                        })))));
+                config.retryMaxAttempts(),
+                () -> breakers.call(pspId, "authorize",
+                () -> bulkhead.call(pspId,
+                () -> egress(
+                () -> deadlines.callWithin(operation, config.deadlineSliceMs(),
+                () -> measured(client, request))))));
         if (response == null) {
             throw new ProviderUnavailableException(pspId, null);
         }

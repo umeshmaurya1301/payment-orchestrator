@@ -6,6 +6,7 @@ import java.util.Optional;
 import com.payorch.infra.resilience.deadline.DeadlineExecutor;
 import com.payorch.infra.resilience.deadline.DeadlinePropagation;
 import org.springframework.web.client.HttpClientErrorException;
+import io.micrometer.observation.ObservationRegistry;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
@@ -27,11 +28,30 @@ public class OrchestratorClient {
 
     private final RestClient client;
     private final DeadlineExecutor deadlines;
+    private final ObservationRegistry observations;
 
-    public OrchestratorClient(String baseUrl, DeadlinePropagation propagation, DeadlineExecutor deadlines) {
+    public OrchestratorClient(String baseUrl, DeadlinePropagation propagation, DeadlineExecutor deadlines,
+                              ObservationRegistry observations) {
+        this.observations = observations;
         this.client = RestClient.builder()
                 .baseUrl(baseUrl)
                 .requestInterceptor(propagation)
+                // Phase 4. Without this the trace stops at this service.
+                //
+                // Boot instruments RestClient through the container's
+                // RestClient.Builder, and every client in this system is built
+                // by hand with RestClient.builder() - the same reason 3a's
+                // DeadlinePropagation is contributed as a bean rather than
+                // through a RestClientCustomizer. A customizer would apply to
+                // nothing at all, quietly, while looking like it covered
+                // everything.
+                //
+                // The registry is what injects `traceparent` on the way out and
+                // opens the client span. A missing one does not fail: it
+                // produces a trace that ends at the caller and a downstream
+                // service whose spans have a different trace id, which reads as
+                // "the trace is broken" rather than "instrumentation is absent".
+                .observationRegistry(observations)
                 .build();
         this.deadlines = deadlines;
     }

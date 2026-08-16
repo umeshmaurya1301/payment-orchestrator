@@ -11,6 +11,13 @@ dependencies {
     implementation(libs.spring.boot.starter.data.jpa)
 
     implementation(libs.payorch.logging.starter)
+
+    // Phase 4. Brings OpenTelemetry tracing with it as an `api` dependency, so
+    // traceId and spanId land in MDC - and therefore on every JSON log line -
+    // without this service configuring anything. LogFields reserved both keys in
+    // phase 0 for exactly this moment.
+    implementation(libs.payorch.observability.starter)
+
     implementation(libs.payorch.web.starter)
 
     // UUIDv7 primary keys and the BINARY(16) JPA converter. This service owns

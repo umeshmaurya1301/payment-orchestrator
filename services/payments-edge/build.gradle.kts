@@ -15,6 +15,13 @@ dependencies {
 
     // Resolved to the local project by the substitutions in settings.gradle.kts.
     implementation(libs.payorch.logging.starter)
+
+    // Phase 4. Brings OpenTelemetry tracing with it as an `api` dependency, so
+    // traceId and spanId land in MDC - and therefore on every JSON log line -
+    // without this service configuring anything. LogFields reserved both keys in
+    // phase 0 for exactly this moment.
+    implementation(libs.payorch.observability.starter)
+
     implementation(libs.payorch.web.starter)
     implementation(libs.payorch.persistence.starter)
 

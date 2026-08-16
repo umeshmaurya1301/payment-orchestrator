@@ -10,6 +10,7 @@ import com.payorch.infra.resilience.ratelimit.RateLimitFilter;
 import com.payorch.infra.resilience.ratelimit.RateLimiters;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Value;
+import io.micrometer.observation.ObservationRegistry;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.Ordered;
@@ -20,8 +21,9 @@ public class EdgeConfiguration {
     @Bean
     public OrchestratorClient orchestratorClient(@Value("${payorch.orchestrator.base-url}") String baseUrl,
                                                  DeadlinePropagation propagation,
-                                                 DeadlineExecutor deadlines) {
-        return new OrchestratorClient(baseUrl, propagation, deadlines);
+                                                 DeadlineExecutor deadlines,
+                                                 ObservationRegistry observations) {
+        return new OrchestratorClient(baseUrl, propagation, deadlines, observations);
     }
 
     @Bean

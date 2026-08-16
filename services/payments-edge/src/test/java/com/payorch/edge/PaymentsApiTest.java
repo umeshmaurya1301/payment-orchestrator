@@ -356,7 +356,11 @@ class PaymentsApiTest {
         String merchantIdOverride;
 
         StubOrchestrator() {
-            super("http://localhost:1", new DeadlinePropagation(30_000), new DeadlineExecutor(50, 30_000));
+            super("http://localhost:1", new DeadlinePropagation(30_000), new DeadlineExecutor(50, 30_000),
+                    // No tracing in a unit test, but the argument is still passed:
+                    // constructing the stub the way production does is what makes a
+                    // signature change fail here rather than in a container.
+                    io.micrometer.observation.ObservationRegistry.NOOP);
         }
 
         @Override

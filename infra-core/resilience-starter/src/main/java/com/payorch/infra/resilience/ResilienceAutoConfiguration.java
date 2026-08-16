@@ -6,6 +6,8 @@ import com.payorch.infra.resilience.bulkhead.BulkheadMetrics;
 import com.payorch.infra.resilience.bulkhead.SemaphoreBulkhead;
 import com.payorch.infra.resilience.bulkhead.ThreadPoolBulkhead;
 import com.payorch.infra.resilience.breaker.CircuitBreakers;
+import com.payorch.infra.resilience.deadline.CallDecorator;
+import com.payorch.infra.resilience.deadline.ContextPropagatingCallDecorator;
 import com.payorch.infra.resilience.deadline.DeadlineExecutor;
 import com.payorch.infra.resilience.deadline.DeadlineFilter;
 import com.payorch.infra.resilience.deadline.DeadlinePropagation;
@@ -288,11 +290,26 @@ public class ResilienceAutoConfiguration {
                 deadline.budgetMs(), deadline.maxBudgetMs(), deadline.trustInboundHeader());
     }
 
+    /**
+     * Present only when context-propagation is on the classpath, which in
+     * practice means the service took observability-starter. A service without
+     * tracing gets {@link CallDecorator#NONE} and behaves exactly as it did
+     * before phase 4.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnClass(io.micrometer.context.ContextSnapshotFactory.class)
+    public CallDecorator contextPropagatingCallDecorator() {
+        return new ContextPropagatingCallDecorator();
+    }
+
     @Bean(destroyMethod = "shutdown")
     @ConditionalOnMissingBean
-    public DeadlineExecutor deadlineExecutor(ResilienceProperties properties) {
+    public DeadlineExecutor deadlineExecutor(ResilienceProperties properties,
+                                             ObjectProvider<CallDecorator> decorator) {
         return new DeadlineExecutor(
-                properties.deadline().minSliceMs(), properties.deadline().budgetMs());
+                properties.deadline().minSliceMs(), properties.deadline().budgetMs(),
+                decorator.getIfAvailable(() -> CallDecorator.NONE));
     }
 
     /**

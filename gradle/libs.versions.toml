@@ -79,6 +79,27 @@ flyway-mysql = { module = "org.flywaydb:flyway-mysql" }
 micrometer-registry-prometheus = { module = "io.micrometer:micrometer-registry-prometheus" }
 micrometer-core = { module = "io.micrometer:micrometer-core" }
 
+# Phase 4. The starter, not micrometer-tracing-bridge-otel on its own - the
+# same Boot 4 module split that bit Flyway in phase 0 and Redis in 3e. The
+# bridge puts the API on the classpath; the autoconfiguration that builds a
+# Tracer, wires the OTLP exporter and installs the MDC correlation lives in
+# spring-boot-micrometer-tracing-opentelemetry, which only the starter carries.
+# Without it there is a Tracer nobody creates and traces nobody exports, and
+# nothing says so.
+#
+# Versions come from the micrometer-tracing (1.7.0) and opentelemetry (1.62.0)
+# BOMs, both imported by spring-boot-dependencies 4.1.0.
+spring-boot-starter-opentelemetry = { module = "org.springframework.boot:spring-boot-starter-opentelemetry" }
+# The Tracer/Span API, for the manual spans on the seams. compileOnly in the
+# starter: auto-instrumentation gives HTTP and JDBC, and it does not know what a
+# payment is - a span per tokenization and per state transition is hand-written.
+micrometer-tracing = { module = "io.micrometer:micrometer-tracing" }
+micrometer-observation = { module = "io.micrometer:micrometer-observation" }
+# Thread-local context across a handoff. Not tracing-specific on purpose: it
+# carries MDC through the same mechanism, so a trace-only implementation would
+# have produced correlated traces attached to uncorrelated logs.
+micrometer-context-propagation = { module = "io.micrometer:context-propagation" }
+
 # --- identifiers ----------------------------------------------------------
 uuid-creator = { module = "com.github.f4b6a3:uuid-creator", version.ref = "uuidCreator" }
 

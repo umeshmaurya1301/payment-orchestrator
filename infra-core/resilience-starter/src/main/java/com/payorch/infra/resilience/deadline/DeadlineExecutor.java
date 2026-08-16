@@ -52,6 +52,7 @@ public class DeadlineExecutor {
 
     private final long minSliceMs;
     private final long fallbackBudgetMs;
+    private final CallDecorator decorator;
 
     private final LongAdder abandoned = new LongAdder();
     private final LongAdder declined = new LongAdder();
@@ -64,8 +65,20 @@ public class DeadlineExecutor {
      *                         something rather than by nothing
      */
     public DeadlineExecutor(long minSliceMs, long fallbackBudgetMs) {
+        this(minSliceMs, fallbackBudgetMs, CallDecorator.NONE);
+    }
+
+    /**
+     * @param decorator wraps the work before it crosses onto the virtual thread.
+     *                  Phase 4 supplies one that carries the trace context over;
+     *                  without it every downstream call starts a new root trace
+     *                  and a four-hop payment produces four unrelated traces.
+     *                  See {@link CallDecorator}.
+     */
+    public DeadlineExecutor(long minSliceMs, long fallbackBudgetMs, CallDecorator decorator) {
         this.minSliceMs = minSliceMs;
         this.fallbackBudgetMs = fallbackBudgetMs;
+        this.decorator = decorator == null ? CallDecorator.NONE : decorator;
     }
 
     /**
@@ -106,7 +119,13 @@ public class DeadlineExecutor {
         }
 
         long sliceMs = deadline.remainingMs();
-        Future<T> future = executor.submit(() -> Deadlines.runWith(deadline, work::call));
+        // Decorated first, then bound. The decorator captures whatever the
+        // CALLING thread holds - the trace context - and the ScopedValue is
+        // re-bound inside the submitted task. Two different mechanisms carrying
+        // two different kinds of context across the same handoff, and both are
+        // needed: neither one covers the other.
+        Callable<T> carried = decorator.decorate(work);
+        Future<T> future = executor.submit(() -> Deadlines.runWith(deadline, carried::call));
 
         try {
             return future.get(sliceMs, TimeUnit.MILLISECONDS);

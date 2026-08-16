@@ -31,4 +31,15 @@ dependencies {
     // and no Redis client at all.
     compileOnly(libs.spring.boot.starter.data.redis)
     testImplementation(libs.spring.boot.starter.data.redis)
+
+    // Phase 4. Carries the trace context across DeadlineExecutor's virtual-thread
+    // handoff - without it every downstream call starts a NEW root trace, and a
+    // four-hop payment produces four unrelated single-span traces that read as
+    // "tracing is broken" rather than "a ThreadLocal did not cross a handoff".
+    //
+    // compileOnly: it arrives at runtime with micrometer-tracing in any service
+    // that takes observability-starter, and a service without tracing falls back
+    // to CallDecorator.NONE and behaves exactly as it did before.
+    compileOnly(libs.micrometer.context.propagation)
+    testImplementation(libs.micrometer.context.propagation)
 }

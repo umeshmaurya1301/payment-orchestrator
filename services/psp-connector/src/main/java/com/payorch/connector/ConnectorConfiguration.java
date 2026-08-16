@@ -14,6 +14,9 @@ import com.payorch.infra.resilience.breaker.CircuitBreakers;
 import com.payorch.infra.resilience.bulkhead.Bulkhead;
 import com.payorch.infra.resilience.ratelimit.RateLimiters;
 import com.payorch.infra.resilience.retry.Retrier;
+import com.payorch.infra.observability.ProviderLatency;
+import com.payorch.infra.observability.Seams;
+import io.micrometer.observation.ObservationRegistry;
 import com.zaxxer.hikari.HikariDataSource;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -107,9 +110,13 @@ public class ConnectorConfiguration {
                                                  Retrier retrier,
                                                  CircuitBreakers breakers,
                                                  Bulkhead bulkhead,
-                                                 RateLimiters rateLimiters) {
+                                                 RateLimiters rateLimiters,
+                                                 ObservationRegistry observations,
+                                                 ProviderLatency providerLatency,
+                                                 Seams seams) {
         return new PspAdapterRegistry(configs, declaredAdapters, pspId -> adapterFor(
-                pspId, configs, propagation, deadlines, retrier, breakers, bulkhead, rateLimiters));
+                pspId, configs, propagation, deadlines, retrier, breakers, bulkhead, rateLimiters,
+                observations, providerLatency, seams));
     }
 
     /**
@@ -126,8 +133,11 @@ public class ConnectorConfiguration {
                                          Retrier retrier,
                                          CircuitBreakers breakers,
                                          Bulkhead bulkhead,
-                                         RateLimiters rateLimiters) {
+                                         RateLimiters rateLimiters,
+                                         ObservationRegistry observations,
+                                         ProviderLatency providerLatency,
+                                         Seams seams) {
         return new MockPspAdapter(pspId, configs, propagation, deadlines, retrier,
-                breakers, bulkhead, rateLimiters.egress());
+                breakers, bulkhead, rateLimiters.egress(), observations, providerLatency, seams);
     }
 }

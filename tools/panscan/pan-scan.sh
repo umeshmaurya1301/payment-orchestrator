@@ -126,6 +126,44 @@ if ! docker compose logs --no-color --no-log-prefix --tail=all > "${OUT}/contain
 fi
 
 # ---------------------------------------------------------------------------
+# 3b. Refuse to scan sampled logs.
+#
+# Phase 4f added trace-based log sampling, and at its intended 1% it would hand
+# this scanner 1% of the lines. Every leak would then have a 99% chance of
+# passing, and the build would go green for the same reason a coin comes up
+# heads - silently, and differently every run.
+#
+# This is the same rule as the scanner's own self-test at the top of this file:
+# a control that cannot be shown to be working is not a control. There the
+# question was "can it go red at all"; here it is "did it see everything".
+#
+# LogSamplingInstaller logs one line per service at startup, unsampled, saying
+# which way the switch is set. A missing line is treated as suspicious rather
+# than as absent evidence, because an older image that predates the installer
+# would also be silent - and that is exactly the case where a stale build could
+# be sampling without saying so.
+# ---------------------------------------------------------------------------
+if grep -q "log sampling ENABLED" "${OUT}/containers.log"; then
+    echo >&2
+    echo "REFUSING TO SCAN: log sampling is ENABLED on at least one service." >&2
+    grep -o "log sampling ENABLED at [0-9.]*%[^\"]*" "${OUT}/containers.log" | sort -u | sed 's/^/  /' >&2
+    echo >&2
+    echo "The scanner would inspect a fraction of the lines and report green on" >&2
+    echo "a leak it never read. Re-run with payorch.logging.sampling.success-rate=1.0" >&2
+    echo "(the default) before trusting this test." >&2
+    exit 2
+fi
+if ! grep -q "log sampling DISABLED" "${OUT}/containers.log"; then
+    echo >&2
+    echo "REFUSING TO SCAN: no service asserted that log sampling is disabled." >&2
+    echo "Expected one '${PAN_SAMPLING_MARKER:-log sampling DISABLED}' line per service at startup." >&2
+    echo "Either the stack predates phase 4f, or its startup output was truncated -" >&2
+    echo "and in both cases this scan cannot prove it read every line." >&2
+    exit 2
+fi
+echo "  log sampling confirmed disabled - the capture is complete"
+
+# ---------------------------------------------------------------------------
 # 4. Scan both, with the same Luhn check and the same patterns the runtime
 #    masking uses.
 # ---------------------------------------------------------------------------

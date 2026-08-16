@@ -102,6 +102,26 @@ its trace become one click apart. **This is the highest-value item in the phase.
 Trace-based sampling: retain 100% of errors and slow requests, ~1% of successes.
 Tail-based sampling if you want the harder version.
 
+> **Measured** ([experiment 08](../experiments/08-log-sampling.md)): 4.00 lines
+> and 2,514 bytes per payment, so 75 MB/minute at 500 rps. Sampling at 1% removes
+> 97.6% of it and keeps 100% of errors — verified against a 50% error injection,
+> where 2,325 log lines covered 2,315 failed payments while INFO fell to 0.8%.
+>
+> **The decision is a hash of the `traceId`**, so four services reach the same
+> verdict independently and a kept trace is kept *whole*. Sampling per line would
+> give 1% of the lines of 100% of traces: every trace present, none readable.
+>
+> **It is off by default, because it silently defeats the PAN-leak test below** —
+> that test scans container output line by line, and at 1% it would inspect 1% of
+> the lines and still report green. Two controls from this same phase, one
+> disabling the other, with nothing in either saying so. Each service now asserts
+> at startup which way the switch is set, and the scanner refuses to run unless it
+> can prove sampling was off.
+>
+> Head-based, so a failed request keeps its error lines but not its earlier INFO.
+> Tail-based needs per-trace buffering — unbounded memory in exactly the incident
+> where memory is already the problem — and is deferred knowingly.
+
 **Dynamic log levels** via `/actuator/loggers` — already exposed and verified
 working in phase 0. During a chaos run you want DEBUG on one service for 90
 seconds without a restart.

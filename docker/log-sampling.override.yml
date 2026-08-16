@@ -1,0 +1,50 @@
+# Trace-based log sampling, on. Phase 4f.
+#
+#     docker compose -f docker-compose.yml -f docker/log-sampling.override.yml up -d
+#
+# WHY THIS IS AN OVERRIDE AND NOT A DEFAULT
+#
+# Sampling makes evidence disappear, and two things in this repo read container
+# output as though it were complete:
+#
+#   * the PAN-leak build test scans every line of every container for card data.
+#     At 1% it would scan 1% of the lines, and a leak would pass with 99%
+#     probability - silently, and differently on every run. `pan-scan.sh` now
+#     refuses to run against sampled logs for exactly this reason, so turning
+#     sampling on here and forgetting is a failed build rather than a false pass.
+#
+#   * every experiment writeup from 00 to 07 quotes log lines as evidence.
+#
+# So the committed default keeps every line, and this file is what an
+# environment applies when its volume justifies the trade. Measured cost of
+# keeping everything, on a clean run: 4.00 lines and 2,514 bytes per payment
+# across the three services that carry one, which is 75 MB/minute at the 500 rps
+# where phase 2 found this system's ceiling.
+#
+# WHAT 0.01 MEANS, PRECISELY
+#
+# 1% of *traces*, not 1% of lines - the decision is a hash of the trace id, so
+# every service reaches the same verdict independently and a kept trace is kept
+# whole. Sampling per line would give 1% of the lines of 100% of the traces:
+# every trace present, none readable.
+#
+# WARN and above are never sampled, at any rate. An error rate is not something
+# to estimate from 1% of the evidence.
+
+services:
+
+  payments-edge:
+    environment:
+      PAYORCH_LOGGING_SAMPLING_SUCCESS_RATE: "${LOG_SAMPLE_RATE:-0.01}"
+
+  payment-orchestrator:
+    environment:
+      PAYORCH_LOGGING_SAMPLING_SUCCESS_RATE: "${LOG_SAMPLE_RATE:-0.01}"
+
+  psp-connector:
+    environment:
+      PAYORCH_LOGGING_SAMPLING_SUCCESS_RATE: "${LOG_SAMPLE_RATE:-0.01}"
+
+  mock-psp-simulator:
+    environment:
+      PAYORCH_LOGGING_SAMPLING_SUCCESS_RATE: "${LOG_SAMPLE_RATE:-0.01}"

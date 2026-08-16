@@ -2,6 +2,7 @@ package com.payorch.connector;
 
 import com.payorch.connector.api.ConnectorApi;
 import com.payorch.connector.provider.PspAdapter;
+import com.payorch.infra.resilience.bulkhead.BulkheadFullException;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import com.payorch.infra.logging.LogEvent;
 import com.payorch.infra.logging.LogFields;
@@ -51,6 +52,25 @@ public class ConnectorController {
      * fast rejection into an {@code UNKNOWN} payment needing a status poll -
      * manufacturing exactly the uncertainty the breaker exists to avoid.
      */
+    /**
+     * The bulkhead shed this call, so <strong>nothing was sent</strong>.
+     *
+     * <p>503, the same contract as an open breaker, because it is the same fact:
+     * the provider was not contacted and the card was not charged. Load shedding
+     * that produced {@code UNKNOWN} payments would be self-defeating - the system
+     * would protect its heap by manufacturing liabilities in its ledger.
+     */
+    @ExceptionHandler(BulkheadFullException.class)
+    public ProblemDetail handleBulkheadFull(BulkheadFullException ex) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.SERVICE_UNAVAILABLE);
+        problem.setTitle("Provider at capacity");
+        problem.setDetail("The concurrency limit for this provider was reached. "
+                + "The request was not sent and the card was not charged.");
+        problem.setProperty(LogFields.ERROR_CODE, "bulkhead_full");
+        log.debug("bulkhead full for {}", ex.key());
+        return problem;
+    }
+
     @ExceptionHandler(CallNotPermittedException.class)
     public ProblemDetail handleCircuitOpen(CallNotPermittedException ex) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.SERVICE_UNAVAILABLE);

@@ -5,6 +5,7 @@ import java.time.Instant;
 import com.payorch.infra.resilience.deadline.DeadlineExecutor;
 import com.payorch.infra.resilience.deadline.DeadlinePropagation;
 import com.payorch.infra.resilience.breaker.CircuitBreakers;
+import com.payorch.infra.resilience.bulkhead.Bulkhead;
 import com.payorch.infra.resilience.retry.Retrier;
 import com.payorch.infra.tokenization.DetokenizedCard;
 import org.springframework.web.client.RestClient;
@@ -17,8 +18,8 @@ import org.springframework.web.client.RestClientException;
  * budget, retried subject to classification and a budget, and gated by a circuit
  * breaker for this provider and operation.
  *
- * <p><strong>Retry outside, breaker in the middle, deadline innermost.</strong>
- * The nesting is a real decision:
+ * <p><strong>Retry, then breaker, then bulkhead, then deadline.</strong> The
+ * nesting is a real decision:
  *
  * <ul>
  *   <li>The breaker sits <em>inside</em> the retry so it counts every network
@@ -30,8 +31,12 @@ import org.springframework.web.client.RestClientException;
  *       {@code FailureClassifier}, which defaults to not retrying. The two
  *       components compose into fast failure without either knowing about the
  *       other.</li>
+ *   <li>The bulkhead sits <em>inside</em> the breaker so an open breaker costs
+ *       no permit - it never intended to make a call, and consuming capacity to
+ *       decline would throttle the provider's recovery.</li>
  *   <li>The deadline is innermost, so each attempt gets its own slice of the
- *       remaining budget.</li>
+ *       remaining budget, and a permit is held for exactly the duration of the
+ *       call rather than across the backoff between attempts.</li>
  * </ul>
  *
  * <p>The {@code reference} passed to the retrier is the same value carried in
@@ -48,12 +53,14 @@ public class MockPspAdapter implements PspAdapter {
     private final DeadlineExecutor deadlines;
     private final Retrier retrier;
     private final CircuitBreakers breakers;
+    private final Bulkhead bulkhead;
 
     public MockPspAdapter(String baseUrl,
                           DeadlinePropagation propagation,
                           DeadlineExecutor deadlines,
                           Retrier retrier,
-                          CircuitBreakers breakers) {
+                          CircuitBreakers breakers,
+                          Bulkhead bulkhead) {
         // The request factory still has no read timeout, and that is now
         // deliberate rather than an omission: a factory-level timeout is shared
         // by every call, and a budget is per request by definition. The bound
@@ -65,6 +72,7 @@ public class MockPspAdapter implements PspAdapter {
         this.deadlines = deadlines;
         this.retrier = retrier;
         this.breakers = breakers;
+        this.bulkhead = bulkhead;
     }
 
     @Override
@@ -89,6 +97,7 @@ public class MockPspAdapter implements PspAdapter {
         // original authorization instead of creating a second.
         ProviderResponse response = retrier.call("mockpsp.authorize", command.reference(), () ->
                 breakers.call(PSP_ID, "authorize", () ->
+                        bulkhead.call(PSP_ID, () ->
                         deadlines.callWithin("mockpsp.authorize", () -> {
                             try {
                                 return client.post()
@@ -104,7 +113,7 @@ public class MockPspAdapter implements PspAdapter {
                                 // though all three arrive as "no answer" here.
                                 throw new ProviderUnavailableException(PSP_ID, e);
                             }
-                        })));
+                        }))));
         if (response == null) {
             throw new ProviderUnavailableException(PSP_ID, null);
         }

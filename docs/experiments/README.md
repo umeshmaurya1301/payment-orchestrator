@@ -86,3 +86,4 @@ completes, the numbers look interesting, and they are describing two faults.
 | 01 | [Deadline budget](01-deadline-budget.md) | 3a | Against a provider that never answers: 2,112 payments stranded in `AUTHORIZING` becomes 2,372 recorded `UNKNOWN`, and throughput rises 60% |
 | 02 | [Retry](02-retry.md) | 3b | Uncapped retries buy 61%→94% success and cost 54% more load on a failing provider; the 10% budget takes 67% for 12% |
 | 03 | [Circuit breaker](03-circuit-breaker.md) | 3c | Against a dead provider: 94% less load on it, and 2,701 unresolvable `UNKNOWN` payments become 4 |
+| 04 | [Bulkhead](04-bulkhead.md) | 3d | The first component the experiment did not justify: 92% less provider load, but 100%→6.8% success against a merely slow provider, and the edge still OOM'd. Semaphore beats thread pool 3.7× on tail latency |

@@ -84,6 +84,21 @@ payorch:
       minimum-calls: ${BREAKER_MIN_CALLS:20}
       wait-in-open-seconds: ${BREAKER_OPEN_S:10}
       half-open-permits: 5
+
+    bulkhead:
+      # 3d. Admission control - the phase-2 baseline's highest-priority fix.
+      #
+      # Semaphore by default: under virtual threads a waiting caller parks a
+      # virtual thread costing a few hundred bytes, where a thread-pool bulkhead
+      # would pay a platform thread to isolate something already cheap. 3d
+      # measures both rather than asserting it.
+      #
+      # max-concurrent-calls is sized from the provider's contracted TPS by
+      # Little's law: concurrency = TPS x latency.
+      kind: ${BULKHEAD_KIND:semaphore}
+      max-concurrent-calls: ${BULKHEAD_LIMIT:20}
+      max-wait-ms: ${BULKHEAD_WAIT_MS:250}
+      queue-capacity: ${BULKHEAD_QUEUE:50}
       # BREAKER_THRESHOLD=100 makes the breaker unreachable, which is the
       # 'before' arm for the experiment: one variable, same build.
 

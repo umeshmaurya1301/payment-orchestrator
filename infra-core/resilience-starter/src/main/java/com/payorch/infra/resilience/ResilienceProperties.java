@@ -9,7 +9,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * a readable summary of what has actually been built and measured so far.
  */
 @ConfigurationProperties(prefix = "payorch.resilience")
-public record ResilienceProperties(Deadline deadline, Retry retry, Breaker breaker) {
+public record ResilienceProperties(Deadline deadline, Retry retry, Breaker breaker, Bulkhead bulkhead) {
 
     public ResilienceProperties {
         if (deadline == null) {
@@ -20,6 +20,9 @@ public record ResilienceProperties(Deadline deadline, Retry retry, Breaker break
         }
         if (breaker == null) {
             breaker = new Breaker(null, null, null, null, null);
+        }
+        if (bulkhead == null) {
+            bulkhead = new Bulkhead(null, null, null, null);
         }
     }
 
@@ -138,6 +141,41 @@ public record ResilienceProperties(Deadline deadline, Retry retry, Breaker break
             }
             if (halfOpenPermits == null || halfOpenPermits <= 0) {
                 halfOpenPermits = 5;
+            }
+        }
+    }
+
+    /**
+     * @param kind               {@code semaphore} or {@code threadpool}. The
+     *                           default is semaphore: under virtual threads a
+     *                           thread-pool bulkhead pays platform-thread cost
+     *                           to isolate something already cheap. 3d measures
+     *                           both rather than asserting it.
+     * @param maxConcurrentCalls in-flight calls allowed per provider. Sized from
+     *                           the provider's contracted TPS by Little's law:
+     *                           concurrency = TPS x latency. 500 TPS at 40 ms is
+     *                           20.
+     * @param maxWaitMs          ceiling on waiting for a permit. The actual wait
+     *                           is the smaller of this and the request's
+     *                           remaining budget, so the two cannot disagree.
+     * @param queueCapacity      thread-pool only. Bounded on purpose: an
+     *                           unbounded queue turns a bulkhead into an OOM,
+     *                           which is exactly how the phase-2 baseline died.
+     */
+    public record Bulkhead(String kind, Integer maxConcurrentCalls, Long maxWaitMs, Integer queueCapacity) {
+
+        public Bulkhead {
+            if (kind == null || kind.isBlank()) {
+                kind = "semaphore";
+            }
+            if (maxConcurrentCalls == null || maxConcurrentCalls <= 0) {
+                maxConcurrentCalls = 20;
+            }
+            if (maxWaitMs == null || maxWaitMs < 0) {
+                maxWaitMs = 250L;
+            }
+            if (queueCapacity == null || queueCapacity <= 0) {
+                queueCapacity = 50;
             }
         }
     }

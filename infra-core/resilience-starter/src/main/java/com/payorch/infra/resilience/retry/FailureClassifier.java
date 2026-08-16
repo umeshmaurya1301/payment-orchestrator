@@ -6,6 +6,7 @@ import java.net.NoRouteToHostException;
 import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 
+import com.payorch.infra.resilience.bulkhead.BulkheadFullException;
 import com.payorch.infra.resilience.deadline.DeadlineExceededException;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
@@ -53,6 +54,15 @@ public class FailureClassifier {
             return deadline.wasStarted()
                     ? FailureClass.RETRY_WITH_SAME_REFERENCE
                     : FailureClass.SAFE;
+        }
+
+        if (failure instanceof BulkheadFullException) {
+            // Nothing was sent, so retrying could not duplicate anything - and
+            // it is still the wrong thing to do. A bulkhead rejection means the
+            // system is already at its concurrency limit; retrying adds load to
+            // a saturated system and takes a permit a fresh request could have
+            // used. Shedding load means shedding it.
+            return FailureClass.NONE;
         }
 
         // Never connected. The provider has not seen a byte, so nothing it

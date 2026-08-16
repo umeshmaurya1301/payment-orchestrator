@@ -4,6 +4,7 @@ import com.payorch.connector.provider.MockPspAdapter;
 import com.payorch.infra.resilience.deadline.DeadlineExecutor;
 import com.payorch.infra.resilience.deadline.DeadlinePropagation;
 import com.payorch.infra.resilience.breaker.CircuitBreakers;
+import com.payorch.infra.resilience.bulkhead.Bulkhead;
 import com.payorch.infra.resilience.retry.Retrier;
 import com.payorch.connector.provider.PspProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -26,9 +27,10 @@ public class ConnectorConfiguration {
                                          DeadlinePropagation propagation,
                                          DeadlineExecutor deadlines,
                                          Retrier retrier,
-                                         CircuitBreakers breakers) {
+                                         CircuitBreakers breakers,
+                                         Bulkhead bulkhead) {
         return new MockPspAdapter(
                 properties.require(MockPspAdapter.PSP_ID).baseUrl(),
-                propagation, deadlines, retrier, breakers);
+                propagation, deadlines, retrier, breakers, bulkhead);
     }
 }

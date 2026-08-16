@@ -254,6 +254,10 @@ services:
       BREAKER_WINDOW_S: ${BREAKER_WINDOW_S:-30}
       BREAKER_MIN_CALLS: ${BREAKER_MIN_CALLS:-20}
       BREAKER_OPEN_S: ${BREAKER_OPEN_S:-10}
+      BULKHEAD_KIND: ${BULKHEAD_KIND:-semaphore}
+      BULKHEAD_LIMIT: ${BULKHEAD_LIMIT:-20}
+      BULKHEAD_WAIT_MS: ${BULKHEAD_WAIT_MS:-250}
+      BULKHEAD_QUEUE: ${BULKHEAD_QUEUE:-50}
       # Overridable so an experiment can run the same build with and without an
       # effective bound - set it to an hour and the deadline is the "before".
       # One variable between the two runs is the whole point.

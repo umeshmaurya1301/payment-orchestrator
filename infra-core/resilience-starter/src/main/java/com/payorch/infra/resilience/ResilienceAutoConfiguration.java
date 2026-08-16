@@ -1,6 +1,10 @@
 package com.payorch.infra.resilience;
 
 import com.payorch.infra.resilience.breaker.CircuitBreakerMetrics;
+import com.payorch.infra.resilience.bulkhead.Bulkhead;
+import com.payorch.infra.resilience.bulkhead.BulkheadMetrics;
+import com.payorch.infra.resilience.bulkhead.SemaphoreBulkhead;
+import com.payorch.infra.resilience.bulkhead.ThreadPoolBulkhead;
 import com.payorch.infra.resilience.breaker.CircuitBreakers;
 import com.payorch.infra.resilience.deadline.DeadlineExecutor;
 import com.payorch.infra.resilience.deadline.DeadlineFilter;
@@ -69,6 +73,11 @@ public class ResilienceAutoConfiguration {
                             + "{}s open then {} half-open probes",
                     b.failureRateThreshold(), b.windowSeconds(), b.minimumCalls(),
                     b.waitInOpenSeconds(), b.halfOpenPermits());
+
+            ResilienceProperties.Bulkhead bh = properties.bulkhead();
+            log.info("bulkhead: {}, {} concurrent calls per provider, wait up to {}ms{}",
+                    bh.kind(), bh.maxConcurrentCalls(), bh.maxWaitMs(),
+                    "threadpool".equals(bh.kind()) ? ", queue " + bh.queueCapacity() : "");
         };
     }
 
@@ -113,6 +122,13 @@ public class ResilienceAutoConfiguration {
         return new CircuitBreakerMetrics(breakers);
     }
 
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnClass(io.micrometer.core.instrument.MeterRegistry.class)
+    public BulkheadMetrics bulkheadMetrics(Bulkhead bulkhead) {
+        return new BulkheadMetrics(bulkhead);
+    }
+
     /**
      * Breaker state changes are republished as Spring application events, so
      * phase 5's routing can consume them by declaring a listener rather than by
@@ -133,6 +149,29 @@ public class ResilienceAutoConfiguration {
                         java.time.Duration.ofSeconds(b.waitInOpenSeconds()),
                         b.halfOpenPermits()),
                 events::publishEvent);
+    }
+
+    /**
+     * Semaphore by default, and 3d's measurements say it should stay that way -
+     * same admission outcome as the thread pool, a 3.7x better tail, 107 MiB
+     * less upstream heap and 20 fewer platform threads. {@code threadpool}
+     * remains selectable because the argument for a default is worth more when
+     * the alternative can still be run.
+     *
+     * <p>Destroy-method inference is left on deliberately: it resolves to
+     * {@link ThreadPoolBulkhead#shutdown()} for the pooled implementation, and
+     * to nothing at all for the semaphore, which has no threads to release.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public Bulkhead bulkhead(ResilienceProperties properties) {
+        ResilienceProperties.Bulkhead b = properties.bulkhead();
+        long minSlice = properties.deadline().minSliceMs();
+        if ("threadpool".equalsIgnoreCase(b.kind())) {
+            return new ThreadPoolBulkhead(
+                    b.maxConcurrentCalls(), b.queueCapacity(), b.maxWaitMs(), minSlice);
+        }
+        return new SemaphoreBulkhead(b.maxConcurrentCalls(), b.maxWaitMs(), minSlice);
     }
 
     @Bean

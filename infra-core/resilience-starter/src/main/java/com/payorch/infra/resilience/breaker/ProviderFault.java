@@ -7,6 +7,7 @@ import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.util.function.Predicate;
 
+import com.payorch.infra.resilience.bulkhead.BulkheadFullException;
 import com.payorch.infra.resilience.deadline.DeadlineExceededException;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
@@ -77,6 +78,15 @@ public final class ProviderFault implements Predicate<Throwable> {
             // Started and abandoned: the provider was too slow. Never started:
             // we were.
             return deadline.wasStarted();
+        }
+        if (failure instanceof BulkheadFullException) {
+            // Our own admission control refused to send. Explicit rather than
+            // left to the default, because the consequence of getting it wrong
+            // is severe and silent: the breaker would open on a healthy provider
+            // whenever WE were saturated, removing the working dependency at
+            // exactly the wrong moment - and it would look like the provider's
+            // fault in every dashboard.
+            return false;
         }
         if (failure instanceof ConnectException
                 || failure instanceof UnknownHostException

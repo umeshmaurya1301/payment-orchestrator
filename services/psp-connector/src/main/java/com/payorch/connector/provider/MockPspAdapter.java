@@ -14,6 +14,7 @@ import com.payorch.infra.resilience.ratelimit.RateLimitedException;
 import com.payorch.infra.resilience.ratelimit.RateLimiter;
 import com.payorch.infra.resilience.retry.Retrier;
 import com.payorch.infra.observability.ProviderLatency;
+import com.payorch.infra.observability.ProviderOutcomes;
 import com.payorch.infra.observability.Seams;
 import io.micrometer.observation.ObservationRegistry;
 import com.payorch.infra.tokenization.DetokenizedCard;
@@ -75,6 +76,7 @@ public class MockPspAdapter implements PspAdapter {
     private final RateLimiter egressLimiter;
     private final ObservationRegistry observations;
     private final ProviderLatency providerLatency;
+    private final ProviderOutcomes providerOutcomes;
     private final Seams seams;
 
     /**
@@ -101,6 +103,7 @@ public class MockPspAdapter implements PspAdapter {
                           RateLimiter egressLimiter,
                           ObservationRegistry observations,
                           ProviderLatency providerLatency,
+                          ProviderOutcomes providerOutcomes,
                           Seams seams) {
         this.pspId = pspId;
         this.configs = configs;
@@ -112,6 +115,7 @@ public class MockPspAdapter implements PspAdapter {
         this.egressLimiter = egressLimiter;
         this.observations = observations;
         this.providerLatency = providerLatency;
+        this.providerOutcomes = providerOutcomes;
         this.seams = seams;
     }
 
@@ -208,12 +212,20 @@ public class MockPspAdapter implements PspAdapter {
      */
     private ProviderResponse measured(RestClient client, ProviderRequest request) throws Exception {
         long startedAt = System.nanoTime();
+        boolean answered = false;
         try {
-            return seams.inSpan(Seams.PROVIDER_CALL, () -> send(client, request),
-                    "psp", pspId, "operation", "authorize");
+            ProviderResponse response = seams.inSpan(Seams.PROVIDER_CALL,
+                    () -> send(client, request), "psp", pspId, "operation", "authorize");
+            answered = true;
+            return response;
         } finally {
             providerLatency.record(pspId, "authorize",
                     (System.nanoTime() - startedAt) / 1_000_000);
+            // Phase 5's fourth signal. `answered`, not `approved` - a DECLINE is
+            // the provider working correctly, and scoring it as ill health would
+            // route traffic away from whichever provider is best at refusing
+            // stolen cards. Only a throw means the provider itself failed.
+            providerOutcomes.record(pspId, "authorize", answered);
         }
     }
 

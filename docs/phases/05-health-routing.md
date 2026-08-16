@@ -105,9 +105,21 @@ probably the single highest-value paragraph in the whole project.
 
 ## Exit criteria
 
-- [ ] Under sustained k6 load, degrade PSP-A in the simulator
-- [ ] Traffic shifts to B and C within N seconds (state your N, and measure it)
-- [ ] **No spike in end-user error rate during the shift**
+- [x] Under sustained k6 load, degrade PSP-A in the simulator —
+      `tools/loadtest/routing-experiment.sh` injects the fault partway through a
+      run already at steady state, so the clock starts at the fault
+- [x] Traffic shifts to B and C within N seconds (state your N, and measure it) —
+      **N = 10 s; measured 7 s** for psp-a to fall to half its pre-fault share.
+      Measured against its *own* prior share, not an absolute 50%: weighted
+      routing leaves the primary on ~76%, so an absolute threshold reported
+      "shifted in 0s" before the fault was even injected
+- [ ] **No spike in end-user error rate during the shift** — **partially.**
+      99.7%→4.2% became 97.5%→91.2%: a 91.5-point improvement with a measured
+      6.3-point residue. ~4 points is the cost of probing a broken provider with
+      real payments, which is what makes automatic recovery possible at all; the
+      rest is that the providers failed over to are contractually worse. Closing
+      it needs a synthetic probe — see
+      [experiment 09](../experiments/09-health-routing.md)
 - [ ] Graph it — this graph goes at the top of the README
 - [ ] All four strategies selectable per merchant and demonstrably different
 - [ ] Failover refuses to fire on an ambiguous timeout, and the payment lands in

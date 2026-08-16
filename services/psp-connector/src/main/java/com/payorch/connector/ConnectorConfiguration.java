@@ -3,6 +3,8 @@ package com.payorch.connector;
 import javax.sql.DataSource;
 
 import com.payorch.connector.config.ProviderConfigEndpoint;
+import com.payorch.connector.health.ProviderHealthEndpoint;
+import com.payorch.connector.health.ProviderHealthService;
 import com.payorch.connector.config.ProviderConfigMetrics;
 import com.payorch.connector.config.ProviderConfigStore;
 import com.payorch.connector.provider.MockPspAdapter;
@@ -15,6 +17,7 @@ import com.payorch.infra.resilience.bulkhead.Bulkhead;
 import com.payorch.infra.resilience.ratelimit.RateLimiters;
 import com.payorch.infra.resilience.retry.Retrier;
 import com.payorch.infra.observability.ProviderLatency;
+import com.payorch.infra.observability.ProviderOutcomes;
 import com.payorch.infra.observability.Seams;
 import io.micrometer.observation.ObservationRegistry;
 import com.zaxxer.hikari.HikariDataSource;
@@ -97,6 +100,24 @@ public class ConnectorConfiguration {
         return new ProviderConfigEndpoint(store);
     }
 
+    /**
+     * Phase 5. Scored here because this is the only service holding all four
+     * signals - see {@link ProviderHealthService}.
+     */
+    @Bean
+    public ProviderHealthService providerHealthService(ProviderConfigStore configs,
+                                                       ProviderOutcomes outcomes,
+                                                       ProviderLatency latency,
+                                                       CircuitBreakers breakers,
+                                                       Bulkhead bulkhead) {
+        return new ProviderHealthService(configs, outcomes, latency, breakers, bulkhead);
+    }
+
+    @Bean
+    public ProviderHealthEndpoint providerHealthEndpoint(ProviderHealthService health) {
+        return new ProviderHealthEndpoint(health);
+    }
+
     @Bean
     public ProviderConfigMetrics providerConfigMetrics(ProviderConfigStore store) {
         return new ProviderConfigMetrics(store);
@@ -113,10 +134,11 @@ public class ConnectorConfiguration {
                                                  RateLimiters rateLimiters,
                                                  ObservationRegistry observations,
                                                  ProviderLatency providerLatency,
+                                                 ProviderOutcomes providerOutcomes,
                                                  Seams seams) {
         return new PspAdapterRegistry(configs, declaredAdapters, pspId -> adapterFor(
                 pspId, configs, propagation, deadlines, retrier, breakers, bulkhead, rateLimiters,
-                observations, providerLatency, seams));
+                observations, providerLatency, providerOutcomes, seams));
     }
 
     /**
@@ -136,8 +158,10 @@ public class ConnectorConfiguration {
                                          RateLimiters rateLimiters,
                                          ObservationRegistry observations,
                                          ProviderLatency providerLatency,
+                                         ProviderOutcomes providerOutcomes,
                                          Seams seams) {
         return new MockPspAdapter(pspId, configs, propagation, deadlines, retrier,
-                breakers, bulkhead, rateLimiters.egress(), observations, providerLatency, seams);
+                breakers, bulkhead, rateLimiters.egress(), observations, providerLatency,
+                providerOutcomes, seams);
     }
 }

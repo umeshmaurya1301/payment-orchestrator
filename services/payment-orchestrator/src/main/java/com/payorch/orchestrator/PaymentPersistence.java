@@ -1,5 +1,6 @@
 package com.payorch.orchestrator;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -11,6 +12,7 @@ import com.payorch.orchestrator.domain.PaymentRepository;
 import com.payorch.orchestrator.domain.PaymentState;
 import com.payorch.orchestrator.domain.PspConfig;
 import com.payorch.orchestrator.domain.PspConfigRepository;
+import com.payorch.orchestrator.routing.HealthWeightedRouter;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -36,15 +38,18 @@ public class PaymentPersistence {
     private final PaymentAttemptRepository attempts;
     private final PspConfigRepository pspConfigs;
     private final PaymentOutcomeMetrics outcomes;
+    private final HealthWeightedRouter router;
 
     public PaymentPersistence(PaymentRepository payments,
                               PaymentAttemptRepository attempts,
                               PspConfigRepository pspConfigs,
-                              PaymentOutcomeMetrics outcomes) {
+                              PaymentOutcomeMetrics outcomes,
+                              HealthWeightedRouter router) {
         this.payments = payments;
         this.attempts = attempts;
         this.pspConfigs = pspConfigs;
         this.outcomes = outcomes;
+        this.router = router;
     }
 
     @Transactional
@@ -63,9 +68,13 @@ public class PaymentPersistence {
      * Routes the payment and opens an attempt, in one transaction, before any
      * network call happens.
      *
-     * <p>Routing lives here in phase 1 because there is nothing to route on but
-     * a priority column. Phase 5 moves the decision into {@code psp-router},
-     * where it is made from observed provider health.
+     * <p>Routing lived here in phase 1 because there was nothing to route on but
+     * a priority column. Phase 5 keeps the decision here and changes what it is
+     * made from: {@link HealthWeightedRouter} weights the candidates by health
+     * observed in {@code psp-connector}, which is the only service that can see
+     * it. The candidate list - enabled, supports this currency, priority order -
+     * is unchanged, and is still exactly what the router falls back to when it
+     * has no health view.
      *
      * <p>Returns empty rather than throwing when nothing can be routed to, and
      * that is not stylistic. Throwing from inside a transactional method rolls
@@ -79,9 +88,15 @@ public class PaymentPersistence {
     public Optional<PaymentAttempt> beginAuthorization(UUID paymentId) {
         Payment payment = require(paymentId);
 
-        Optional<PspConfig> route = pspConfigs.findByEnabledTrueOrderByPriorityAsc().stream()
+        // Phase 5. The candidate list is still "enabled, supports this currency,
+        // in priority order" - what changed is that the first one no longer
+        // automatically wins. The router weights them by observed health, and
+        // falls back to this exact order when it has no health view.
+        List<PspConfig> candidates = pspConfigs.findByEnabledTrueOrderByPriorityAsc().stream()
                 .filter(config -> config.supports(payment.getCurrency()))
-                .findFirst();
+                .toList();
+
+        Optional<PspConfig> route = router.choose(candidates);
         if (route.isEmpty()) {
             return Optional.empty();
         }

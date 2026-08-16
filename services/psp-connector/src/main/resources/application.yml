@@ -139,7 +139,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,loggers,metrics,prometheus,chaosbeans,chaosseams,pspconfig
+        include: health,info,loggers,metrics,prometheus,chaosbeans,chaosseams,pspconfig,providerhealth
   metrics:
     tags:
       # Every series carries the service that emitted it, so one scrape file can

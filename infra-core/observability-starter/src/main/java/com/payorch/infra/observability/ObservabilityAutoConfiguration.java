@@ -88,6 +88,27 @@ public class ObservabilityAutoConfiguration {
     }
 
     /**
+     * The same window as the latency ring, deliberately. Phase 5 scores a
+     * provider from both numbers at once, and reading a success rate over 60 s
+     * against a P99 over 10 s would produce a score describing two different
+     * moments - which is the kind of error that shows up as routing that
+     * oscillates for no visible reason.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public RollingOutcomes rollingOutcomes(ObservabilityProperties properties) {
+        return new RollingOutcomes(properties.rollingWindowSeconds());
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnClass(MeterRegistry.class)
+    public ProviderOutcomes providerOutcomes(RollingOutcomes rollingOutcomes,
+                                             MeterRegistry registry) {
+        return new ProviderOutcomes(rollingOutcomes, registry);
+    }
+
+    /**
      * {@code ObjectProvider}, because a service can be traced without this
      * starter having produced the {@code Tracer} - and because a service with
      * tracing disabled should lose its spans, not fail to start. A missing

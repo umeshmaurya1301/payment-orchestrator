@@ -77,7 +77,7 @@ class ProviderHealthTest {
     void halfOpenIsCapped() {
         ProviderHealth h = score(1.0, 100, 2, 1.0, 500);
 
-        assertThat(h.score()).isLessThanOrEqualTo(30);
+        assertThat(h.score()).isLessThanOrEqualTo(12);
         assertThat(h.routable()).isTrue();      // eligible for a trickle, not for everything
         assertThat(h.reason()).contains("half-open");
     }

@@ -137,8 +137,33 @@ public record ProviderHealth(
      * strength of those probes is the thundering herd the phase plan warns
      * about, so its score is capped until the breaker closes and the ordinary
      * signals have real evidence behind them again.
+     *
+     * <p><strong>12, tuned against a measured oscillation.</strong> The first
+     * value was 30, and a 90-second fault produced this, sampled every 2 s as a
+     * share of attempts:
+     *
+     * <pre>
+     *   t+8s    psp-a  0.0%   breaker opened
+     *   t+17s   psp-a 14.1%   <- readmitted
+     *   t+29s   psp-a 16.7%   <- again
+     *   t+41s   psp-a  9.4%   <- again
+     *   t+53s   psp-a 12.9%   <- again
+     * </pre>
+     *
+     * <p>A clean ~12 s cycle, matching the breaker's own 10 s
+     * {@code waitInOpenSeconds}. Every time it half-opened, a score of 30 bought
+     * roughly a sixth of the traffic - while the breaker was only willing to
+     * admit five probe calls. Everything past the fifth was refused instantly and
+     * became a failed payment, so each probe cycle cost real money to re-learn
+     * something the previous cycle had already established.
+     *
+     * <p>12 sits just above {@link #UNROUTABLE}, so a recovering provider still
+     * receives a trickle - which it must, because routing is where the breaker's
+     * probes come from, and a provider starved of all traffic can never prove it
+     * is back. That is the stale-health trap and it is the reason this is a cap
+     * rather than a gate.
      */
-    private static final int HALF_OPEN_CAP = 30;
+    private static final int HALF_OPEN_CAP = 12;
 
     private static String dominant(double availability, double latency, double capacity, int breakerState) {
         if (breakerState == 2) {

@@ -8,8 +8,13 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.scheduling.annotation.EnableScheduling;
+import com.payorch.orchestrator.routing.HealthWeightedRouter;
+import com.payorch.orchestrator.routing.ProviderHealthStore;
+import com.payorch.orchestrator.routing.RoutingMetrics;
 
 @Configuration
+@EnableScheduling
 public class OrchestratorConfiguration {
 
     @Bean
@@ -28,5 +33,26 @@ public class OrchestratorConfiguration {
     @Bean
     public PaymentOutcomeMetrics paymentOutcomeMetrics(MeterRegistry registry) {
         return new PaymentOutcomeMetrics(registry);
+    }
+
+    /**
+     * Phase 5. Polls psp-connector's health view rather than asking per payment -
+     * see {@link ProviderHealthStore} for why a synchronous hop here would fail
+     * exactly when it is needed.
+     */
+    @Bean
+    public ProviderHealthStore providerHealthStore(
+            @Value("${payorch.connector.base-url}") String connectorBaseUrl) {
+        return new ProviderHealthStore(connectorBaseUrl);
+    }
+
+    @Bean
+    public HealthWeightedRouter healthWeightedRouter(ProviderHealthStore health) {
+        return new HealthWeightedRouter(health);
+    }
+
+    @Bean
+    public RoutingMetrics routingMetrics(ProviderHealthStore health) {
+        return new RoutingMetrics(health);
     }
 }

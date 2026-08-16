@@ -89,20 +89,44 @@ def report(label, totals):
     print("    %-10s %6.1f%%   <- what the caller saw" % ("OVERALL", 100 * ok / attempts))
 
 
-def shift_time(rows, degraded_at, primary):
-    """Seconds from the fault until the primary carries under half of new attempts."""
-    if degraded_at is None:
+def share_of(d, primary):
+    total = sum(d.values())
+    if total == 0:
         return None
+    return sum(v for (p, _), v in d.items() if p == primary) / total
+
+
+def shift_time(rows, degraded_at, primary):
+    """Seconds from the fault until the primary carries HALF ITS FORMER SHARE.
+
+    Measured relative to what the primary was carrying before the fault, not
+    against a fixed 50%. The first version used an absolute threshold and
+    reported "shifted in 0s" for the health-weighted arm - correctly, and
+    uselessly: weighted routing had the primary on 39% before anything went
+    wrong, so it was already under 50% and the test passed before the fault was
+    even injected. A threshold that a passing system satisfies at rest measures
+    nothing.
+    """
+    if degraded_at is None:
+        return None, None
+
+    before = [share_of(d, primary) for ts, d in rows
+              if ts < degraded_at and sum(d.values()) >= 5]
+    before = [s for s in before if s is not None]
+    if not before:
+        return None, None
+    baseline = sum(before) / len(before)
+    target = baseline / 2
+
     for ts, d in rows:
         if ts < degraded_at:
             continue
-        total = sum(d.values())
-        if total < 5:          # too few attempts in this interval to judge
+        if sum(d.values()) < 5:
             continue
-        share = sum(v for (p, _), v in d.items() if p == primary) / total
-        if share < 0.5:
-            return ts - degraded_at
-    return None
+        share = share_of(d, primary)
+        if share is not None and share <= target:
+            return ts - degraded_at, baseline
+    return None, baseline
 
 
 def main():
@@ -121,13 +145,16 @@ def main():
     report("AFTER recovery", window(rows, recovered_at, None))
 
     print()
-    shifted = shift_time(rows, degraded_at, primary)
+    shifted, baseline = shift_time(rows, degraded_at, primary)
+    if baseline is not None:
+        print("  %s carried %.1f%% of attempts before the fault" % (primary, 100 * baseline))
     if shifted is None:
-        print("  TRAFFIC NEVER SHIFTED - %s carried the majority throughout." % primary)
+        print("  TRAFFIC NEVER SHIFTED - %s never fell to half of that." % primary)
         print("  This is the baseline that phase 5 exists to change; if this run was")
         print("  supposed to be health-routed, it did not route.")
     else:
-        print("  traffic shifted off %s in %ds" % (primary, shifted))
+        print("  traffic halved off %s in %ds (relative to its own pre-fault share)"
+              % (primary, shifted))
 
 
 if __name__ == "__main__":

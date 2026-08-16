@@ -53,6 +53,20 @@ public class ObservabilityAutoConfiguration {
                 properties.rollingWindowSeconds(), RollingLatency.BUCKET_UPPER_BOUNDS_MS.length);
     }
 
+    /**
+     * Only when the appender is on the classpath and an SDK exists. A service
+     * with neither logs to the console exactly as it did before phase 4.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnClass({io.opentelemetry.api.OpenTelemetry.class,
+            io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender.class})
+    public LogbackOtelInstaller logbackOtelInstaller(
+            ObjectProvider<io.opentelemetry.api.OpenTelemetry> openTelemetry) {
+        io.opentelemetry.api.OpenTelemetry sdk = openTelemetry.getIfAvailable();
+        return sdk == null ? null : new LogbackOtelInstaller(sdk);
+    }
+
     @Bean
     @ConditionalOnMissingBean
     public RollingLatency rollingLatency(ObservabilityProperties properties) {

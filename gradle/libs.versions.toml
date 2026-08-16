@@ -29,6 +29,22 @@ uuidCreator = "6.1.1"        # UUIDv7 generation (phase 1)
 # even before the first import.
 resilience4j = "2.4.0"       # resilience4j-circuitbreaker (phase 3c)
 
+# Phase 4. The ONLY version here not managed by a BOM, and the one dependency
+# in this project pinned to an -alpha.
+#
+# Boot 4 builds the OpenTelemetry SdkLoggerProvider and the OTLP log exporter,
+# and ships no Logback bridge between them - so logs are exportable and nothing
+# exports them. The bridge is OTel's own appender, which lives in the
+# instrumentation repo, whose artifacts the Boot BOM does not manage and whose
+# every release is -alpha.
+#
+# Taken deliberately: without it, a log line and its trace are correlated only
+# by grepping a traceId out of container output, and the phase plan calls being
+# one click apart the highest-value item in the phase. The failure mode if this
+# ever drifts from opentelemetry 1.62.0 is a NoSuchMethodError at startup -
+# loud, immediate, and impossible to mistake for working.
+otelInstrumentation = "2.16.0-alpha"
+
 [libraries]
 # --- platform -------------------------------------------------------------
 spring-boot-bom = { module = "org.springframework.boot:spring-boot-dependencies", version.ref = "springBoot" }
@@ -99,6 +115,7 @@ micrometer-observation = { module = "io.micrometer:micrometer-observation" }
 # carries MDC through the same mechanism, so a trace-only implementation would
 # have produced correlated traces attached to uncorrelated logs.
 micrometer-context-propagation = { module = "io.micrometer:context-propagation" }
+opentelemetry-logback-appender = { module = "io.opentelemetry.instrumentation:opentelemetry-logback-appender-1.0", version.ref = "otelInstrumentation" }
 
 # --- identifiers ----------------------------------------------------------
 uuid-creator = { module = "com.github.f4b6a3:uuid-creator", version.ref = "uuidCreator" }

@@ -16,9 +16,11 @@ dependencies {
     compileOnly(libs.micrometer.observation)
     compileOnly(libs.micrometer.core)
     compileOnly(libs.spring.boot.starter.web)
+    compileOnly(libs.opentelemetry.logback.appender)
 
     testImplementation(libs.micrometer.tracing)
     testImplementation(libs.micrometer.observation)
     testImplementation(libs.micrometer.core)
     testImplementation(libs.spring.boot.starter.web)
+    testImplementation(libs.opentelemetry.logback.appender)
 }

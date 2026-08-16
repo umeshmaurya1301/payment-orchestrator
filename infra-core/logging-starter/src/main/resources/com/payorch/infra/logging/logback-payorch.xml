@@ -36,11 +36,40 @@
         </encoder>
     </appender>
 
+    <!--
+      Phase 4: the same events, shipped to the collector.
+
+      This is what makes a log line and its trace one click apart in SigNoz
+      rather than a traceId you grep for. The appender takes the ACTIVE trace
+      context from the emitting thread, which is why 4a's work on carrying that
+      context across DeadlineExecutor's handoff had to come first - without it
+      these lines would arrive attached to the wrong trace, or to none.
+
+      It does NOT replace the JSON console appender above, and must not. The
+      container logs are what `docker compose logs` shows during an experiment
+      and what the PAN-leak test scans; trading them for an export that needs a
+      browser to read would be a downgrade for every workflow this project has.
+
+      In a service with no OpenTelemetry SDK installed - psp-router,
+      ledger-notifier - this drops what it is given and costs nothing.
+    -->
+    <appender name="OTEL"
+              class="io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender">
+        <!-- MDC carries merchantId, paymentId, correlationId and the rest of
+             LogFields. Those are the attributes worth filtering a log search
+             by, and dropping them here would leave SigNoz with the message and
+             nothing to narrow it down with. -->
+        <captureMdcAttributes>*</captureMdcAttributes>
+        <captureKeyValuePairAttributes>true</captureKeyValuePairAttributes>
+        <captureLoggerContext>true</captureLoggerContext>
+    </appender>
+
     <!-- LOG_LEVEL is overridable per container, and at runtime via
          /actuator/loggers - phase 4 needs DEBUG on one service for ninety
          seconds mid-chaos-run without a restart. -->
     <root level="${LOG_LEVEL:-INFO}">
         <appender-ref ref="JSON"/>
+        <appender-ref ref="OTEL"/>
     </root>
 
 </included>

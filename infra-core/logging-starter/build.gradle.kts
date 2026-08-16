@@ -11,4 +11,16 @@ dependencies {
     // we only need it to compile and to test.
     compileOnly(libs.logback.classic)
     testImplementation(libs.logback.classic)
+
+    // Phase 4. The Logback -> OpenTelemetry bridge, so log lines reach SigNoz
+    // attached to the trace that produced them.
+    //
+    // `api` and in the LOGGING starter rather than the observability one,
+    // because logback-payorch.xml is shared by all six services and names this
+    // appender. A service without it would log a Logback error about a missing
+    // class on every start - noise that teaches people to ignore startup
+    // errors. With the class present but no OpenTelemetry SDK installed (which
+    // is what psp-router and ledger-notifier have), the appender simply drops
+    // what it is given.
+    api(libs.opentelemetry.logback.appender)
 }

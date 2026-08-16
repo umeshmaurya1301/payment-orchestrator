@@ -20,16 +20,19 @@
 # regenerated. Upgrading is a version bump and a re-forge, not a merge.
 #
 # ---------------------------------------------------------------------------
-# THERE IS ONE MANUAL STEP AND IT CANNOT BE SCRIPTED.
+# THE FIRST-RUN ACCOUNT
 #
-# On first run, open http://localhost:3301 and create the admin account.
+# SigNoz reports setupCompleted:false until an admin account exists, and until
+# then it has no organisation - so the collector's opamp registration fails with
+# `failed to find or create agent` and, this is the part that looks like a bug,
+# the collector never opens port 4318 at all. Every service then reports
+# "connection refused" to the ingester, which reads like a Docker networking
+# fault and is a missing user record.
 #
-# Until that account exists SigNoz has no organisation, the collector's opamp
-# registration fails with `failed to find or create agent`, and - this is the
-# part that looks like a bug - the collector never opens port 4318 at all.
-# Every service then reports "connection refused" to the ingester, which reads
-# like a networking problem and is actually a missing user record.
-# `status` below checks for it explicitly so nobody has to work that out twice.
+# The UI presents this as a signup form, so it looks like a manual step. It is
+        curl -s -X POST "${UI}/api/v1/register" \n            -H "Content-Type: application/json" \n            -d "{\"name\":\"payorch-admin\",\"orgName\":\"payorch\",\"email\":\"${ADMIN_EMAIL}\",\"password\":\"${ADMIN_PASSWORD}\",\"token\":\"\",\"sourceUrl\":\"\"}" >/dev/null 2>&1
+# credentials are local development values, in the open, like the vault key and
+# the merchant API keys - phase 9c is where secrets stop being literals.
 # ---------------------------------------------------------------------------
 
 set -uo pipefail
@@ -39,6 +42,11 @@ DEPLOY="${SIGNOZ_DEPLOY_DIR:-$(cd "${ROOT}/.." && pwd)/signoz-deploy}"
 OVERRIDE="${ROOT}/docker/signoz/compose.override.yaml"
 CASTING="${ROOT}/docker/signoz/casting.yaml"
 UI="http://localhost:3301"
+
+# Local development credentials, public by design. Change them here and in your
+# password manager if this ever leaves a laptop, which it should not.
+ADMIN_EMAIL="${SIGNOZ_ADMIN_EMAIL:-admin@payorch.local}"
+ADMIN_PASSWORD="${SIGNOZ_ADMIN_PASSWORD:-Payorch!Local1}"
 
 export PATH="${HOME}/.local/bin:${PATH}"
 
@@ -68,11 +76,23 @@ up)
     echo "=== starting SigNoz ==="
     signoz_compose up -d || exit 2
 
+    echo "=== waiting for the UI ==="
+    for _ in $(seq 1 60); do
+        [[ -n "$(curl -s --max-time 5 "${UI}/api/v1/version" 2>/dev/null)" ]] && break
+        sleep 5
+    done
+
+    # Idempotent: a second call against an initialised SigNoz is refused, which
+    # is why the result is reported rather than checked for success.
+    if curl -s --max-time 10 "${UI}/api/v1/version" 2>/dev/null | grep -q '"setupCompleted":false'; then
+        echo "=== creating the admin account ==="
+        curl -s -X POST "${UI}/api/v1/register" -H "Content-Type: application/json"             -d "{\"name\":\"payorch-admin\",\"orgName\":\"payorch\",\"email\":\"${ADMIN_EMAIL}\",\"password\":\"${ADMIN_PASSWORD}\",\"token\":\"\",\"sourceUrl\":\"\"}"             >/dev/null 2>&1
+    fi
+
     echo
-    echo "SigNoz is starting. ClickHouse takes about a minute to become healthy."
-    echo
-    echo "  NEXT, AND ONLY ONCE: open ${UI} and create the admin account."
-    echo "  Nothing will be ingested until that exists - see the note in this script."
+    echo "SigNoz is up:  ${UI}"
+    echo "  sign in as   ${ADMIN_EMAIL} / ${ADMIN_PASSWORD}"
+    echo "  then         $0 attach"
     ;;
 
 attach)
@@ -94,9 +114,9 @@ status)
     if [[ -z "${version}" ]]; then
         echo "  UI not answering on ${UI} yet"
     elif [[ "${version}" == *'"setupCompleted":false'* ]]; then
-        echo "  NOT SET UP. Open ${UI} and create the admin account."
-        echo "  Until then the collector cannot register and port 4318 stays closed,"
-        echo "  and every service will report 'connection refused' to the ingester."
+        echo "  NOT SET UP - run '$0 up' to create the admin account."
+        echo "  Until it exists the collector cannot register, port 4318 stays closed,"
+        echo "  and every service reports 'connection refused' to the ingester."
     else
         echo "  setup complete"
     fi
@@ -116,8 +136,8 @@ down)
     ;;
 
 destroy)
-    # -v, so the next `up` starts from nothing. Note this also deletes the
-    # admin account, and the manual setup step comes back with it.
+    # -v, so the next `up` starts from nothing - including the admin account,
+    # which `up` then recreates.
     signoz_compose down -v
     ;;
 

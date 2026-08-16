@@ -52,8 +52,33 @@ public class ObservabilityDefaults implements EnvironmentPostProcessor, Ordered 
 
         // Where the collector lives. Overridden per environment; absent in a
         // unit test, which is why the exporter must not be required to start.
-        defaults.put("management.otlp.tracing.endpoint",
-                "${OTLP_ENDPOINT:http://localhost:4318/v1/traces}");
+        //
+        // NOTE THE PROPERTY NAMES. Boot 4 moved these:
+        //
+        //   Boot 3   management.otlp.tracing.endpoint
+        //   Boot 4   management.opentelemetry.tracing.export.otlp.endpoint
+        //
+        // The Boot 3 name still appears in the metadata as a deprecated alias,
+        // which is worse than if it had been deleted: setting it produces no
+        // warning, no error, and no traces. The whole pipeline came up healthy -
+        // collector reachable, no export failures logged, services happily
+        // running - and ClickHouse held zero spans, because nothing was ever
+        // asked to export anywhere.
+        String endpoint = "${OTLP_ENDPOINT:http://localhost:4318}";
+        defaults.put("management.opentelemetry.tracing.export.otlp.endpoint", endpoint + "/v1/traces");
+
+        // Logs over OTLP as well, which Boot 4 can do natively and Boot 3 could
+        // not. This is what makes a log line and its trace one click apart
+        // inside SigNoz rather than two systems correlated by eye - the phase
+        // plan calls it the highest-value item, and it turns out to be a
+        // property rather than a Logback appender.
+        //
+        // The JSON console output stays exactly as it is. Container logs are
+        // what the PAN-leak test scans and what `docker compose logs` shows
+        // during an experiment; replacing them with an export nobody can read
+        // without a browser would be a downgrade for every workflow this
+        // project already has.
+        defaults.put("management.opentelemetry.logging.export.otlp.endpoint", endpoint + "/v1/logs");
 
         // The service name a trace is attributed to. Without it every span in
         // SigNoz says "unknown_service" and a four-service trace becomes one

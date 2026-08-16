@@ -31,7 +31,9 @@ x-otlp: &otlp
   # listens - and the traces went nowhere at all. That is the default in
   # ObservabilityDefaults precisely so a developer without SigNoz sees no
   # errors; this is where it gets pointed at something real.
-  OTLP_ENDPOINT: http://signoz-ingester:4318/v1/traces
+  # The base URL. ObservabilityDefaults appends /v1/traces and /v1/logs, so
+  # one variable configures both pipelines and they cannot drift apart.
+  OTLP_ENDPOINT: http://signoz-ingester:4318
 
 services:
 

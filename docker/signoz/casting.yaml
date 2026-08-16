@@ -1,0 +1,29 @@
+# SigNoz, as this project installs it. Phase 4.
+#
+# The phase plan called for SigNoz's docker-compose stack on an external
+# network. That stack no longer exists: SigNoz deprecated the compose manifests
+# in favour of `foundryctl`, an installer that GENERATES compose files. The
+# decision behind the plan survives the change intact, and is the reason this
+# file is four lines of intent rather than a copy of their stack:
+#
+#   * Nothing of SigNoz's is vendored here. foundryctl forges its compose files
+#     into a directory outside this repository, so upgrading SigNoz is
+#     `foundryctl forge` and not a manual reconciliation of somebody else's
+#     multi-container topology against ours.
+#   * What IS in this repo is only our side of the contract: the version we
+#     pin, and an override that moves their UI off a port we already use.
+#
+# Pinned, not `latest`. An observability stack that silently upgrades itself
+# is one whose dashboards can change between two runs of the same experiment,
+# and phase 4 exists so that phase 5 can route on numbers it trusts.
+apiVersion: v1alpha1
+kind: Installation
+metadata:
+  name: signoz
+spec:
+  deployment:
+    flavor: compose
+    mode: docker
+  signoz:
+    spec:
+      image: signoz/signoz:v0.137.1

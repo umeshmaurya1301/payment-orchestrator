@@ -1,0 +1,42 @@
+# Our side of the contract with SigNoz's generated stack.
+#
+# Applied as a second -f on top of the forged compose file, so nothing of
+# theirs is edited and `foundryctl forge` can regenerate freely.
+services:
+
+  # SigNoz's UI wants 8080. So does payments-edge, and payments-edge was here
+  # first - it is the merchant-facing API and its port appears in every k6
+  # profile, every curl in the README and six experiment writeups.
+  #
+  # Moving the observability tool is the cheap side of this collision: nothing
+  # depends on SigNoz's port except a browser bookmark.
+  # `!override`, not a plain list. Compose MERGES sequences across -f files, so
+  # a second `ports:` block adds a binding rather than replacing one - the base
+  # 8080:8080 survived alongside our 3301:8080 and the container failed to
+  # start with "port is already allocated", which reads like our own stack
+  # holding the port rather than like a merge rule.
+  signoz-signoz-0:
+    ports: !override
+      - "3301:8080"
+    environment:
+      # SigNoz logs this itself, at ERROR, on every start:
+      #
+      #   CRITICAL SECURITY ISSUE: No JWT secret key specified!
+      #
+      # It then generates one at random per boot, which means every session
+      # token is invalidated whenever the container restarts - and a tool you
+      # get logged out of every time you restart it is a tool you stop opening.
+      #
+      # A committed literal, like the vault key in docker-compose.yml and for
+      # the same reason: this is a local development stack and the value is
+      # public by design. Phase 9c is where secrets stop being literals.
+      SIGNOZ_TOKENIZER_JWT_SECRET: payorch-local-signoz-jwt-secret-not-for-production
+
+  # ClickHouse is the single largest consumer in the resource budget, and the
+  # phase-0 budget assumed ~450 MB per service across a dozen containers. Left
+  # unbounded it will take whatever Docker has, and the first symptom is the
+  # payment stack's containers being OOM-killed during an experiment - which
+  # would read as a finding about the payment system rather than about the
+  # thing watching it.
+  signoz-telemetrystore-clickhouse-0-0:
+    mem_limit: 4g

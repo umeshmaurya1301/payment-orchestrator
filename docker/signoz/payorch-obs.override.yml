@@ -1,0 +1,56 @@
+# Attaches the payment stack to SigNoz. Phase 4.
+#
+#     docker compose -f docker-compose.yml -f docker/signoz/payorch-obs.override.yml up -d
+#
+# Or, more simply, `tools/obs/signoz.sh attach`.
+#
+# WHY THIS IS AN OVERRIDE AND NOT PART OF docker-compose.yml
+#
+# `signoz-network` is external: it belongs to SigNoz's stack, and it does not
+# exist unless SigNoz is running. Putting the network into the main compose file
+# would make `docker compose up` fail outright on a machine that has never
+# installed SigNoz - which is every machine reproducing experiments 00 through
+# 06, and a 4 GB ClickHouse is not a prerequisite for running a payment.
+#
+# So the default stack is unchanged and unaware, exactly as it was for phases 1
+# to 3, and observability is one extra `-f`. That is also what the phase-0 note
+# in docker-compose.yml promised when it reserved the `obs` profile.
+#
+# The four services listed are the ones that carry a payment. The simulators are
+# deliberately absent: they stand in for other people's systems, and a trace
+# that showed our instrumentation inside a provider would be describing a
+# topology we do not have.
+
+networks:
+  signoz-network:
+    external: true
+
+x-otlp: &otlp
+  # The ingester's network alias, not localhost. Until now every service was
+  # exporting to http://localhost:4318 - inside its own container, where nothing
+  # listens - and the traces went nowhere at all. That is the default in
+  # ObservabilityDefaults precisely so a developer without SigNoz sees no
+  # errors; this is where it gets pointed at something real.
+  OTLP_ENDPOINT: http://signoz-ingester:4318/v1/traces
+
+services:
+
+  payments-edge:
+    environment:
+      <<: *otlp
+    networks: [payorch, signoz-network]
+
+  payment-orchestrator:
+    environment:
+      <<: *otlp
+    networks: [payorch, signoz-network]
+
+  psp-connector:
+    environment:
+      <<: *otlp
+    networks: [payorch, signoz-network]
+
+  mock-psp-simulator:
+    environment:
+      <<: *otlp
+    networks: [payorch, signoz-network]

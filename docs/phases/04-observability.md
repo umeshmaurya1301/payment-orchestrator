@@ -153,9 +153,22 @@ Wire it so it fails loudly. A leak test that is allowed to warn is decoration.
 
 ## Exit criteria
 
-- [ ] A single trace in SigNoz spanning edge → orchestrator → connector →
-      simulator with per-hop timing
-- [ ] That trace's log lines correlated to it by `traceId`
+- [x] A single trace in SigNoz spanning edge → orchestrator → connector →
+      simulator with per-hop timing — 19 spans across all four services in one
+      trace, including the hand-written `psp.authorize` seam span.
+      Auto-instrumentation alone did **not** produce this: the handoff in
+      `DeadlineExecutor` lost the thread-local context and split every payment
+      into four unrelated traces, which is why `ContextPropagatingCallDecorator`
+      exists. Verified in ClickHouse rather than by eye, because the Boot 3
+      OTLP property name survives in Boot 4 as a silent deprecated alias and a
+      pipeline that exports nowhere looks exactly like a healthy one
+- [x] That trace's log lines correlated to it by `traceId` — **25,953 of 26,645**
+      log lines carry a trace id (97.4%; the remainder are startup and shutdown,
+      which have no trace by definition), across 10,077 traces, with single
+      traces carrying correlated lines from all four services. Boot 4 ships no
+      Logback→OTel bridge — it builds the exporter and nothing feeds it — so
+      this needed `LogbackOtelInstaller` to hand the SDK to an appender that
+      starts before the Spring context exists
 - [x] Alerts firing during a chaos run and resolving after — `tools/obs/alert-drill.sh`
       drives three chaos phases and requires all four alerts to fire *and*
       resolve, pairing each resolution to a firing of the same instance by

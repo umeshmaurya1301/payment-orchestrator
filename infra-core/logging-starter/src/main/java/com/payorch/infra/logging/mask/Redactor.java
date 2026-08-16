@@ -24,32 +24,11 @@ import com.payorch.infra.logging.Masking;
  */
 public final class Redactor {
 
-    /**
-     * A run of 13-19 digits, optionally broken by single spaces or hyphens.
-     * Bounded repetition, so there is no catastrophic-backtracking risk on the
-     * long strings that show up in log output.
-     */
-    private static final Pattern CANDIDATE_PAN =
-            Pattern.compile("(?<!\\d)(?:\\d[ -]?){12,18}\\d(?!\\d)");
-
-    /** IFSC: 4 letters, a literal 0, then 6 alphanumerics. */
-    private static final Pattern IFSC =
-            Pattern.compile("(?<![A-Z0-9])[A-Z]{4}0[A-Z0-9]{6}(?![A-Z0-9])");
-
-    private static final Pattern EMAIL =
-            Pattern.compile("(?<![\\w.+-])[\\w.+-]{1,64}@[\\w-]{1,63}(?:\\.[\\w-]{1,63})+(?![\\w-])");
-
-    /**
-     * A UPI VPA. Distinguished from an email address by the absence of a dot in
-     * the handle - {@code user@okhdfcbank} rather than {@code user@bank.com}.
-     * Email is redacted first, so anything still matching here is a VPA.
-     */
-    private static final Pattern VPA =
-            Pattern.compile("(?<![\\w.+-])[\\w.-]{2,64}@[a-zA-Z]{2,32}(?![\\w.-])");
-
-    /** Indian mobile number, with or without a country code. */
-    private static final Pattern MOBILE_IN =
-            Pattern.compile("(?<!\\d)(?:\\+?91[\\s-]?)?[6-9]\\d{9}(?!\\d)");
+    // The patterns live in SensitivePatterns so that the phase-4 leak test
+    // scans for exactly what this class masks. Two copies would agree today and
+    // drift later, and the drift that matters is a scanner that recognises less
+    // than the redactor - it passes on data the redactor would have masked,
+    // which is the one case it exists to catch.
 
     private Redactor() {
     }
@@ -67,10 +46,10 @@ public final class Redactor {
             return input;
         }
         String out = redactPans(input);
-        out = IFSC.matcher(out).replaceAll(Masking.REDACTED);
-        out = replaceAll(EMAIL, out, MaskStrategy.EMAIL);
-        out = replaceAll(VPA, out, MaskStrategy.VPA);
-        out = replaceAll(MOBILE_IN, out, MaskStrategy.MOBILE);
+        out = SensitivePatterns.IFSC.matcher(out).replaceAll(Masking.REDACTED);
+        out = replaceAll(SensitivePatterns.EMAIL, out, MaskStrategy.EMAIL);
+        out = replaceAll(SensitivePatterns.VPA, out, MaskStrategy.VPA);
+        out = replaceAll(SensitivePatterns.MOBILE_IN, out, MaskStrategy.MOBILE);
         return out;
     }
 
@@ -81,7 +60,7 @@ public final class Redactor {
      * {@code appendTail}.
      */
     private static String redactPans(String input) {
-        Matcher matcher = CANDIDATE_PAN.matcher(input);
+        Matcher matcher = SensitivePatterns.CANDIDATE_PAN.matcher(input);
         StringBuilder out = null;
         while (matcher.find()) {
             String digits = Masking.digitsOf(matcher.group());

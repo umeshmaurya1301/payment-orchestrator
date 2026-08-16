@@ -112,7 +112,14 @@ Wire it so it fails loudly. A leak test that is allowed to warn is decoration.
       simulator with per-hop timing
 - [ ] That trace's log lines correlated to it by `traceId`
 - [ ] Alerts firing during a chaos run and resolving after
-- [ ] PAN-leak test green in CI, and demonstrably red when a PAN is injected
+- [x] PAN-leak test green in CI, and demonstrably red when a PAN is injected
+      — `./gradlew panLeakTest` drives the k6 smoke suite against a live stack,
+      scans the database dump and every container's output, and fails the build.
+      It self-tests first: the scanner is pointed at a known PAN, VPA and mobile
+      number and required to go red before it is trusted to report green.
+      Demonstrated red by sending a card number in `merchantReference`, which
+      found a **real leak** — merchant free text was persisted verbatim into
+      `payment` and into the idempotency replay cache. Now redacted at the edge.
 
 Test the failure path. A green leak test that cannot go red proves nothing.
 

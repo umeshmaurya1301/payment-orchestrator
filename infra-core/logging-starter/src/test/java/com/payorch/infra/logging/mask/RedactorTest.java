@@ -87,4 +87,73 @@ class RedactorTest {
         assertThat(redacted).contains("424242******4242");
         assertThat(redacted).contains("555555******4444");
     }
+
+    // ---------------------------------------------------------------------
+    // Over-matching. Every one of these was a real finding from the phase-4
+    // leak test running against a live stack, and every one was ALSO a
+    // production masking bug: whatever the scanner reported as a leak, the
+    // redactor was busy corrupting in the log line it came from.
+    //
+    // These are regression tests in both directions - the scanner must not cry
+    // wolf, and the redactor must not destroy identifiers people search on.
+    // ---------------------------------------------------------------------
+
+    @Test
+    void anIdempotencyKeyOfRandomNumbersIsNotACardNumber() {
+        // A client generated this as three random numbers joined by hyphens.
+        // It passes Luhn - roughly one in ten such strings does - and the old
+        // pattern accepted a separator after any digit, so it was masked as a
+        // card number in every log line that mentioned it.
+        String line = "replaying idempotency key 28678-9297-18568";
+
+        assertThat(Redactor.redact(line))
+                .as("nobody writes a card number in groups of 5-4-5")
+                .isEqualTo(line);
+    }
+
+    @Test
+    void aDigitRunInsideAHexHashIsNotACardNumber() {
+        String line = "request hash a4482533332274b9f1c8e2d0a7b3c6e5";
+
+        assertThat(Redactor.redact(line))
+                .as("a card number is not embedded in the middle of a word")
+                .isEqualTo(line);
+    }
+
+    @Test
+    void aDigitRunInsideAHexHashIsNotAMobileNumber() {
+        String line = "request hash c9876543210fe1d2c3b4a5968778695a";
+
+        assertThat(Redactor.redact(line)).isEqualTo(line);
+    }
+
+    // ---------------------------------------------------------------------
+    // ...and the other direction. Tightening a pattern is only safe if the
+    // things it must still catch are pinned.
+    // ---------------------------------------------------------------------
+
+    @Test
+    void theThreeWaysACardNumberIsActuallyWrittenAreStillMasked() {
+        assertThat(Redactor.redact("pan 4242424242424242 authorized"))
+                .doesNotContain("4242424242424242");
+        assertThat(Redactor.redact("pan 4242 4242 4242 4242 authorized"))
+                .doesNotContain("4242 4242 4242 4242");
+        assertThat(Redactor.redact("amex 3782 822463 10005 authorized"))
+                .as("4-6-5 is how an Amex card is printed")
+                .doesNotContain("3782 822463 10005");
+    }
+
+    @Test
+    void aRealMobileNumberIsStillMasked() {
+        assertThat(Redactor.redact("otp sent to 9876543210"))
+                .doesNotContain("9876543210");
+        assertThat(Redactor.redact("otp sent to +91 9876543210"))
+                .doesNotContain("9876543210");
+    }
+
+    @Test
+    void aVpaIsStillMasked() {
+        assertThat(Redactor.redact("collect sent to ramesh.kumar@okhdfcbank"))
+                .doesNotContain("ramesh.kumar@okhdfcbank");
+    }
 }

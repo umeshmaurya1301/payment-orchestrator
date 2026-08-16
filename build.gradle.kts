@@ -72,3 +72,64 @@ subprojects {
         add("testRuntimeOnly", catalog.findLibrary("junit-platform-launcher").get())
     }
 }
+
+// ---------------------------------------------------------------------------
+// Phase 4: the PAN-leak test.
+//
+// Not wired into `check`, and that is a considered decision rather than a
+// shortcut. This test needs a LIVE STACK - it drives real payments through
+// five containers and then scans what they wrote. Hanging it off `check` would
+// make `./gradlew build` fail on a laptop with Docker closed, and a test that
+// fails for the wrong reason gets excluded within a week.
+//
+// It is a build gate where a build gate can exist: CI runs
+// `docker compose up -d --build` and then this task, and a leak fails the
+// pipeline. Locally it is one command.
+//
+//     ./gradlew build && docker compose up -d --build
+//     ./gradlew panLeakTest
+//
+// The script self-tests before it scans: it points the scanner at a file
+// containing a known PAN, VPA and mobile number and requires it to go red
+// first. A leak test whose healthy state is silence is the easiest kind to
+// break without noticing, and every way of breaking it - bad classpath,
+// unreadable input, a regex that stopped matching - looks exactly like success.
+// ---------------------------------------------------------------------------
+tasks.register<Exec>("panLeakTest") {
+    group = "verification"
+    description = "Drives the k6 smoke suite against a live stack and fails if any PAN, VPA or mobile number leaked."
+
+    // The scanner runs as a single-file source program against the logging
+    // starter's jar, so it uses the SAME Luhn check and the SAME patterns the
+    // runtime masking uses. A second copy could disagree with the thing it
+    // audits, and the drift is never symmetric - it is always the scanner that
+    // ends up more lenient, because that is the direction that makes a red
+    // build go green.
+    dependsOn(gradle.includedBuild("infra-core").task(":logging-starter:jar"))
+
+    // Not just "bash". On Windows that resolves to WSL's bash, which is a
+    // different machine with a different filesystem and no Docker socket - the
+    // failure is `execvpe(/bin/bash) failed`, which reads like a broken script
+    // rather than the wrong interpreter. Git Bash is the shell this repo's
+    // scripts are written for and the one the README tells you to use.
+    val gitBash = listOf(
+        System.getenv("ProgramFiles")?.let { "$it/Git/bin/bash.exe" },
+        System.getenv("ProgramW6432")?.let { "$it/Git/bin/bash.exe" },
+        System.getenv("LOCALAPPDATA")?.let { "$it/Programs/Git/bin/bash.exe" },
+    ).filterNotNull().firstOrNull { File(it).exists() }
+
+    val shell = if (System.getProperty("os.name").startsWith("Windows")) {
+        gitBash ?: throw GradleException(
+            "Git Bash not found. panLeakTest runs a POSIX script and must not fall back to WSL bash."
+        )
+    } else {
+        "bash"
+    }
+
+    commandLine(shell, "tools/panscan/pan-scan.sh", "--load")
+
+    // Exec fails the build on a non-zero exit by default. Stated explicitly
+    // because the phase plan is emphatic about it: a leak test that is allowed
+    // to warn is decoration.
+    isIgnoreExitValue = false
+}

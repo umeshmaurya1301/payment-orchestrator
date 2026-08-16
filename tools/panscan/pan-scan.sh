@@ -1,23 +1,38 @@
 #!/usr/bin/env bash
 #
-# Phase 1 exit criterion: a scan of every table outside token_vault, and of all
-# captured container log output, finds zero Luhn-valid card numbers.
+# The PAN-leak test. Phase 1's exit criterion, promoted in phase 4 to something
+# that fails a build.
 #
 #   ./gradlew build && docker compose up -d --build
-#   k6 run tools/loadtest/smoke.js
-#   tools/panscan/pan-scan.sh
+#   tools/panscan/pan-scan.sh            # scan whatever traffic has already run
+#   tools/panscan/pan-scan.sh --load     # drive the k6 smoke suite first
 #
 # Run it AFTER traffic has flowed. Scanning an idle stack proves nothing: the
 # whole question is whether a card number survives a real payment.
 #
-# Exits non-zero if anything is found, so it can gate a script or, from phase 4,
-# a build.
+# Exits non-zero if anything is found, so it can gate a script or a Gradle task.
+#
+# ---------------------------------------------------------------------------
+# The self-test is not optional, and it runs FIRST.
+#
+# A leak test is a control whose healthy state is silence, which makes it the
+# easiest kind of test to break without noticing: a bad classpath, a scanner
+# that cannot read its input, a regex that stopped matching, and it reports PASS
+# forever. Every one of those failures looks exactly like success.
+#
+# So before scanning anything real, the scanner is pointed at a file containing
+# a known-bad card number, VPA and mobile number, and is required to FAIL. Only
+# a scanner that has just demonstrated it can go red is trusted to report green.
+# ---------------------------------------------------------------------------
 
-set -euo pipefail
+set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="${ROOT}/tools/panscan/out"
 mkdir -p "${OUT}"
+
+WITH_LOAD=0
+[[ "${1:-}" == "--load" ]] && WITH_LOAD=1
 
 STARTER_JAR="$(ls "${ROOT}"/infra-core/logging-starter/build/libs/logging-starter-*.jar 2>/dev/null \
     | grep -v sources | head -1 || true)"
@@ -27,31 +42,93 @@ if [[ -z "${STARTER_JAR}" ]]; then
     exit 2
 fi
 
+scan() {
+    java -cp "${STARTER_JAR}" "${ROOT}/tools/panscan/PanScan.java" "$@"
+}
+
 # ---------------------------------------------------------------------------
-# 1. Every table in the application database.
+# 0. Prove the detector can go red.
+# ---------------------------------------------------------------------------
+echo "=== self-test: the scanner must fail on known-bad input ==="
+CANARY="${OUT}/canary.txt"
+cat > "${CANARY}" <<'CANARY'
+{"message":"authorizing card 4242424242424242 for merchant"}
+{"message":"upi collect sent to ramesh.kumar@okhdfcbank"}
+{"message":"otp delivered to 9876543210"}
+CANARY
+
+if scan "${CANARY}" > "${OUT}/self-test.log" 2>&1; then
+    echo "SELF-TEST FAILED: the scanner reported clean on a file containing a PAN," >&2
+    echo "a VPA and a mobile number. It is not detecting anything, so a green" >&2
+    echo "result from it would mean nothing. Output:" >&2
+    sed 's/^/  /' "${OUT}/self-test.log" >&2
+    exit 2
+fi
+
+# It failed, which is what we wanted - but it has to have failed for the right
+# reason. A scanner that exits 1 because the classpath is broken would pass this
+# check while detecting nothing.
+for expected in "card number" "VPA" "mobile number"; do
+    if ! grep -q "${expected}" "${OUT}/self-test.log"; then
+        echo "SELF-TEST FAILED: scanner did not report a '${expected}' finding." >&2
+        sed 's/^/  /' "${OUT}/self-test.log" >&2
+        exit 2
+    fi
+done
+echo "self-test passed: PAN, VPA and mobile all detected"
+rm -f "${CANARY}"
+echo
+
+# ---------------------------------------------------------------------------
+# 1. Optionally drive real traffic.
+#
+# The scan is only as good as what has been through the system. `--load` makes
+# the test self-contained for CI, where nothing has run yet.
+# ---------------------------------------------------------------------------
+if [[ "${WITH_LOAD}" == "1" ]]; then
+    echo "=== driving the k6 smoke suite ==="
+    MSYS_NO_PATHCONV=1 docker run --rm \
+        --network payorch_payorch \
+        -v "$(cd "${ROOT}" && pwd -W 2>/dev/null || pwd)/tools/loadtest:/scripts" \
+        -e EDGE=http://payments-edge:8080 \
+        -e SIMULATOR=http://mock-psp-simulator:8085 \
+        grafana/k6:latest run /scripts/smoke.js > "${OUT}/k6.log" 2>&1
+    echo "k6 finished (see ${OUT}/k6.log)"
+    echo
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Every table in the application database.
 #
 # `--databases payorch` and nothing else, deliberately. token_vault lives in the
 # separate payorch_vault database, and it is the one place a card number is
 # allowed to exist. Dumping it here would either produce a false positive or,
 # worse, tempt someone to add an exclusion that quietly grows.
 # ---------------------------------------------------------------------------
-echo "dumping payorch (every table outside the vault)..."
-docker compose exec -T mysql \
-    mysqldump -uroot -proot --databases payorch \
-    > "${OUT}/payorch.sql" 2>/dev/null
+echo "=== dumping payorch (every table outside the vault) ==="
+if ! docker compose exec -T mysql \
+        mysqldump -uroot -proot --databases payorch \
+        > "${OUT}/payorch.sql" 2>/dev/null; then
+    echo "mysqldump failed - refusing to report a clean scan" >&2
+    exit 2
+fi
 
 # ---------------------------------------------------------------------------
-# 2. All captured container output, every service, from the beginning.
+# 3. All captured container output, every service, from the beginning.
 #
 # --no-log-prefix so the service name is not prepended to every line; the
 # scanner reports by file, and the prefix would only pad the excerpts.
 # ---------------------------------------------------------------------------
-echo "capturing container logs..."
-docker compose logs --no-color --no-log-prefix --tail=all > "${OUT}/containers.log"
+echo "=== capturing container logs ==="
+if ! docker compose logs --no-color --no-log-prefix --tail=all > "${OUT}/containers.log" 2>/dev/null; then
+    echo "docker compose logs failed - refusing to report a clean scan" >&2
+    exit 2
+fi
 
 # ---------------------------------------------------------------------------
-# 3. Scan both with the same Luhn check the runtime masking filter uses.
+# 4. Scan both, with the same Luhn check and the same patterns the runtime
+#    masking uses.
 # ---------------------------------------------------------------------------
 echo
-java -cp "${STARTER_JAR}" "${ROOT}/tools/panscan/PanScan.java" \
-    "${OUT}/payorch.sql" "${OUT}/containers.log"
+echo "=== scanning ==="
+scan "${OUT}/payorch.sql" "${OUT}/containers.log"

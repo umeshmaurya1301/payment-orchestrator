@@ -61,6 +61,18 @@ public class ObservabilityDefaults implements EnvironmentPostProcessor, Ordered 
         defaults.put("management.opentelemetry.resource-attributes.service.name",
                 "${spring.application.name:payorch}");
 
+        // OTLP *metrics* push, off. The starter brings micrometer-registry-otlp
+        // with it, and it defaults to on - so every service began trying to POST
+        // metrics to a collector that does not exist yet, and logged a stack
+        // trace per attempt per shutdown. Metrics in this system are scraped
+        // from /actuator/prometheus, which phase 2's harness already reads;
+        // pushing them over OTLP as well would be a second pipeline nobody
+        // looks at, failing loudly.
+        //
+        // Tracing over OTLP stays on. Traces have no scrape endpoint - a trace
+        // that is not exported does not exist anywhere.
+        defaults.put("management.otlp.metrics.export.enabled", "false");
+
         // Buckets. The reason is in RollingLatency's javadoc and it is the
         // difference between a fleet P99 that means something and one that does
         // not.

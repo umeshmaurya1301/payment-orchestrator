@@ -10,6 +10,7 @@ import com.payorch.infra.idempotency.IdempotencyKeys;
 import com.payorch.infra.idempotency.ReplayableResponse;
 import com.payorch.infra.logging.LogEvent;
 import com.payorch.infra.logging.LogFields;
+import com.payorch.infra.logging.mask.Redactor;
 import com.payorch.infra.resilience.deadline.DeadlineExceededException;
 import com.payorch.infra.tokenization.TokenVault;
 import com.payorch.infra.tokenization.TokenizedCard;
@@ -142,7 +143,25 @@ public class PaymentsController {
                         card.token(),
                         card.bin(),
                         card.last4(),
-                        request.merchantReference()));
+                        // Redacted before it goes anywhere, and this is not
+                        // belt-and-braces - it closes a real leak the phase-4
+                        // test found by injecting a card number into it.
+                        //
+                        // merchantReference is free text the MERCHANT chooses.
+                        // A merchant that writes a card number into it puts that
+                        // number into our `payment` table and, because phase 1
+                        // stores rendered response bytes for byte-identical
+                        // replay, into our idempotency cache as well - two
+                        // durable copies of a PAN in a system whose entire
+                        // design is that PANs live only in the vault. The
+                        // tokenization boundary holds for the `card` field
+                        // because we control it; this field we do not.
+                        //
+                        // Redacting at the edge rather than in the orchestrator
+                        // is deliberate: the edge is where untrusted input stops
+                        // being untrusted, and every hop after this one would
+                        // otherwise have to remember.
+                        Redactor.redact(request.merchantReference())));
 
         return toEdgeResponse(created);
     }

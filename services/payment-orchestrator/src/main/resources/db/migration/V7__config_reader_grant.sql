@@ -1,0 +1,23 @@
+-- Phase 3f. The grant that lets psp-connector read its own configuration.
+--
+-- Here rather than in docker/mysql/init/02-config-reader.sql because MySQL 8.4
+-- refuses a table-level grant on a table that does not exist, and the init
+-- scripts run against an empty data directory - before this migration has
+-- created psp_config. The account is created there; the privilege is granted
+-- here, where the table is guaranteed to exist.
+--
+-- One table, SELECT only:
+--
+--   * SELECT only, because the connector reads its configuration and never
+--     writes it. An operator widening a bulkhead during an incident does that
+--     as `payorch`, and a bug in the connector cannot rewrite the limits it is
+--     supposed to be obeying.
+--
+--   * One table, not the schema. This credential cannot read `payment`,
+--     `merchant` or `idempotency_record`, and it is the grant rather than any
+--     code review that guarantees it.
+--
+-- Idempotent by nature: GRANT is a set operation, so replaying this migration
+-- against an already-granted user is a no-op rather than an error.
+
+GRANT SELECT ON payorch.psp_config TO 'config_reader'@'%';

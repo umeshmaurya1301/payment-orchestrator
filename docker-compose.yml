@@ -258,7 +258,18 @@ services:
       VAULT_DB_USER: vault_reader
       VAULT_DB_PASSWORD: vault_reader_pw
       VAULT_KEY: *vault-key
-      MOCK_PSP_BASE_URL: http://mock-psp-simulator:8085
+      # 3f. base_url is a psp_config column now, so the connector is told
+      # how to reach the CONFIG rather than how to reach a provider - the
+      # one piece of configuration that cannot itself come from the table.
+      #
+      # Straight to mysql, not through toxiproxy. A latency toxic aimed at
+      # the payment path would otherwise also throttle config reloads, and
+      # an experiment measuring a provider would silently be measuring the
+      # config loop too.
+      CONFIG_DB_URL: jdbc:mysql://mysql:3306/payorch
+      CONFIG_DB_USER: config_reader
+      CONFIG_DB_PASSWORD: config_reader_pw
+      PSP_CONFIG_POLL_MS: ${PSP_CONFIG_POLL_MS:-2000}
       # 3b. Overridable so an experiment can run with retries off
       # (RETRY_MAX=0) as the 'before' arm, one variable at a time.
       RETRY_MAX: ${RETRY_MAX:-2}
@@ -297,7 +308,7 @@ services:
       retries: 20
       start_period: 60s
 
-  mock-psp-simulator:
+  mock-psp-simulator: &mock-psp
     <<: *java-service
     container_name: payorch-mock-psp-simulator
     build:
@@ -312,6 +323,52 @@ services:
       timeout: 3s
       retries: 20
       start_period: 60s
+
+  # ---------------------------------------------------- three providers ----
+  # Phase 3f. The same image three times, each with a different PERSONALITY:
+  # the behaviour it exhibits when no chaos is being injected at all.
+  #
+  #   A  99.9% / 200 ms / 500 TPS   the good one
+  #   B  96%   / 2.5 s  /  50 TPS   slow, flaky, rationed
+  #   C  98%   / 800 ms / 200 TPS   unremarkable, which is its own case
+  #
+  # Three instances rather than three code paths in one, because a provider is
+  # a network endpoint: separate containers give separate connection pools,
+  # separate queues and separate failure domains, and a bulkhead that isolates
+  # providers cannot be demonstrated against one process pretending to be three.
+  #
+  # The baseline is NOT chaos - /_chaos DELETE returns to these values, not to
+  # zero. A reset that healed B would silently turn it into A for the next arm.
+  #
+  # `mock-psp-simulator` above keeps its unconfigured, perfectly healthy
+  # baseline so every experiment from 00 to 05 reproduces exactly as written.
+
+  mock-psp-a:
+    <<: *mock-psp
+    container_name: payorch-mock-psp-a
+    environment:
+      <<: *java-env
+      PAYORCH_MOCKPSP_BASELINE_LATENCY_MS: ${PSP_A_LATENCY_MS:-200}
+      PAYORCH_MOCKPSP_BASELINE_ERROR_RATE: ${PSP_A_ERROR_RATE:-0.001}
+    ports: ["8086:8085"]
+
+  mock-psp-b:
+    <<: *mock-psp
+    container_name: payorch-mock-psp-b
+    environment:
+      <<: *java-env
+      PAYORCH_MOCKPSP_BASELINE_LATENCY_MS: ${PSP_B_LATENCY_MS:-2500}
+      PAYORCH_MOCKPSP_BASELINE_ERROR_RATE: ${PSP_B_ERROR_RATE:-0.04}
+    ports: ["8087:8085"]
+
+  mock-psp-c:
+    <<: *mock-psp
+    container_name: payorch-mock-psp-c
+    environment:
+      <<: *java-env
+      PAYORCH_MOCKPSP_BASELINE_LATENCY_MS: ${PSP_C_LATENCY_MS:-800}
+      PAYORCH_MOCKPSP_BASELINE_ERROR_RATE: ${PSP_C_ERROR_RATE:-0.02}
+    ports: ["8088:8085"]
 
   # --------------------------------------------------------------- async ----
   # Defined now so the profile exists, exercised from phase 6. Only the `core`

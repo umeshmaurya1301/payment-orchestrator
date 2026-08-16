@@ -77,6 +77,22 @@ public class DeadlineExecutor {
      *         {@code UNKNOWN}.
      */
     public <T> T callWithin(String operation, Callable<T> work) {
+        return callWithin(operation, minSliceMs, work);
+    }
+
+    /**
+     * The same, with the minimum slice supplied per call.
+     *
+     * <p>Added in 3f, because the floor below which a call is not worth starting
+     * is a fact about <em>the provider being called</em>, not about this service.
+     * 50 ms is generous for a provider that answers in 200 ms and absurd for one
+     * that averages 2.5 s - against the latter, a global 50 ms floor cheerfully
+     * starts calls with no chance of finishing, which is the failure the floor
+     * exists to prevent, arrived at by using one number for everyone.
+     *
+     * @param minSliceMs this provider's floor, from {@code psp_config}
+     */
+    public <T> T callWithin(String operation, long minSliceMs, Callable<T> work) {
         // Captured HERE, on the calling thread. A ScopedValue is not visible to
         // an unrelated executor's threads, so reading it inside the submitted
         // task would find nothing bound and silently run unbounded.

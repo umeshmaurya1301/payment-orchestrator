@@ -54,6 +54,9 @@ public class CircuitBreakers {
     private final CircuitBreakerRegistry registry;
     private final Consumer<BreakerStateChange> onStateChange;
 
+    /** Per-provider overrides, populated from {@code psp_config} in 3f. */
+    private final Map<String, CircuitBreakerConfig> perProvider = new java.util.concurrent.ConcurrentHashMap<>();
+
     public CircuitBreakers(CircuitBreakerConfig config, Consumer<BreakerStateChange> onStateChange) {
         this.registry = CircuitBreakerRegistry.of(config);
         this.onStateChange = onStateChange;
@@ -100,7 +103,68 @@ public class CircuitBreakers {
      * @param operation {@code authorize}, {@code capture}, {@code status}
      */
     public CircuitBreaker forOperation(String pspId, String operation) {
-        return registry.circuitBreaker(name(pspId, operation));
+        CircuitBreakerConfig override = perProvider.get(pspId);
+        return override == null
+                ? registry.circuitBreaker(name(pspId, operation))
+                : registry.circuitBreaker(name(pspId, operation), override);
+    }
+
+    /**
+     * Replaces this provider's breaker settings while the system is running.
+     *
+     * <p>3f's requirement, and the one component where "without a restart" has a
+     * genuine cost worth stating rather than hiding. Resilience4j fixes a
+     * breaker's configuration when the instance is created and offers no way to
+     * mutate it, so changing a threshold means discarding the instance and
+     * building a new one - <strong>which discards its sliding window with it</strong>.
+     *
+     * <p>So a config change resets what the breaker knows about the provider: an
+     * open breaker returns to closed, and the next {@code minimumNumberOfCalls}
+     * calls go out before it can form an opinion again. That is a real hazard at
+     * exactly the wrong moment, because the most likely time anyone edits a
+     * breaker threshold is during an incident in which it is open.
+     *
+     * <p>It is still the right trade. The alternative - restart the service - has
+     * the same effect on the breaker plus the connection pools, the retry
+     * budgets and every in-flight payment. This way the blast radius is one
+     * provider's breakers, and the {@code no-op when unchanged} check below means
+     * a poller that re-reads identical config every two seconds does not reset
+     * anything at all.
+     */
+    public void reconfigure(String pspId, CircuitBreakerConfig config) {
+        CircuitBreakerConfig previous = perProvider.put(pspId, config);
+        if (previous != null && sameSettings(previous, config)) {
+            return;
+        }
+
+        // Removing forces recreation with the new config on next use. Done only
+        // on an actual change, because each removal costs this provider its
+        // failure-rate history.
+        String prefix = pspId + ":";
+        registry.getAllCircuitBreakers().stream()
+                .map(CircuitBreaker::getName)
+                .filter(breakerName -> breakerName.startsWith(prefix))
+                .forEach(breakerName -> {
+                    registry.remove(breakerName);
+                    log.warn("circuit breaker '{}' rebuilt for new config - its failure window is reset",
+                            breakerName);
+                });
+    }
+
+    /**
+     * Compares only the fields this system sets. {@code CircuitBreakerConfig}
+     * has no meaningful {@code equals}, and comparing object identity would make
+     * every poll look like a change - which would reset every breaker's window
+     * on a timer and leave the breakers permanently unable to open.
+     */
+    private static boolean sameSettings(CircuitBreakerConfig a, CircuitBreakerConfig b) {
+        return a.getFailureRateThreshold() == b.getFailureRateThreshold()
+                && a.getSlidingWindowSize() == b.getSlidingWindowSize()
+                && a.getMinimumNumberOfCalls() == b.getMinimumNumberOfCalls()
+                && a.getPermittedNumberOfCallsInHalfOpenState()
+                        == b.getPermittedNumberOfCallsInHalfOpenState()
+                && a.getWaitIntervalFunctionInOpenState().apply(1)
+                        .equals(b.getWaitIntervalFunctionInOpenState().apply(1));
     }
 
     /**

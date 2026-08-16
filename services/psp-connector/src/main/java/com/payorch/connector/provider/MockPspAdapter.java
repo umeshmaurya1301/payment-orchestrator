@@ -1,7 +1,11 @@
 package com.payorch.connector.provider;
 
 import java.time.Instant;
+import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicReference;
 
+import com.payorch.connector.config.ProviderConfig;
+import com.payorch.connector.config.ProviderConfigStore;
 import com.payorch.infra.resilience.deadline.DeadlineExecutor;
 import com.payorch.infra.resilience.deadline.DeadlinePropagation;
 import com.payorch.infra.resilience.breaker.CircuitBreakers;
@@ -14,14 +18,16 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
 /**
- * The adapter for {@code mock-psp-simulator}.
+ * The adapter for anything speaking the {@code mock-psp-simulator} protocol.
  *
- * <p><strong>Phase 3a, 3b and 3c.</strong> The call is bounded by the remaining
- * budget, retried subject to classification and a budget, and gated by a circuit
- * breaker for this provider and operation.
+ * <p>One instance per provider from phase 3f. The class used to be tied to a
+ * single provider with a base URL from YAML; it now takes a {@code pspId} and
+ * reads everything else - address, timeouts, retry ceiling, breaker thresholds,
+ * bulkhead width, contracted TPS - from {@code psp_config} through
+ * {@link ProviderConfigStore}, which refreshes it while the service runs.
  *
- * <p><strong>Retry, then breaker, then bulkhead, then deadline.</strong> The
- * nesting is a real decision:
+ * <p><strong>Retry, then breaker, then bulkhead, then egress limit, then
+ * deadline.</strong> The nesting is a real decision:
  *
  * <ul>
  *   <li>The breaker sits <em>inside</em> the retry so it counts every network
@@ -36,6 +42,10 @@ import org.springframework.web.client.RestClientException;
  *   <li>The bulkhead sits <em>inside</em> the breaker so an open breaker costs
  *       no permit - it never intended to make a call, and consuming capacity to
  *       decline would throttle the provider's recovery.</li>
+ *   <li>The egress limiter sits inside the bulkhead so a token is spent if and
+ *       only if a request actually goes out. Outside it, every call the bulkhead
+ *       later refused would still have consumed a token, throttling us below the
+ *       contract we are trying to fill.</li>
  *   <li>The deadline is innermost, so each attempt gets its own slice of the
  *       remaining budget, and a permit is held for exactly the duration of the
  *       call rather than across the backoff between attempts.</li>
@@ -49,30 +59,43 @@ import org.springframework.web.client.RestClientException;
  */
 public class MockPspAdapter implements PspAdapter {
 
+    /** The phase-1 provider. Kept as a constant because config and tests name it. */
     public static final String PSP_ID = "mockpsp";
 
-    private final RestClient client;
+    private final String pspId;
+    private final ProviderConfigStore configs;
+    private final DeadlinePropagation propagation;
     private final DeadlineExecutor deadlines;
     private final Retrier retrier;
     private final CircuitBreakers breakers;
     private final Bulkhead bulkhead;
     private final RateLimiter egressLimiter;
 
-    public MockPspAdapter(String baseUrl,
+    /**
+     * Rebuilt only when the configured address changes.
+     *
+     * <p>Not per call: a {@code RestClient} carries the message converters, and
+     * rebuilding it per request would re-create the whole Jackson stack on the
+     * hot path. Not once at construction either, because {@code base_url} is now
+     * a database column that an operator can repoint at a standby endpoint
+     * without a deploy - which is most of the point of 3f.
+     */
+    private final AtomicReference<AddressedClient> client = new AtomicReference<>();
+
+    private record AddressedClient(String baseUrl, RestClient client) {
+    }
+
+    public MockPspAdapter(String pspId,
+                          ProviderConfigStore configs,
                           DeadlinePropagation propagation,
                           DeadlineExecutor deadlines,
                           Retrier retrier,
                           CircuitBreakers breakers,
                           Bulkhead bulkhead,
                           RateLimiter egressLimiter) {
-        // The request factory still has no read timeout, and that is now
-        // deliberate rather than an omission: a factory-level timeout is shared
-        // by every call, and a budget is per request by definition. The bound
-        // comes from DeadlineExecutor instead, which can also actually abort.
-        this.client = RestClient.builder()
-                .baseUrl(baseUrl)
-                .requestInterceptor(propagation)
-                .build();
+        this.pspId = pspId;
+        this.configs = configs;
+        this.propagation = propagation;
         this.deadlines = deadlines;
         this.retrier = retrier;
         this.breakers = breakers;
@@ -80,9 +103,36 @@ public class MockPspAdapter implements PspAdapter {
         this.egressLimiter = egressLimiter;
     }
 
+    private ProviderConfig config() {
+        return configs.find(pspId).orElseThrow(() -> new IllegalStateException(
+                "no psp_config row for '" + pspId + "'"));
+    }
+
+    /**
+     * The client for the currently configured address.
+     *
+     * <p>The request factory still has no read timeout, and that is deliberate
+     * rather than an omission: a factory-level timeout is shared by every call,
+     * and a budget is per request by definition. The bound comes from
+     * {@link DeadlineExecutor} instead, which can also actually abort.
+     */
+    private RestClient clientFor(ProviderConfig config) {
+        AddressedClient existing = client.get();
+        if (existing != null && existing.baseUrl().equals(config.baseUrl())) {
+            return existing.client();
+        }
+        AddressedClient rebuilt = new AddressedClient(config.baseUrl(),
+                RestClient.builder()
+                        .baseUrl(config.baseUrl())
+                        .requestInterceptor(propagation)
+                        .build());
+        client.set(rebuilt);
+        return rebuilt.client();
+    }
+
     @Override
     public String pspId() {
-        return PSP_ID;
+        return pspId;
     }
 
     /**
@@ -100,10 +150,10 @@ public class MockPspAdapter implements PspAdapter {
      * requests it receives, and it has no interest in which of ours were second
      * attempts.
      */
-    private <T> T egress(java.util.concurrent.Callable<T> call) throws Exception {
-        RateLimiter.Decision decision = egressLimiter.tryAcquire(PSP_ID);
+    private <T> T egress(Callable<T> call) throws Exception {
+        RateLimiter.Decision decision = egressLimiter.tryAcquire(pspId);
         if (!decision.allowed()) {
-            throw new RateLimitedException(PSP_ID, decision.retryAfterMs());
+            throw new RateLimitedException(pspId, decision.retryAfterMs());
         }
         return call.call();
     }
@@ -118,16 +168,25 @@ public class MockPspAdapter implements PspAdapter {
                 card.expiryMonth(),
                 card.expiryYear());
 
+        // Read once per authorization, not once per attempt. A config change
+        // landing between two retries of the same payment would mean the two
+        // attempts obeyed different rules, and the resulting numbers would
+        // describe neither configuration.
+        ProviderConfig config = config();
+        RestClient client = clientFor(config);
+        String operation = pspId + ".authorize";
+
         // command.reference() is the orchestrator's attempt id, and it is in the
         // request body above. Passing the SAME value as the idempotency
         // reference is what permits a retry of a call that may already have been
         // processed - the provider recognises the repeat and returns the
         // original authorization instead of creating a second.
-        ProviderResponse response = retrier.call("mockpsp.authorize", command.reference(), () ->
-                breakers.call(PSP_ID, "authorize", () ->
-                        bulkhead.call(PSP_ID, () ->
+        ProviderResponse response = retrier.call(operation, command.reference(),
+                config.retryMaxAttempts(), () ->
+                breakers.call(pspId, "authorize", () ->
+                        bulkhead.call(pspId, () ->
                         egress(() ->
-                        deadlines.callWithin("mockpsp.authorize", () -> {
+                        deadlines.callWithin(operation, config.deadlineSliceMs(), () -> {
                             try {
                                 return client.post()
                                         .uri("/psp/v1/authorize")
@@ -140,11 +199,11 @@ public class MockPspAdapter implements PspAdapter {
                                 // walk the cause chain, and a 5xx, a refused
                                 // connection and a 429 must be told apart even
                                 // though all three arrive as "no answer" here.
-                                throw new ProviderUnavailableException(PSP_ID, e);
+                                throw new ProviderUnavailableException(pspId, e);
                             }
                         })))));
         if (response == null) {
-            throw new ProviderUnavailableException(PSP_ID, null);
+            throw new ProviderUnavailableException(pspId, null);
         }
 
         boolean approved = "APPROVED".equals(response.outcome());

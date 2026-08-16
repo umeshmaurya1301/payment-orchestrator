@@ -74,6 +74,26 @@ public class Retrier {
      *                             that could duplicate work.
      */
     public <T> T call(String operation, String idempotencyReference, Callable<T> work) {
+        return call(operation, idempotencyReference, maxRetries, work);
+    }
+
+    /**
+     * The same, with the retry ceiling supplied per call.
+     *
+     * <p>Added in 3f. How many attempts a failure earns depends on how likely a
+     * failure is to be transient, and that is a property of the provider: at 96%
+     * success a failure is usually bad luck and worth another attempt, while at
+     * 99.9% a failure much more often means something is genuinely wrong and a
+     * retry is load added to a provider already in trouble.
+     *
+     * <p>The retry budget is unchanged and still global. It has to be: it is a
+     * statement about the total extra load this service is willing to generate,
+     * and a per-provider budget would let three providers each spend 10% and
+     * produce 30%.
+     *
+     * @param maxRetries this provider's ceiling, from {@code psp_config}
+     */
+    public <T> T call(String operation, String idempotencyReference, int maxRetries, Callable<T> work) {
         budget.onRequest();
 
         int retry = 0;

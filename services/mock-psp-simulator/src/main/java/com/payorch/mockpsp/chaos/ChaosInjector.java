@@ -21,13 +21,47 @@ import org.springframework.stereotype.Component;
  * properties, because every experiment reconfigures the provider mid-run
  * without a restart - a restart would reset connection pools and circuit
  * breakers, which are exactly the things being measured.
+ *
+ * <h2>The baseline</h2>
+ *
+ * <p>From phase 3f an instance also has a <strong>personality</strong>: the
+ * behaviour it exhibits when nothing is being injected at all. Provider B is
+ * 96% successful and takes 2.5 s on a good day, and that is not chaos - it is
+ * what B is like. Three instances with different baselines are what make "no
+ * single resilience configuration is right for every provider" a thing this
+ * system can be run against rather than a claim in a document.
+ *
+ * <p>Which makes {@link #reset()} subtler than it looks: it returns to the
+ * configured baseline, <em>not</em> to healthy. Every experiment teardown calls
+ * it, and a reset that zeroed B's latency would quietly turn B into A for the
+ * next run - a contaminated arm that announces itself only as a suspiciously
+ * good number.
  */
 @Component
 public class ChaosInjector {
 
     private static final Logger log = LoggerFactory.getLogger(ChaosInjector.class);
 
-    private final AtomicReference<ChaosSettings> settings = new AtomicReference<>(ChaosSettings.healthy());
+    private final ChaosSettings baseline;
+    private final AtomicReference<ChaosSettings> settings;
+
+    public ChaosInjector(
+            @org.springframework.beans.factory.annotation.Value("${payorch.mockpsp.baseline.latency-ms:0}")
+            long baselineLatencyMs,
+            @org.springframework.beans.factory.annotation.Value("${payorch.mockpsp.baseline.error-rate:0.0}")
+            double baselineErrorRate) {
+        this.baseline = new ChaosSettings(baselineLatencyMs, baselineErrorRate, 0, 0);
+        this.settings = new AtomicReference<>(baseline);
+        if (!baseline.isHealthy()) {
+            log.info("provider personality: {}ms latency, {}% error rate",
+                    baselineLatencyMs, Math.round(baselineErrorRate * 100));
+        }
+    }
+
+    /** What this instance is like when nothing is being injected. */
+    public ChaosSettings baseline() {
+        return baseline;
+    }
 
     /**
      * Released on shutdown so hung requests do not outlive the process.
@@ -54,8 +88,12 @@ public class ChaosInjector {
         return previous;
     }
 
+    /**
+     * Back to this instance's baseline - which is only "healthy" for an
+     * instance that has no personality. See the class javadoc.
+     */
     public ChaosSettings reset() {
-        return apply(ChaosSettings.healthy());
+        return apply(baseline);
     }
 
     /**

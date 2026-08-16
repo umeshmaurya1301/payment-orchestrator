@@ -39,7 +39,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "payorch.vault.datasource.username=sa",
         "payorch.vault.datasource.password=",
         "payorch.vault.verify-on-startup=false",
-        "payorch.psp.providers.mockpsp.base-url=http://localhost:1",
+        // 3f: providers are rows now. The base URL, the timeouts and the
+        // limits all come from this table rather than from properties.
+        "payorch.psp.config-datasource.url=jdbc:h2:mem:connector-config-flow;DB_CLOSE_DELAY=-1;INIT=RUNSCRIPT FROM 'classpath:psp-config-test.sql'",
+        "payorch.psp.config-datasource.username=sa",
+        "payorch.psp.config-datasource.password=",
 })
 @AutoConfigureMockMvc
 class AuthorizationFlowTest {

@@ -114,12 +114,35 @@ per provider" real rather than a YAML file.
 
 ## Exit criteria
 
-- [ ] Three providers configured with deliberately different personalities:
+- [x] Three providers configured with deliberately different personalities:
       **A**: 99.9% / 200 ms / 500 TPS · **B**: 96% / 2.5 s / 50 TPS ·
       **C**: 98% / 800 ms / 200 TPS
-- [ ] Each with its own resilience config, all loaded dynamically from `psp_config`
-- [ ] Config change takes effect without restart, demonstrated
-- [ ] **Six experiment writeups in `docs/experiments/`** — one per sub-step
+      — three `mock-psp-simulator` containers with baseline personalities,
+      measured end to end at 295 ms / 2,600 ms / 891 ms
+- [x] Each with its own resilience config, all loaded dynamically from `psp_config`
+      — every 3a-3e knob is a column; `payorch.resilience` in YAML is now a
+      fallback that applies to nothing
+- [x] Config change takes effect without restart, demonstrated
+      — one `UPDATE` mid-run took provider throughput from 8.0/s to 51.4/s
+      inside one 2 s poll, with zero unknowns and zero dropped requests
+      ([06](../experiments/06-dynamic-config.md))
+- [x] **Six experiment writeups in `docs/experiments/`** — one per sub-step
+      — [01](../experiments/01-deadline-budget.md) deadline ·
+      [02](../experiments/02-retry.md) retry ·
+      [03](../experiments/03-circuit-breaker.md) breaker ·
+      [04](../experiments/04-bulkhead.md) bulkhead ·
+      [05](../experiments/05-rate-limiters.md) rate limiters ·
+      [06](../experiments/06-dynamic-config.md) dynamic config
+
+Two of the six did not confirm the component they were testing, which is the
+discipline working rather than failing:
+
+- **3d** shipped a bulkhead that took success from 100% to 6.8% against a merely
+  slow provider, and did not prevent the `OutOfMemoryError` it was added for.
+  That result is what specified 3e and 3f.
+- **3e** found a design error in its own filter: checking the shared endpoint
+  limit before the per-merchant one cost a blameless merchant 75% of their
+  traffic while every dashboard looked healthy.
 
 ## Traps
 

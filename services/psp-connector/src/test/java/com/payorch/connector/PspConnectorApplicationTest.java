@@ -19,6 +19,11 @@ import org.springframework.boot.test.context.SpringBootTest;
                 "payorch.vault.datasource.username=sa",
                 "payorch.vault.datasource.password=",
                 "payorch.vault.verify-on-startup=false",
+                // 3f: the connector reads its providers from psp_config before
+                // it will report healthy, so a context test needs that table.
+                "payorch.psp.config-datasource.url=jdbc:h2:mem:connector-config-context;DB_CLOSE_DELAY=-1;INIT=RUNSCRIPT FROM 'classpath:psp-config-test.sql'",
+                "payorch.psp.config-datasource.username=sa",
+                "payorch.psp.config-datasource.password=",
         })
 class PspConnectorApplicationTest {
 

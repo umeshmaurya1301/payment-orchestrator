@@ -49,6 +49,30 @@ public class RedisTokenBucketRateLimiter implements RateLimiter {
     private final LongAdder rejected = new LongAdder();
     private final LongAdder storeFailures = new LongAdder();
 
+    /** Per-key overrides, populated from {@code psp_config} in 3f. */
+    private final java.util.Map<String, Bucket> perKey = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private record Bucket(int capacity, double refillPerSec) {
+    }
+
+    /**
+     * Sets one key's rate while the system is running - 3f.
+     *
+     * <p>The egress layer needs this more obviously than any other: the number
+     * being enforced is <em>the provider's contracted TPS</em>, so a single value
+     * shared across providers is wrong for all but one of them. 3e shipped with
+     * exactly that, and the writeup says so.
+     *
+     * <p>Cheap to change because the script takes capacity and rate as arguments
+     * rather than baking them into the stored bucket. The tokens already in
+     * Redis stay where they are and the next call simply refills against the new
+     * rate - no flush, no reset, and no window during which the limit is
+     * unenforced.
+     */
+    public void configure(String key, int capacity, double refillPerSec) {
+        perKey.put(key, new Bucket(capacity, refillPerSec));
+    }
+
     public RedisTokenBucketRateLimiter(StringRedisTemplate redis, String keyPrefix,
                                        int capacity, double refillPerSec, int ttlSeconds) {
         this.redis = redis;
@@ -67,14 +91,16 @@ public class RedisTokenBucketRateLimiter implements RateLimiter {
     @Override
     @SuppressWarnings("unchecked")
     public Decision tryAcquire(String key, int permits) {
+        Bucket bucket = perKey.getOrDefault(key, new Bucket(capacity, refillPerSec));
+
         List<Long> result;
         try {
             // Spring sends EVALSHA first and falls back to EVAL on NOSCRIPT, so
             // the script body crosses the wire once per Redis process rather
             // than once per request.
             result = redis.execute(script, List.of(keyPrefix + ":" + key),
-                    Integer.toString(capacity),
-                    Double.toString(refillPerSec),
+                    Integer.toString(bucket.capacity()),
+                    Double.toString(bucket.refillPerSec()),
                     Integer.toString(permits),
                     Integer.toString(ttlSeconds));
         } catch (RuntimeException e) {

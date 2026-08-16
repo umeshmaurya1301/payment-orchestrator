@@ -19,6 +19,20 @@ server:
   shutdown: graceful
 
 payorch:
+  psp:
+    # 3f. The connector's own resilience settings live in psp_config, not
+    # here. What is left in this file is how to REACH that table - which is
+    # the one piece of configuration that cannot itself come from the table.
+    config-poll-ms: ${PSP_CONFIG_POLL_MS:2000}
+    config-datasource:
+      # config_reader holds SELECT on payorch.psp_config and nothing else.
+      # Enforced by docker/mysql/init/02-config-reader.sql, not by this file:
+      # a credential that can only read timeouts cannot read a card, and the
+      # vault credential below cannot read a timeout.
+      url: ${CONFIG_DB_URL:jdbc:mysql://localhost:3306/payorch}
+      username: ${CONFIG_DB_USER:config_reader}
+      password: ${CONFIG_DB_PASSWORD:config_reader_pw}
+
   vault:
     # Read-only credentials. This service can reverse a token and can do nothing
     # else to the vault - no INSERT, no UPDATE, no DELETE - and that is enforced
@@ -33,12 +47,18 @@ payorch:
     # or every detokenization fails the GCM tag check.
     key: ${VAULT_KEY:MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
 
-  psp:
-    providers:
-      mockpsp:
-        base-url: ${MOCK_PSP_BASE_URL:http://localhost:8085}
-
   resilience:
+    # 3f: these are now FALLBACKS, not the operating values.
+    #
+    # Every per-provider number below - the breaker thresholds, the bulkhead
+    # width, the egress rate, the retry ceiling, the deadline slice - is
+    # overridden per provider from psp_config at startup and again on every
+    # change. What is left here applies to a call for which no provider row
+    # exists, which in practice means it applies to nothing.
+    #
+    # They are kept rather than deleted because a component with no
+    # configuration at all fails differently from one whose configuration
+    # has not arrived yet, and the second is the failure worth surviving.
     deadline:
       # Internal hop: it MUST trust the inbound header, because the remaining
       # budget arriving from upstream is the entire mechanism. A hop that
@@ -114,14 +134,12 @@ payorch:
       # number read from psp_config, which is what makes "different limits per
       # provider" a fact about the system rather than about this file.
       egress-per-sec: ${RATELIMIT_EGRESS_RPS:200}
-      # BREAKER_THRESHOLD=100 makes the breaker unreachable, which is the
-      # 'before' arm for the experiment: one variable, same build.
 
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,loggers,metrics,prometheus,chaosbeans,chaosseams
+        include: health,info,loggers,metrics,prometheus,chaosbeans,chaosseams,pspconfig
   metrics:
     tags:
       # Every series carries the service that emitted it, so one scrape file can
@@ -135,6 +153,24 @@ management:
       http.server.requests: true
     percentiles:
       http.server.requests: 0.5,0.95,0.99
+  health:
+    redis:
+      # Deliberately off, and this is a correctness decision rather than test
+      # convenience.
+      #
+      # 3e made the rate limiter fail OPEN when Redis is unreachable: a limiter
+      # whose store is down admits everything rather than refusing everything,
+      # because turning "the rate limiter's database is unavailable" into "the
+      # payment API is down" trades a degradation for an outage. Leaving this
+      # indicator on contradicts that decision - it marks the service DOWN, the
+      # container healthcheck fails, and the orchestrator restarts a process
+      # that was serving payments perfectly well.
+      #
+      # Redis trouble is not unmonitored. payorch.ratelimit.store.failures
+      # counts every request admitted because Redis could not answer, which is
+      # the signal that actually matters: the limiter has silently stopped
+      # limiting. That series is the alert, not this indicator.
+      enabled: false
   endpoint:
     health:
       show-details: always

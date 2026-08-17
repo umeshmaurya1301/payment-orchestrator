@@ -122,8 +122,15 @@ probably the single highest-value paragraph in the whole project.
       [experiment 09](../experiments/09-health-routing.md)
 - [ ] Graph it — this graph goes at the top of the README
 - [ ] All four strategies selectable per merchant and demonstrably different
-- [ ] Failover refuses to fire on an ambiguous timeout, and the payment lands in
-      `UNKNOWN` instead
+- [x] Failover refuses to fire on an ambiguous timeout, and the payment lands in
+      `UNKNOWN` instead — `tools/loadtest/failover-safety.sh`, proven on a live
+      stack: a hung provider yields `psp-a UNKNOWN deadline_abandoned` with
+      **one** provider tried. Enforced twice over — `FailoverPolicy` is an
+      allowlist of the four codes that prove nothing was sent, and
+      `PaymentTransitions` independently forbids `UNKNOWN → ROUTED`, so both
+      would have to fail together. Note that failover on `circuit_open` is
+      largely *pre-empted* by 5b: an open breaker scores 0, so the router stops
+      choosing that provider before a call is attempted
 
 The second-to-last criterion is the one worth the most and the one most likely to
 be skipped.

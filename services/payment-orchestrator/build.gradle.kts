@@ -20,6 +20,9 @@ dependencies {
 
     implementation(libs.payorch.web.starter)
 
+    // Phase 6. The async spine: payment events onto Kafka, durably.
+    implementation(libs.spring.kafka)
+
     // UUIDv7 primary keys and the BINARY(16) JPA converter. This service owns
     // every table that carries one.
     implementation(libs.payorch.persistence.starter)

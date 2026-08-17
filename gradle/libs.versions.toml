@@ -117,6 +117,14 @@ micrometer-observation = { module = "io.micrometer:micrometer-observation" }
 micrometer-context-propagation = { module = "io.micrometer:context-propagation" }
 opentelemetry-logback-appender = { module = "io.opentelemetry.instrumentation:opentelemetry-logback-appender-1.0", version.ref = "otelInstrumentation" }
 
+# --- async spine (phase 6) ------------------------------------------------
+# Managed by the Boot BOM. The starter rather than kafka-clients alone, for the
+# same Boot 4 reason Flyway taught in phase 0: the autoconfiguration that builds
+# the producer factory, the KafkaTemplate and the listener container lives in
+# spring-boot-kafka, which the starter carries and the raw client does not.
+spring-kafka = { module = "org.springframework.kafka:spring-kafka" }
+spring-kafka-test = { module = "org.springframework.kafka:spring-kafka-test" }
+
 # --- identifiers ----------------------------------------------------------
 uuid-creator = { module = "com.github.f4b6a3:uuid-creator", version.ref = "uuidCreator" }
 

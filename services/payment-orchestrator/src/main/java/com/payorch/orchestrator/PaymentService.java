@@ -15,6 +15,7 @@ import com.payorch.orchestrator.connector.ConnectorApi;
 import com.payorch.orchestrator.connector.ConnectorClient;
 import com.payorch.orchestrator.domain.Payment;
 import com.payorch.orchestrator.domain.PaymentAttempt;
+import com.payorch.orchestrator.events.PaymentEvents;
 import com.payorch.orchestrator.routing.FailoverPolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,10 +48,13 @@ public class PaymentService {
 
     private final PaymentPersistence persistence;
     private final ConnectorClient connector;
+    private final PaymentEvents events;
 
-    public PaymentService(PaymentPersistence persistence, ConnectorClient connector) {
+    public PaymentService(PaymentPersistence persistence, ConnectorClient connector,
+                          PaymentEvents events) {
         this.persistence = persistence;
         this.connector = connector;
+        this.events = events;
     }
 
     public OrchestratorApi.PaymentResponse create(OrchestratorApi.CreatePaymentRequest request) {
@@ -292,6 +296,11 @@ public class PaymentService {
                         .with(LogFields.LATENCY_MS, elapsedMs(startedAt))
                         .args());
 
+        // Phase 6. The payment has reached a terminal state, so the rest of the
+        // system is told. In the direct arm this publishes inline and can lose
+        // the event; in the outbox arm it is a row in the same transaction.
+        events.emit(result);
+
         // Approved, or DECLINED. A decline is a definite answer from a working
         // provider and is never failed over: retrying a refusal on a second
         // provider is how one decline becomes a card-issuer fraud flag.
@@ -313,6 +322,7 @@ public class PaymentService {
                                                              long startedAt) {
         Payment result = persistence.recordUnknown(
                 paymentId, attempt.getId(), errorCode, elapsedMs(startedAt));
+        events.emit(result);
 
         log.warn("authorization outcome unknown",
                 LogEvent.event()

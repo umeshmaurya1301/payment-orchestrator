@@ -34,6 +34,22 @@ spring:
     locations: classpath:db/migration
 
 payorch:
+  # Phase 6. The async spine.
+  events:
+    # WHICH PUBLISHER, and the default is deliberate.
+    #
+    #   none    do nothing. Phases 1-5 run with no Kafka at all, and the async
+    #           profile is optional - a service that refused to boot without a
+    #           broker would make every earlier experiment depend on this one.
+    #   direct  the naive dual-write. Kept selectable rather than deleted so the
+    #           "before" arm of the outbox comparison can be RE-RUN rather than
+    #           quoted from a writeup.
+    #   outbox  a row in the same transaction as the payment. The point of the
+    #           phase.
+    publisher: ${EVENTS_PUBLISHER:none}
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:kafka-1:9092,kafka-2:9092,kafka-3:9092}
+    topic: ${EVENTS_TOPIC:payment.events}
+
   resilience:
     deadline:
       # Internal hop: it MUST trust the inbound header, because the remaining

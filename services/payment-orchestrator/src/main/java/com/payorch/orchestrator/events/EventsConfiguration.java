@@ -1,0 +1,99 @@
+package com.payorch.orchestrator.events;
+
+import java.util.Map;
+
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.serialization.StringSerializer;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.core.DefaultKafkaProducerFactory;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.core.ProducerFactory;
+import org.springframework.kafka.support.serializer.JacksonJsonSerializer;
+
+/**
+ * The producer side of phase 6.
+ *
+ * <p>Every setting here is a durability decision rather than a default, and the
+ * three that matter are below. They are set explicitly because the defaults are
+ * tuned for throughput on data nobody minds losing, which is the opposite of a
+ * payment event.
+ */
+@Configuration
+public class EventsConfiguration {
+
+    @Bean
+    public ProducerFactory<String, PaymentEvent> paymentEventProducerFactory(
+            @Value("${payorch.events.bootstrap-servers}") String bootstrapServers) {
+
+        return new DefaultKafkaProducerFactory<>(Map.of(
+                ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers,
+                ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class,
+                // JacksonJsonSerializer, not JsonSerializer. The latter is the
+                // Jackson 2 implementation and is deprecated for removal in
+                // Spring Kafka 4; this project targets Jackson 3 everywhere, as
+                // the version catalog records. Taking the deprecated one would
+                // have compiled, worked, and quietly pulled a second Jackson
+                // into the serialization path.
+                ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JacksonJsonSerializer.class,
+
+                // acks=all. The write is acknowledged only once every in-sync
+                // replica has it. With the topic's min.insync.replicas=2 this is
+                // what turns RF=3 from "copied three times, eventually" into "a
+                // write that cannot land on a single doomed replica" - the two
+                // settings are one decision and neither works alone.
+                ProducerConfig.ACKS_CONFIG, "all",
+
+                // The idempotent producer. Without it, a retry after a network
+                // hiccup can write the same record twice, so the retries that
+                // make delivery reliable are also what make it duplicate. With
+                // it, the broker deduplicates by producer id and sequence number.
+                ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true,
+
+                // Bounded retries rather than infinite: this producer is called
+                // from a request thread in the direct arm, and MAX_VALUE would
+                // hang a merchant's HTTP call until a broker came back.
+                ProducerConfig.RETRIES_CONFIG, 3,
+                ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 10_000,
+                ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, 3_000,
+                ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, 5));
+    }
+
+    @Bean
+    public KafkaTemplate<String, PaymentEvent> paymentEventKafkaTemplate(
+            ProducerFactory<String, PaymentEvent> factory) {
+        return new KafkaTemplate<>(factory);
+    }
+
+    /**
+     * The naive dual-write arm. Off unless asked for.
+     *
+     * <p>Kept and selectable rather than deleted once the outbox exists, so the
+     * "before" measurement can be reproduced rather than quoted.
+     */
+    @Bean
+    @ConditionalOnProperty(name = "payorch.events.publisher", havingValue = "direct")
+    public PaymentEventPublisher directKafkaPublisher(
+            KafkaTemplate<String, PaymentEvent> kafka,
+            @Value("${payorch.events.topic:payment.events}") String topic) {
+        return new DirectKafkaPublisher(kafka, topic);
+    }
+
+    /**
+     * The default when no publisher is configured: do nothing, loudly enough to
+     * be found.
+     *
+     * <p>A no-op rather than a failure to start, because phases 1 to 5 run
+     * without Kafka at all and the async profile is optional. A service that
+     * refused to boot without a broker would make every earlier experiment
+     * depend on this one.
+     */
+    @Bean
+    @ConditionalOnProperty(name = "payorch.events.publisher", havingValue = "none",
+            matchIfMissing = true)
+    public PaymentEventPublisher noopPublisher() {
+        return event -> { };
+    }
+}

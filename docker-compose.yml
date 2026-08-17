@@ -141,6 +141,9 @@ services:
       args:
         SERVICE: payment-orchestrator
     environment:
+      # Phase 6. Defaults to `none` so `docker compose up` without the async
+      # profile still starts a service with no broker to talk to.
+      EVENTS_PUBLISHER: ${EVENTS_PUBLISHER:-none}
       <<: *java-env
       # Points at the MySQL service name. Phase 2 repoints this at Toxiproxy's
       # listener instead, which is a compose change and no code change.

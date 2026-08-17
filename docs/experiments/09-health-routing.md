@@ -1,4 +1,4 @@
-# 09 — Health-based routing and failover (phase 5a–5c)
+# 09 — Health-based routing, failover and strategies (phase 5a–5d)
 
 The phase the whole project is arranged around. Retry, breakers and bulkheads
 are on every CV; what almost nobody builds is a system where the breaker's state
@@ -318,6 +318,76 @@ drill reports that rather than claiming a pass it did not earn.
 
 ---
 
+## F. Four strategies, per merchant (5d)
+
+The phase plan calls this "the one worth the most and the one most likely to be
+skipped". Implementing four strategies is easy; the work is proving they differ.
+
+| strategy | picks | rationale |
+|---|---|---|
+| `PRIORITY` | first routable by priority | a commercial agreement gives a named provider first refusal |
+| `CHEAPEST` | lowest `cost_bps` above the health floor | low-margin merchants |
+| `LEAST_LATENCY` | lowest rolling P99 above the floor | merchants where checkout abandonment is the cost |
+| `HEALTH_WEIGHTED` | proportional, priority-decayed | the default — see sections B and C |
+
+Selected per merchant by a `routing_strategy` column, read on the payment path,
+changeable with one `UPDATE` and no restart. **Every strategy respects the health
+floor**: that is not a strategy's choice to make, because "cheapest" with no
+floor finds the provider that fails most cheaply, and "priority" with no floor is
+section A's baseline.
+
+### The demonstration
+
+`tools/loadtest/strategy-demo.sh`, 25 payments per strategy:
+
+```
+PRIORITY          psp-c    100.0%   #########################
+CHEAPEST          psp-b    100.0%   #########################
+LEAST_LATENCY     mockpsp  100.0%   #########################
+HEALTH_WEIGHTED   psp-c     68.0%   #################
+                  psp-b     24.0%   ######
+                  psp-a      8.0%   ##
+```
+
+Four strategies, four different answers.
+
+### Getting there took three corrections, all the same mistake
+
+Each time the router was right and the *harness* was lying — and each is a real
+property of deterministic routing rather than a scripting slip.
+
+**1. The seed data didn't separate them.** With the committed priorities,
+`mockpsp` is both first in priority *and* the fastest provider, so `PRIORITY`
+and `LEAST_LATENCY` both chose it and two of the four strategies looked
+identical. Four strategies can only be shown to differ if each has a different
+favourite; the demo now sets a priority order where the first provider is
+neither the cheapest nor the fastest, and restores it on exit.
+
+**2. `LEAST_LATENCY` picked a 3,000 ms provider over a 10 ms one.** The
+`CHEAPEST` block before it had sent 40 sequential payments to psp-b at 2.5 s
+each — about 100 seconds — so `mockpsp`'s **60-second rolling window had
+expired**. Unmeasured providers sort last by design, so psp-b won by being the
+only candidate anyone still had data about.
+
+That is the stale-health trap biting a *strategy* rather than the scorer, and it
+is a real property of every deterministic strategy here: **by not exploring, they
+starve the alternatives of the traffic that keeps their measurements alive, and
+then compare against whatever they already chose.** `HEALTH_WEIGHTED` does not
+have this problem, which is most of why it is the default.
+
+**3. The warm-up had the same bug.** The fix for (2) was to warm every provider
+before each measured block — using `HEALTH_WEIGHTED`, which concentrates ~76% of
+traffic on the top-ranked provider and left the bottom-ranked one with zero
+samples. `LEAST_LATENCY` then picked the slowest provider that happened to have
+data, for the second time and for the same reason.
+
+The warm-up now enables one provider at a time. Worth naming what that admits:
+**it is something the harness can do and production cannot.** There is no way to
+make a starved provider prove itself without sending it real payments, which is
+exactly the synthetic-probe question left open in section D.
+
+---
+
 ## What surprised me
 
 **That routing on health alone made the system worse.** The score was correct,
@@ -349,9 +419,11 @@ the summary shows a stable 7.6%. It only appears when the same data is read at
   It also introduces the classic risk that the probe passes while real payments
   fail, so it would need to be a real authorization of a trivial amount, or
   reconciled against live outcomes.
-- **Per-merchant strategies** are not built. The phase plan asks for four
-  selectable strategies; this implements one. `psp_config` and 3f's reload
-  already carry everything needed.
+- **Deterministic strategies decay.** `PRIORITY`, `CHEAPEST` and
+  `LEAST_LATENCY` stop exploring, so the providers they do not choose go quiet
+  and their measurements expire. They therefore react to a degradation later
+  than `HEALTH_WEIGHTED`, having less evidence to react to. Measured as a test
+  artefact in section F; not yet measured as a production behaviour.
 - **Failover on a race.** Arm A showed that `circuit_open` failover is mostly
   pre-empted by health routing. The remaining window is real but narrow, and it
   is not currently measured: how often does a breaker open between the routing

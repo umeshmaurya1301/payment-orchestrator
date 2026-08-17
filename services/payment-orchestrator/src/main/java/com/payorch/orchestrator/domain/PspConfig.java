@@ -41,6 +41,16 @@ public class PspConfig {
     private int priority;
 
     /**
+     * What this provider charges, in basis points of the transaction amount.
+     *
+     * <p>Phase 5d, for the {@code CHEAPEST} routing strategy. Basis points
+     * rather than a decimal rate: integer comparison with no rounding
+     * surprises, and it is the unit acquirers quote in.
+     */
+    @Column(name = "cost_bps", nullable = false)
+    private int costBps;
+
+    /**
      * A comma-separated list, which is a compromise worth naming. A join table
      * would be the normalised answer; for a handful of providers each supporting
      * a handful of currencies, it would add a join to the hot routing path in
@@ -77,6 +87,10 @@ public class PspConfig {
 
     public boolean isEnabled() {
         return enabled;
+    }
+
+    public int getCostBps() {
+        return costBps;
     }
 
     public int getPriority() {

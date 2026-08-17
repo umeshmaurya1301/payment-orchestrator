@@ -121,7 +121,14 @@ probably the single highest-value paragraph in the whole project.
       it needs a synthetic probe — see
       [experiment 09](../experiments/09-health-routing.md)
 - [ ] Graph it — this graph goes at the top of the README
-- [ ] All four strategies selectable per merchant and demonstrably different
+- [x] All four strategies selectable per merchant and demonstrably different —
+      `tools/loadtest/strategy-demo.sh`. A `routing_strategy` column per
+      merchant, read on the payment path, changed with one `UPDATE` and no
+      restart. Measured at 25 payments each: `PRIORITY`→psp-c 100%,
+      `CHEAPEST`→psp-b 100%, `LEAST_LATENCY`→mockpsp 100%,
+      `HEALTH_WEIGHTED`→68/24/8 across three. Every strategy still respects the
+      health floor, because "cheapest" without one finds the provider that fails
+      most cheaply
 - [x] Failover refuses to fire on an ambiguous timeout, and the payment lands in
       `UNKNOWN` instead — `tools/loadtest/failover-safety.sh`, proven on a live
       stack: a hung provider yields `psp-a UNKNOWN deadline_abandoned` with

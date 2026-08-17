@@ -60,6 +60,17 @@ public class ProviderHealthStore {
     private final RestClient client;
     private final AtomicReference<Map<String, Integer>> scores =
             new AtomicReference<>(Map.of());
+    /**
+     * Rolling P99 per provider, from the same poll as the scores.
+     *
+     * <p>Kept alongside rather than fetched separately so a strategy and a score
+     * can never describe two different moments - LEAST_LATENCY ranking on a P99
+     * from one poll while the health floor filters on scores from another is the
+     * kind of inconsistency that shows up as a routing decision nobody can
+     * reproduce.
+     */
+    private final AtomicReference<Map<String, Long>> latencies =
+            new AtomicReference<>(Map.of());
     private final AtomicLong lastSuccessAt = new AtomicLong();
     private final AtomicLong failures = new AtomicLong();
     private final AtomicLong polls = new AtomicLong();
@@ -86,6 +97,9 @@ public class ProviderHealthStore {
             scores.set(response.providers().entrySet().stream()
                     .collect(java.util.stream.Collectors.toUnmodifiableMap(
                             Map.Entry::getKey, e -> e.getValue().score())));
+            latencies.set(response.providers().entrySet().stream()
+                    .collect(java.util.stream.Collectors.toUnmodifiableMap(
+                            Map.Entry::getKey, e -> e.getValue().p99Ms())));
             lastSuccessAt.set(System.currentTimeMillis());
         } catch (Exception e) {
             long count = failures.incrementAndGet();
@@ -113,6 +127,20 @@ public class ProviderHealthStore {
         return scores.get();
     }
 
+    /**
+     * Rolling P99 for a provider, or {@code -1} when unknown.
+     *
+     * <p>-1 covers both "no recent calls" and "no health view at all", and
+     * callers must not read it as "fast". {@code LEAST_LATENCY} sorts it last
+     * for exactly that reason.
+     */
+    public long p99Ms(String pspId) {
+        if (lastSuccessAt.get() == 0 || ageMs() > MAX_AGE.toMillis()) {
+            return -1;
+        }
+        return latencies.get().getOrDefault(pspId, -1L);
+    }
+
     /** Milliseconds since the last successful poll; {@code -1} if there never was one. */
     public long ageMs() {
         long at = lastSuccessAt.get();
@@ -129,7 +157,7 @@ public class ProviderHealthStore {
 
     /** Only {@code score} is consumed; the rest of the payload is for humans. */
     record HealthResponse(Map<String, Entry> providers) {
-        record Entry(int score, boolean routable, String reason) {
+        record Entry(int score, boolean routable, String reason, long p99Ms) {
         }
     }
 

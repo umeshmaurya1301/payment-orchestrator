@@ -251,10 +251,15 @@ class PaymentFlowTest {
     }
 
     private void insertPsp(String pspId, int priority, String currencies) {
+        // cost_bps is listed explicitly because the schema here comes from the
+        // entities (ddl-auto: create-drop), so a NOT NULL column added in a
+        // migration has no default to fall back on. The migration's DEFAULT 200
+        // only applies to the real MySQL schema.
         jdbc.sql("""
                 INSERT INTO psp_config
-                    (id, psp_id, display_name, enabled, priority, supported_currencies, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (id, psp_id, display_name, enabled, priority, supported_currencies,
+                     cost_bps, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """)
                 .param(Uuid7.toBytes(Uuid7.generate()))
                 .param(pspId)
@@ -262,6 +267,7 @@ class PaymentFlowTest {
                 .param(true)
                 .param(priority)
                 .param(currencies)
+                .param(200)
                 .param(Timestamp.from(Instant.now()))
                 .update();
     }

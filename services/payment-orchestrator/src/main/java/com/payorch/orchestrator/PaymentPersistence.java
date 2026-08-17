@@ -12,8 +12,11 @@ import com.payorch.orchestrator.domain.PaymentAttemptRepository;
 import com.payorch.orchestrator.domain.PaymentRepository;
 import com.payorch.orchestrator.domain.PaymentState;
 import com.payorch.orchestrator.domain.PspConfig;
+import com.payorch.orchestrator.domain.MerchantRouting;
+import com.payorch.orchestrator.domain.MerchantRoutingRepository;
 import com.payorch.orchestrator.domain.PspConfigRepository;
 import com.payorch.orchestrator.routing.HealthWeightedRouter;
+import com.payorch.orchestrator.routing.RoutingStrategy;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -40,17 +43,20 @@ public class PaymentPersistence {
     private final PspConfigRepository pspConfigs;
     private final PaymentOutcomeMetrics outcomes;
     private final HealthWeightedRouter router;
+    private final MerchantRoutingRepository merchants;
 
     public PaymentPersistence(PaymentRepository payments,
                               PaymentAttemptRepository attempts,
                               PspConfigRepository pspConfigs,
                               PaymentOutcomeMetrics outcomes,
-                              HealthWeightedRouter router) {
+                              HealthWeightedRouter router,
+                              MerchantRoutingRepository merchants) {
         this.payments = payments;
         this.attempts = attempts;
         this.pspConfigs = pspConfigs;
         this.outcomes = outcomes;
         this.router = router;
+        this.merchants = merchants;
     }
 
     @Transactional
@@ -109,7 +115,15 @@ public class PaymentPersistence {
                 .filter(config -> !exclude.contains(config.getPspId()))
                 .toList();
 
-        Optional<PspConfig> route = router.choose(candidates);
+        // 5d. The merchant's own strategy, defaulting to HEALTH_WEIGHTED when
+        // the merchant row has vanished - which should not happen, and which is
+        // not a reason to fail a payment that has already been accepted.
+        RoutingStrategy strategy = merchants.findById(payment.getMerchantId())
+                .map(MerchantRouting::getRoutingStrategy)
+                .map(RoutingStrategy::parse)
+                .orElse(RoutingStrategy.HEALTH_WEIGHTED);
+
+        Optional<PspConfig> route = router.choose(candidates, strategy);
         if (route.isEmpty()) {
             return Optional.empty();
         }

@@ -1,5 +1,6 @@
 package com.payorch.orchestrator.routing;
 
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -89,6 +90,13 @@ public class HealthWeightedRouter {
      *                   already in priority order
      */
     public Optional<PspConfig> choose(List<PspConfig> candidates) {
+        return choose(candidates, RoutingStrategy.HEALTH_WEIGHTED);
+    }
+
+    /**
+     * @param strategy the merchant's chosen strategy - see {@link RoutingStrategy}
+     */
+    public Optional<PspConfig> choose(List<PspConfig> candidates, RoutingStrategy strategy) {
         if (candidates.isEmpty()) {
             return Optional.empty();
         }
@@ -121,6 +129,15 @@ public class HealthWeightedRouter {
                             c -> scores.getOrDefault(c.getPspId(), ProviderHealth.NEUTRAL)));
         }
 
+        // Every strategy ranks only the ROUTABLE providers. The health floor is
+        // not a strategy's business to override: "cheapest" with no floor finds
+        // the provider that fails most cheaply, and "priority" with no floor is
+        // phase 5a's baseline, which sent everything to a provider declining
+        // four calls in five.
+        if (strategy != RoutingStrategy.HEALTH_WEIGHTED) {
+            return Optional.of(pick(strategy, weighted));
+        }
+
         long total = weighted.stream().mapToLong(Weighted::weight).sum();
         if (total <= 0) {
             return Optional.of(weighted.get(0).config());
@@ -137,6 +154,55 @@ public class HealthWeightedRouter {
         // first candidate is better than an Optional.empty() that would mark a
         // payment unroutable because of an arithmetic edge.
         return Optional.of(weighted.get(0).config());
+    }
+
+    /**
+     * The deterministic strategies. Each returns a single provider rather than a
+     * weighted distribution, which is the trade they make: a merchant asking for
+     * "the fastest" wants the fastest, not mostly the fastest.
+     *
+     * <p>The cost is that a deterministic strategy stops exploring, so the
+     * providers it does not choose go quiet and their health scores decay toward
+     * neutral. That is survivable because neutral is not zero - an unused
+     * provider stays eligible - but it does mean these strategies react to a
+     * degradation later than {@code HEALTH_WEIGHTED} does, having less evidence
+     * to react to. Worth knowing before recommending one to a merchant.
+     */
+    private PspConfig pick(RoutingStrategy strategy, List<Weighted> routable) {
+        return switch (strategy) {
+            // Already in priority order, and already filtered to routable. The
+            // difference from phase 1 is exactly that filter.
+            case PRIORITY -> routable.get(0).config();
+
+            case CHEAPEST -> routable.stream()
+                    .min(Comparator.comparingInt(w -> w.config().getCostBps()))
+                    .orElse(routable.get(0))
+                    .config();
+
+            // A provider with no recent calls reports p99 = -1. Ranking that as
+            // "fastest" would hand every payment to whichever provider is least
+            // used, so unknowns sort LAST here and are reached only when nothing
+            // has a measurement.
+            case LEAST_LATENCY -> routable.stream()
+                    .min(Comparator.comparingLong(w -> {
+                        long p99 = latencyOf(w);
+                        return p99 < 0 ? Long.MAX_VALUE : p99;
+                    }))
+                    .orElse(routable.get(0))
+                    .config();
+
+            case HEALTH_WEIGHTED -> routable.get(0).config();
+        };
+    }
+
+    /**
+     * The rolling P99 the connector published for this provider, or -1.
+     *
+     * <p>Read from the same health view the scores come from, so a strategy and
+     * a score can never disagree about which moment they are describing.
+     */
+    private long latencyOf(Weighted weighted) {
+        return health.p99Ms(weighted.config().getPspId());
     }
 
     /**

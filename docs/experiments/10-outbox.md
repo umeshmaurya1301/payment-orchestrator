@@ -1,4 +1,4 @@
-# 10 — The outbox, and both ways to relay it (phase 6a–6c)
+# 10 — The outbox, both relays, and killing brokers (phase 6a–6d)
 
 *"How do you write to the database and publish to Kafka atomically?"* — asked in
 almost every distributed-systems interview, and usually answered from memory.
@@ -198,6 +198,49 @@ ledger consumes asynchronously is not a number anybody is waiting on.
 
 ---
 
+## E. Killing brokers under load (6d)
+
+`tools/loadtest/broker-kill.sh`. `docker kill`, not `stop` — SIGKILL, no
+graceful shutdown, no chance to hand off leadership.
+
+| window | payments | events | under-replicated |
+|---|---|---|---|
+| three brokers | 15 | 15 | 0 |
+| **one killed** | 15 | 15 | 6 |
+| **two killed** | 15 | *held in outbox* | — |
+| recovered | — | all drained | 0 |
+
+**45 payments, 45 events, zero lost.**
+
+### The third window is the one that proves anything
+
+Killing one broker is the test everybody runs, and a cluster with
+`min.insync.replicas=1` passes it identically — then loses data silently when the
+last replica dies. So this kills a **second** broker, taking the cluster below
+its minimum, and the producer's own log says what happened:
+
+```
+Got error produce response ... payment.events-4, retrying (0 attempts left).
+Error: NOT_ENOUGH_REPLICAS
+```
+
+Kafka **refused to acknowledge a write it could only place on one replica.**
+That refusal is the feature. The 15 events stayed in MySQL, and drained when the
+cluster came back.
+
+### What did *not* happen is the interesting part
+
+The relay never gave up — `attempts` stayed at 0 for every row. The producer
+retries inside its delivery timeout, and the outbox row is not marked published
+until Kafka says yes, so a refusal is simply a slower success. Maximum observed
+lag through the whole exercise: **15 seconds**.
+
+And the trap the phase names explicitly held: `__consumer_offsets` stayed RF=3
+with full ISR throughout. A "three-broker cluster" whose internal topics are RF=1
+passes the data test and loses every consumer's position on the same kill.
+
+---
+
 ## What surprised me
 
 **That the outbox's own machinery was more dangerous than the bug it fixed.**
@@ -226,9 +269,6 @@ wait, which is precisely its problem.
 
 - **Nothing consumes these events yet.** `ledger-notifier` is still the phase-0
   skeleton. The retry-tier topics and DLQ exist and are empty.
-- **The broker-kill test is not run.** The topics are RF=3 with
-  `min.insync.replicas=2` and the internal topics are RF=3, so the durability
-  should hold, but "should" is what this project does not accept.
 - **Trace context does not cross Kafka yet.** A webhook delivered forty seconds
   later will start its own trace until the headers carry `traceparent`.
 - **Outbox rows are never deleted.** The table grows forever. A retention job is

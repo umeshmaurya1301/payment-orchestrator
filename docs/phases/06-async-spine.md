@@ -125,7 +125,15 @@ Alerts on **consumer lag** and **DLQ depth**.
 
 ## Exit criteria
 
-- [ ] Kill one broker under sustained load → **zero data loss**, producer keeps writing
+- [x] Kill one broker under sustained load → **zero data loss**, producer keeps
+      writing — `tools/loadtest/broker-kill.sh`. Measured **45 payments, 45
+      events, 0 lost** across three windows. One broker `SIGKILL`ed: 6 partitions
+      under-replicated, writes continued, 15/15 events published. A **second**
+      broker killed, taking the cluster below `min.insync.replicas=2`: Kafka
+      answered `NOT_ENOUGH_REPLICAS` and the 15 events waited in the outbox
+      rather than landing on a single doomed replica. All drained on recovery,
+      zero under-replicated partitions after, and `__consumer_offsets` held RF=3
+      with full ISR throughout — the internal-topic trap the phase names
 - [ ] Inject 30% consumer failures via `chaos-core` → messages tier through retry
       topics → land in DLQ → replay them → **ledger converges to correct balances**
 - [ ] A single SigNoz trace spanning the sync path **and** the async webhook delivery

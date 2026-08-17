@@ -388,6 +388,54 @@ exactly the synthetic-probe question left open in section D.
 
 ---
 
+## G. The graph
+
+`tools/loadtest/plot-routing.py`, drawn from `payment_attempt` rows. Both charts
+plot **the error rate on the same clock as the traffic**, because the phase plan
+lists showing only the shift as its own trap: traffic moving while users see
+errors is not a success, and a traffic-only chart is the most flattering possible
+picture of a system that failed.
+
+ASCII rather than a PNG for the reason `plot-metrics.py` already established —
+it stays readable in a diff, in a terminal, and on a machine with no image
+viewer, and it cannot silently rot into a broken image link.
+
+**Static priority** — the routing decision made once, from a column:
+
+```
+                      v                  ^
+  psp-a       ██████████████████████████████████████   avg   93%
+  success   ??██▇▇█▇▇█▇▁          ▁ ▁      ▆█▇▇▇█▇██?    47% mean
+  before fault  99.7%   during   4.2%   after  78.8%
+```
+
+**Health-weighted** — the same fault, the same load:
+
+```
+                      v               ^
+  mockpsp        ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁    avg    4%
+  psp-a      ▆▆▆▆▆▆▆▅▆▄ ▁  ▁ ▁ ▁          ▁▄▆▆▆▅   avg   29%
+  psp-b      ▁▁▁▁▁▁▁▁▁▁▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▁▁▁▁▁   avg   13%
+  psp-c      ▂▂▂▂▂▂▂▂▂▃▆▆▆▆▅▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▃▂▂▁▂   avg   49%
+  success   ?▇▇▇▇▇▇▇▇▆▄▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇█?    95% mean
+  before fault  95.2%   during  92.2%   after  97.1%
+```
+
+Two details worth reading rather than skimming.
+
+**A blank is not a low bar.** Zero share draws a space, not the smallest block,
+so "this provider received nothing" is visually distinct from "it received a
+trickle" — which is the entire distinction the phase turns on. psp-a's row goes
+to blank at the fault and returns as `▁` during the half-open probes.
+
+**The success row is full-scale, 0–100%,** which means the 5-point dip during the
+fault is barely visible. That is deliberate: the same scale is what makes the
+baseline's collapse to `▁` and the tuned run's flat `▇` directly comparable. A
+rescaled axis would make the improvement look larger and the residue smaller, and
+the residue is the honest part.
+
+---
+
 ## What surprised me
 
 **That routing on health alone made the system worse.** The score was correct,

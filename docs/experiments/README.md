@@ -68,6 +68,7 @@ the **bean**. They are not interchangeable.
 | `tools/loadtest/capture-metrics.sh` | Samples every service's `/actuator/prometheus` into one CSV |
 | `tools/loadtest/summarise-metrics.py` | The peaks a writeup needs, out of a 40,000-row CSV |
 | `tools/loadtest/plot-metrics.py` | ASCII time series, so a graph survives in a diff |
+| `tools/loadtest/plot-routing.py` | The traffic-shift graph: per-provider share and the end-user success rate on one clock |
 | `tools/chaos/toxic.sh` | Toxiproxy toxics: latency, timeout, reset_peer, bandwidth |
 | `tools/chaos/pumba.sh` | Process chaos: SIGTERM, SIGKILL, pause |
 | `tools/obs/signoz.sh` | SigNoz lifecycle, plus `apply` — dashboards and alert rules pushed from files in `docker/signoz/` |

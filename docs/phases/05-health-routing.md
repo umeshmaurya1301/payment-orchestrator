@@ -120,7 +120,14 @@ probably the single highest-value paragraph in the whole project.
       rest is that the providers failed over to are contractually worse. Closing
       it needs a synthetic probe — see
       [experiment 09](../experiments/09-health-routing.md)
-- [ ] Graph it — this graph goes at the top of the README
+- [x] Graph it — this graph goes at the top of the README — drawn by
+      `tools/loadtest/plot-routing.py` from `payment_attempt` rows, as ASCII
+      rather than a PNG so it survives in a diff and cannot rot into a broken
+      image link. Both the static-priority baseline and the health-weighted run
+      are shown, and **both plot the error rate on the same clock as the
+      traffic** — the phase plan lists showing only the traffic move as its own
+      trap, and it is the most flattering possible picture of a system that
+      failed its users
 - [x] All four strategies selectable per merchant and demonstrably different —
       `tools/loadtest/strategy-demo.sh`. A `routing_strategy` column per
       merchant, read on the payment path, changed with one `UPDATE` and no

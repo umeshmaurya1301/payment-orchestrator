@@ -6,17 +6,68 @@ Built in phases, where each resilience component is added **only after the
 failure it prevents has been observed and measured**. Every phase from 3 onward
 produces a before/after graph in [`docs/experiments/`](docs/experiments/).
 
-> **Status: phase 2 complete.** One payment succeeds end to end, and the chaos
-> harness has measured exactly how the system falls over without any resilience
-> in it. The baseline report is
-> [`docs/experiments/00-baseline.md`](docs/experiments/00-baseline.md), and it is
-> the "before" half of every graph from phase 3 onward.
->
-> The headline: **it does not need chaos to fail.** At 200 rps with a healthy
-> downstream, 1,037 threads are queued for 20 database connections and p95 is
-> 13.2 s; at 500 rps `payments-edge` exhausts its heap and the process dies.
-> Virtual threads removed the ceiling that used to reject work, so the queue
-> moved into the heap. Phase 3 fixes that, one measured component at a time.
+> **Status: phases 0–4 complete, phase 5 all but one criterion.**
+> Ten experiments, each with a measured before and after, in
+> [`docs/experiments/`](docs/experiments/).
+
+## The graph
+
+A provider degraded to 80% errors, mid-run, under sustained load. The same
+system, twice — the only difference is who decides where a payment goes.
+
+**Before — static priority routing** (phase 1's rule: first enabled provider by
+`priority`)
+
+```
+                      v                  ^
+            v = fault injected   ^ = provider healed
+
+  share of payments routed to each provider
+  psp-a       ██████████████████████████████████████   avg   93%
+
+  end-user success rate, same clock
+  success   ??██▇▇█▇▇█▇▁          ▁ ▁      ▆█▇▇▇█▇██?    47% mean
+
+  before fault  99.7%   during   4.2%   after  78.8%
+```
+
+Two healthy providers sat idle while **95.8% of payments failed**. The routing
+decision was made once, from a column, and nothing in the system could revise it.
+
+**After — health-weighted routing** (phase 5: the breaker's state is an *input*,
+not an outcome)
+
+```
+                      v               ^
+            v = fault injected   ^ = provider healed
+
+  share of payments routed to each provider
+  mockpsp        ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁    avg    4%
+  psp-a      ▆▆▆▆▆▆▆▅▆▄ ▁  ▁ ▁ ▁          ▁▄▆▆▆▅   avg   29%
+  psp-b      ▁▁▁▁▁▁▁▁▁▁▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▁▁▁▁▁   avg   13%
+  psp-c      ▂▂▂▂▂▂▂▂▂▃▆▆▆▆▅▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▃▂▂▁▂   avg   49%
+
+  end-user success rate, same clock
+  success   ?▇▇▇▇▇▇▇▇▆▄▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇█?    95% mean
+
+  before fault  95.2%   during  92.2%   after  97.1%
+```
+
+Traffic leaves the failing provider in **7 seconds** and the success rate barely
+moves. Both charts are drawn by
+[`tools/loadtest/plot-routing.py`](tools/loadtest/plot-routing.py) from
+`payment_attempt` rows, and **both show the error rate on the same clock as the
+traffic** — deliberately, because a graph showing only the traffic move is the
+most flattering possible picture of a system that failed its users.
+
+**What the graph does not claim.** The dip is real: 97.5% → 91.2% on the tuned
+run. About 4 points of that is the cost of probing a broken provider with live
+payments, which is what makes automatic recovery possible at all — routing is
+where the circuit breaker's probes come from. The rest is that the providers
+traffic lands on are contractually worse. "No spike at all" is achievable only
+by giving up automatic recovery, and that criterion is left explicitly unticked
+in [phase 5](docs/phases/05-health-routing.md). The full accounting is
+[experiment 09](docs/experiments/09-health-routing.md).
 
 ---
 

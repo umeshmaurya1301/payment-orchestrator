@@ -30,7 +30,12 @@ import static com.payorch.orchestrator.domain.PaymentState.UNKNOWN;
  *       else. An unknown payment resolves only into what the provider says
  *       actually happened. It cannot be retried into {@code AUTHORIZING},
  *       because retrying an authorization whose outcome is unknown is exactly
- *       the double charge this state exists to prevent.</li>
+ *       the double charge this state exists to prevent. Phase 5's failover
+ *       leans on this row: it is what makes failing over after an ambiguous
+ *       timeout impossible rather than merely forbidden.</li>
+ *   <li>{@code AUTHORIZING → ROUTED}, added in phase 5. A failover to a second
+ *       provider, reachable only when the first provably never received the
+ *       request. See the comment on that row.</li>
  * </ul>
  */
 public final class PaymentTransitions {
@@ -50,7 +55,31 @@ public final class PaymentTransitions {
         table.put(ROUTED, Set.of(AUTHORIZING, FAILED));
 
         // The only fan-out in the machine, and the reason the machine exists.
-        table.put(AUTHORIZING, Set.of(AUTHORIZED, FAILED, UNKNOWN));
+        //
+        // ROUTED is the phase-5 addition: a failover. The payment was being
+        // authorized on one provider, that provider PROVABLY never received the
+        // request, and it is now being routed to another.
+        //
+        // This is the one transition in the table that could enable a double
+        // charge if it were reachable from the wrong place, so note what makes
+        // it safe - and note that the safety does not depend on
+        // FailoverPolicy being correct:
+        //
+        //   * A request that was SENT and not answered goes AUTHORIZING →
+        //     UNKNOWN, and UNKNOWN's row below has no way back to ROUTED or
+        //     AUTHORIZING. So the ambiguous case cannot reach a second provider
+        //     even if some future caller tries to make it.
+        //   * A request that was never sent leaves the card untouched, so the
+        //     second provider is authorizing a payment for the first time. It
+        //     needs no idempotency cooperation, which is just as well: an
+        //     idempotency key is only meaningful inside the namespace of the
+        //     provider that issued it.
+        //
+        // Two independent controls therefore have to fail together for a
+        // customer to be charged twice: FailoverPolicy must misclassify an
+        // ambiguous error as safe, AND this table must permit the transition
+        // that follows. That redundancy is deliberate.
+        table.put(AUTHORIZING, Set.of(AUTHORIZED, FAILED, UNKNOWN, ROUTED));
 
         table.put(AUTHORIZED, Set.of(CAPTURED, FAILED));
         table.put(CAPTURED, Set.of(SETTLED));

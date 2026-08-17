@@ -2,6 +2,7 @@ package com.payorch.orchestrator;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import com.payorch.infra.web.ApiException;
@@ -86,6 +87,17 @@ public class PaymentPersistence {
      */
     @Transactional
     public Optional<PaymentAttempt> beginAuthorization(UUID paymentId) {
+        return beginAuthorization(paymentId, Set.of());
+    }
+
+    /**
+     * @param exclude providers this payment has already been offered to, which
+     *                are skipped. Only ever non-empty on a failover, and only
+     *                after {@code FailoverPolicy} has established that the
+     *                previous provider never received the request.
+     */
+    @Transactional
+    public Optional<PaymentAttempt> beginAuthorization(UUID paymentId, Set<String> exclude) {
         Payment payment = require(paymentId);
 
         // Phase 5. The candidate list is still "enabled, supports this currency,
@@ -94,6 +106,7 @@ public class PaymentPersistence {
         // falls back to this exact order when it has no health view.
         List<PspConfig> candidates = pspConfigs.findByEnabledTrueOrderByPriorityAsc().stream()
                 .filter(config -> config.supports(payment.getCurrency()))
+                .filter(config -> !exclude.contains(config.getPspId()))
                 .toList();
 
         Optional<PspConfig> route = router.choose(candidates);
@@ -103,7 +116,12 @@ public class PaymentPersistence {
         PspConfig chosen = route.get();
 
         payment.assignPsp(chosen.getPspId());
-        payment.transitionTo(PaymentState.ROUTED);
+        // On a failover the payment is ALREADY in ROUTED - recordFailedButRoutable
+        // put it there - and the machine forbids a state transitioning to itself.
+        // So this transition happens only on the first attempt.
+        if (payment.getState() == PaymentState.INITIATED) {
+            payment.transitionTo(PaymentState.ROUTED);
+        }
 
         // The attempt row is written BEFORE the call. If this process dies
         // mid-authorization, reconciliation in phase 8 still finds evidence that
@@ -150,6 +168,41 @@ public class PaymentPersistence {
         Payment payment = require(paymentId);
         payment.transitionTo(PaymentState.FAILED);
         outcomes.record(PaymentState.FAILED);
+        return payment;
+    }
+
+    /**
+     * Records an attempt that failed <em>without ending the payment</em>, so it
+     * can be offered to another provider.
+     *
+     * <p>The distinction from {@link #recordDeclined} is the whole of phase 5's
+     * failover safety. {@code recordDeclined} moves the payment to
+     * {@code FAILED}, which is terminal - correctly, because a merchant has been
+     * told the payment failed. This method leaves the payment alive, in
+     * {@code ROUTED}, ready to be routed again.
+     *
+     * <p>It must therefore only ever be called for an error that proves the
+     * provider never received the request. {@code FailoverPolicy} decides that,
+     * and {@code PaymentTransitions} enforces it independently: an ambiguous
+     * failure has already moved the payment to {@code UNKNOWN}, from which the
+     * transition below is not permitted and would throw.
+     *
+     * <p>The attempt row still records its own failure. The history of which
+     * providers were tried lives there, which is what the payment's single state
+     * column cannot express and what phase 8's reconciliation will read.
+     */
+    @Transactional
+    public Payment recordFailedButRoutable(UUID paymentId, UUID attemptId,
+                                           String errorCode, long latencyMs) {
+        PaymentAttempt attempt = attempts.findById(attemptId).orElseThrow();
+        attempt.failed(null, errorCode, latencyMs);
+
+        Payment payment = require(paymentId);
+        payment.transitionTo(PaymentState.ROUTED);
+        // Deliberately NOT counted in PaymentOutcomeMetrics. The payment has not
+        // reached a terminal state - counting it here and again when it finally
+        // resolves would make the failure rate report more outcomes than there
+        // were payments.
         return payment;
     }
 

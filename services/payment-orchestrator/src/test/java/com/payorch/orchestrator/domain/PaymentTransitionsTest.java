@@ -2,6 +2,7 @@ package com.payorch.orchestrator.domain;
 
 import java.util.Set;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
@@ -25,13 +26,22 @@ class PaymentTransitionsTest {
 
     /**
      * The fan-out that the whole state machine exists to express: an
-     * authorization in flight has three possible ends, not two.
+     * authorization in flight has three possible ENDS, not two.
+     *
+     * <p>Phase 5 added a fourth edge that is not an end - {@code ROUTED}, the
+     * failover - so this asserts the terminal set explicitly rather than the
+     * whole row. The distinction matters: three ways for a payment to be over,
+     * plus one way for it to continue somewhere else.
      */
     @Test
     void authorizingCanEndInThreeWays() {
         assertThat(PaymentTransitions.allowedFrom(PaymentState.AUTHORIZING))
-                .containsExactlyInAnyOrder(
-                        PaymentState.AUTHORIZED, PaymentState.FAILED, PaymentState.UNKNOWN);
+                .contains(PaymentState.AUTHORIZED, PaymentState.FAILED, PaymentState.UNKNOWN)
+                .hasSize(4);
+
+        // ...and the fourth is the failover, which is emphatically not an end.
+        assertThat(PaymentTransitions.allowedFrom(PaymentState.AUTHORIZING))
+                .contains(PaymentState.ROUTED);
     }
 
     /**
@@ -107,5 +117,38 @@ class PaymentTransitionsTest {
                 .isInstanceOf(PaymentTransitions.IllegalTransitionException.class);
 
         assertThat(payment.getState()).isEqualTo(PaymentState.INITIATED);
+    }
+
+    @Test
+    @DisplayName("an UNKNOWN payment can never be routed or authorized again")
+    void unknownIsNeverReAuthorized() {
+        // The single most important row in the table, and phase 5's failover
+        // safety net. An UNKNOWN payment may have been charged. Sending it to
+        // another provider - or the same one - would be the double charge the
+        // state exists to prevent, so the machine refuses it structurally
+        // rather than trusting every caller to remember.
+        assertThat(PaymentTransitions.allowedFrom(PaymentState.UNKNOWN))
+                .containsExactlyInAnyOrder(PaymentState.AUTHORIZED, PaymentState.FAILED)
+                .doesNotContain(PaymentState.ROUTED, PaymentState.AUTHORIZING);
+    }
+
+    @Test
+    @DisplayName("AUTHORIZING may return to ROUTED, which is how failover works")
+    void authorizingMayBeReRouted() {
+        // Phase 5. Reachable only when the provider provably never received the
+        // request; the ambiguous path has already gone to UNKNOWN by the time
+        // this would be attempted, and the assertion above closes that door.
+        assertThat(PaymentTransitions.allowedFrom(PaymentState.AUTHORIZING))
+                .contains(PaymentState.ROUTED);
+    }
+
+    @Test
+    @DisplayName("FAILED stays terminal even with failover in the picture")
+    void failedIsStillTerminal() {
+        // A merchant has been told the payment failed. Reviving it afterwards
+        // would authorize a card for a payment its owner believes is over -
+        // which is why failover records the attempt failure WITHOUT moving the
+        // payment to FAILED, and only closes it once no providers remain.
+        assertThat(PaymentTransitions.allowedFrom(PaymentState.FAILED)).isEmpty();
     }
 }

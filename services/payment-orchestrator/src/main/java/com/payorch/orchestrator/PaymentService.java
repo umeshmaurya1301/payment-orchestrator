@@ -1,6 +1,8 @@
 package com.payorch.orchestrator;
 
+import java.util.LinkedHashSet;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import com.payorch.infra.logging.LogEvent;
@@ -13,6 +15,7 @@ import com.payorch.orchestrator.connector.ConnectorApi;
 import com.payorch.orchestrator.connector.ConnectorClient;
 import com.payorch.orchestrator.domain.Payment;
 import com.payorch.orchestrator.domain.PaymentAttempt;
+import com.payorch.orchestrator.routing.FailoverPolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -83,8 +86,96 @@ public class PaymentService {
         return persistence.find(paymentId).map(this::toResponse);
     }
 
+    /**
+     * Authorizes the payment, failing over to another provider when - and only
+     * when - the previous one provably never received the request.
+     *
+     * <p>The loop is the whole of phase 5's failover. Everything that makes it
+     * safe is in {@link FailoverPolicy} and in {@code PaymentTransitions}; what
+     * is here is the bookkeeping: which providers have been tried, and when to
+     * stop.
+     */
+    /**
+     * Authorizes the payment, failing over to another provider when - and only
+     * when - the previous one provably never received the request.
+     *
+     * <p>The loop is all of phase 5's failover. Everything that makes it safe
+     * lives elsewhere and deliberately so: {@link FailoverPolicy} decides
+     * whether an error proves nothing was sent, and {@code PaymentTransitions}
+     * enforces the same rule a second time by refusing to route a payment that
+     * has already reached {@code UNKNOWN}. What is here is only the
+     * bookkeeping - which providers have been tried, and when to stop.
+     */
     private OrchestratorApi.PaymentResponse authorize(UUID paymentId) {
-        Optional<PaymentAttempt> opened = persistence.beginAuthorization(paymentId);
+        Set<String> tried = new LinkedHashSet<>();
+
+        while (true) {
+            Attempt outcome = attemptOnce(paymentId, tried);
+            if (outcome.response() != null) {
+                return outcome.response();
+            }
+            tried.add(outcome.pspId());
+
+            if (tried.size() >= FailoverPolicy.MAX_PROVIDERS_PER_PAYMENT) {
+                return giveUp(paymentId, outcome, "failover_exhausted");
+            }
+
+            log.warn("failing over to another provider",
+                    LogEvent.event()
+                            .with(LogFields.PAYMENT_ID, paymentId.toString())
+                            .with(LogFields.PSP_ID, outcome.pspId())
+                            .with(LogFields.ERROR_CODE, outcome.errorCode())
+                            .with(LogFields.OUTCOME, "FAILOVER")
+                            .args());
+        }
+    }
+
+    /**
+     * Ends a payment that ran out of providers to try.
+     *
+     * <p>The payment is in {@code ROUTED} at this point - alive, with a failed
+     * attempt behind it - so it is closed with the error code of the attempt
+     * that failed last. The merchant sees the real reason rather than
+     * "failover_exhausted", which describes our plumbing and not their payment.
+     */
+    private OrchestratorApi.PaymentResponse giveUp(UUID paymentId, Attempt last, String reason) {
+        Payment failed = persistence.markUnroutable(paymentId);
+
+        log.warn("no provider could accept the payment",
+                LogEvent.event()
+                        .with(LogFields.PAYMENT_ID, paymentId.toString())
+                        .with(LogFields.PSP_ID, last.pspId())
+                        .with(LogFields.STATE, failed.getState().name())
+                        .with(LogFields.OUTCOME, "FAILED")
+                        .with(LogFields.ERROR_CODE, last.errorCode())
+                        .with(LogFields.OPERATION, reason)
+                        .args());
+        return toResponse(failed);
+    }
+
+    /**
+     * The result of offering a payment to one provider.
+     *
+     * <p>A non-null {@code response} means the payment reached a terminal state
+     * and the caller is done. A null one means the attempt failed in a way that
+     * permits another provider to be tried, which is the only circumstance in
+     * which {@code errorCode} is set.
+     */
+    private record Attempt(OrchestratorApi.PaymentResponse response,
+                           String pspId,
+                           String errorCode) {
+
+        static Attempt done(OrchestratorApi.PaymentResponse response) {
+            return new Attempt(response, null, null);
+        }
+
+        static Attempt mayFailOver(String pspId, String errorCode) {
+            return new Attempt(null, pspId, errorCode);
+        }
+    }
+
+    private Attempt attemptOnce(UUID paymentId, Set<String> exclude) {
+        Optional<PaymentAttempt> opened = persistence.beginAuthorization(paymentId, exclude);
         if (opened.isEmpty()) {
             Payment failed = persistence.markUnroutable(paymentId);
             log.warn("payment could not be routed",
@@ -93,7 +184,7 @@ public class PaymentService {
                             .with(LogFields.STATE, failed.getState().name())
                             .with(LogFields.ERROR_CODE, "no_route")
                             .args());
-            return toResponse(failed);
+            return Attempt.done(toResponse(failed));
         }
 
         PaymentAttempt attempt = opened.get();
@@ -128,7 +219,12 @@ public class PaymentService {
             // have authorized the card and lost the response on the way home,
             // and calling that a failure is how a caller is invited to retry
             // into a double charge.
-            return recordUnresolved(paymentId, attempt, "connector_unavailable", startedAt);
+            // NEVER a failover. The request went out and no answer came back,
+            // so the card may already be charged; offering it to a second
+            // provider is the double charge phase 5's nuance section is about.
+            // PaymentTransitions enforces this independently - UNKNOWN has no
+            // path back to ROUTED - so this is belt and braces, on purpose.
+            return Attempt.done(recordUnresolved(paymentId, attempt, "connector_unavailable", startedAt));
 
         } catch (ConnectorClient.ConnectorRejectedException e) {
             // 3c. The connector's breaker is open, so nothing was sent. The card
@@ -136,19 +232,21 @@ public class PaymentService {
             // merchant. Recording UNKNOWN here would manufacture the very
             // uncertainty the breaker exists to prevent, and hand phase 8's
             // poller a reference that was never issued.
-            Payment failed = persistence.recordDeclined(
-                    paymentId, attempt.getId(), null, "circuit_open", elapsedMs(startedAt));
+            // Nothing was sent, so another provider may have this payment.
+            // recordFailedButRoutable keeps the payment alive in ROUTED rather
+            // than closing it, which recordDeclined would do irreversibly.
+            persistence.recordFailedButRoutable(
+                    paymentId, attempt.getId(), "circuit_open", elapsedMs(startedAt));
 
             log.warn("authorization refused: provider circuit open",
                     LogEvent.event()
                             .with(LogFields.PAYMENT_ID, paymentId.toString())
                             .with(LogFields.ATTEMPT_NO, attempt.getAttemptNo())
                             .with(LogFields.PSP_ID, attempt.getPspId())
-                            .with(LogFields.STATE, failed.getState().name())
-                            .with(LogFields.OUTCOME, "FAILED")
+                            .with(LogFields.OUTCOME, "NOT_SENT")
                             .with(LogFields.ERROR_CODE, "circuit_open")
                             .args());
-            return toResponse(failed);
+            return Attempt.mayFailOver(attempt.getPspId(), "circuit_open");
 
         } catch (DeadlineExceededException e) {
             // 3a. The budget ran out - and which of the two ways it ran out
@@ -157,26 +255,31 @@ public class PaymentService {
             if (e.wasStarted()) {
                 // The request went out and was abandoned mid-flight. The
                 // provider may already have authorized the card.
-                return recordUnresolved(paymentId, attempt, "deadline_abandoned", startedAt);
+                // Also never a failover: the request was in flight when it was
+                // abandoned, so the provider may have completed it.
+                return Attempt.done(recordUnresolved(paymentId, attempt, "deadline_abandoned", startedAt));
             }
             // There was too little budget left to send anything at all, so the
             // card was demonstrably not charged. That makes this FAILED, and a
             // FAILED payment is one a merchant may safely retry - which is the
             // entire practical value of drawing the distinction.
-            Payment failed = persistence.recordDeclined(
-                    paymentId, attempt.getId(), null, "deadline_exceeded", elapsedMs(startedAt));
+            persistence.recordFailedButRoutable(
+                    paymentId, attempt.getId(), "deadline_exceeded", elapsedMs(startedAt));
 
             log.warn("authorization not attempted: out of budget",
                     LogEvent.event()
                             .with(LogFields.PAYMENT_ID, paymentId.toString())
                             .with(LogFields.ATTEMPT_NO, attempt.getAttemptNo())
                             .with(LogFields.PSP_ID, attempt.getPspId())
-                            .with(LogFields.STATE, failed.getState().name())
-                            .with(LogFields.OUTCOME, "FAILED")
+                            .with(LogFields.OUTCOME, "NOT_SENT")
                             .with(LogFields.ERROR_CODE, "deadline_exceeded")
                             .with(LogFields.DEADLINE_REMAINING_MS, e.remainingMs())
                             .args());
-            return toResponse(failed);
+            // Eligible in principle; in practice the next attempt will usually
+            // find the budget just as empty and end the payment on the spot.
+            // That is the deadline bounding failover independently of the
+            // provider count, which is the behaviour we want.
+            return Attempt.mayFailOver(attempt.getPspId(), "deadline_exceeded");
         }
 
         log.info("authorization completed",
@@ -189,7 +292,10 @@ public class PaymentService {
                         .with(LogFields.LATENCY_MS, elapsedMs(startedAt))
                         .args());
 
-        return toResponse(result);
+        // Approved, or DECLINED. A decline is a definite answer from a working
+        // provider and is never failed over: retrying a refusal on a second
+        // provider is how one decline becomes a card-issuer fraud flag.
+        return Attempt.done(toResponse(result));
     }
 
     /**

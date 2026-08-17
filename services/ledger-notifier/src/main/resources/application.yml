@@ -1,6 +1,56 @@
 spring:
   application:
     name: ledger-notifier
+
+  # Phase 6e. Balances are relational; the journal is append-only. See
+  # V1__ledger.sql for why they are split across two stores.
+  datasource:
+    url: ${LEDGER_DB_URL:jdbc:mysql://mysql:3306/payorch_ledger?useSSL=false&allowPublicKeyRetrieval=true}
+    username: ${LEDGER_DB_USER:payorch}
+    password: ${LEDGER_DB_PASSWORD:payorch}
+    hikari:
+      pool-name: ledger-pool
+      maximum-pool-size: ${LEDGER_DB_POOL:10}
+  jpa:
+    hibernate:
+      # validate, like every other service here: the migrations own the schema
+      # and Hibernate is not allowed to disagree with them silently.
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+    # The ledger owns its own database, not a schema inside the orchestrator's.
+    # A consumer that shares the producer's database is not really decoupled -
+    # it just has a slower way of reading the same tables.
+    create-schemas: true
+    schemas: payorch_ledger
+    default-schema: payorch_ledger
+  # NOTE THE PROPERTY NAME. Boot 4 moved MongoDB's connection settings:
+  #
+  #   Boot 3   spring.data.mongodb.uri
+  #   Boot 4   spring.mongodb.uri
+  #
+  # The Boot 3 name still appears in the configuration metadata, which is worse
+  # than if it had been deleted: setting it produces no warning, no error, and
+  # no connection. The driver quietly falls back to its own default of
+  # localhost:27017 and the health check reports "Connection refused" against an
+  # address nothing in this compose file mentions.
+  #
+  # Third time this project has met this exact shape - Flyway's autoconfiguration
+  # in phase 0, the OTLP endpoint rename in phase 4, and now this.
+  mongodb:
+    # uuidRepresentation=standard is REQUIRED, not a tuning knob. The Mongo
+    # driver defaults to UNSPECIFIED and then REFUSES to encode a UUID at all:
+    #
+    #   CodecConfigurationException: The uuidRepresentation has not been
+    #   specified, so the UUID cannot be encoded.
+    #
+    # That refusal is the driver being careful rather than awkward. There are two
+    # historic byte orders for UUIDs in BSON, and a driver that picked one would
+    # write data that a different driver reads back as a different UUID - silent,
+    # permanent corruption of a primary key. Refusing to write is the right
+    # failure, and `standard` is the RFC 4122 ordering everything modern uses.
+    uri: ${MONGO_URI:mongodb://mongo:27017/payorch_ledger?replicaSet=rs0&uuidRepresentation=standard}
   threads:
     virtual:
       # Enabled from day one, deliberately. It changes how pool sizing behaves,
@@ -13,6 +63,12 @@ spring:
       # ProblemDetailHandler that web-starter contributes.
       enabled: true
 
+payorch:
+  ledger:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:kafka-1:9092,kafka-2:9092,kafka-3:9092}
+    topic: ${LEDGER_TOPIC:payment.events}
+    group: ${LEDGER_GROUP:ledger-notifier}
+
 server:
   port: 8084
   # The in-flight drain this enables is demonstrated and tested in phase 7.
@@ -22,7 +78,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,loggers,metrics,prometheus
+        include: health,info,loggers,metrics,prometheus,ledger
   endpoint:
     health:
       show-details: always

@@ -529,6 +529,17 @@ services:
       args:
         SERVICE: ledger-notifier
     ports: ["8084:8084"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      kafka-1:
+        condition: service_started
+    environment:
+      LEDGER_DB_URL: jdbc:mysql://mysql:3306/payorch_ledger?useSSL=false&allowPublicKeyRetrieval=true&createDatabaseIfNotExist=true
+      MONGO_URI: mongodb://mongo:27017/payorch_ledger?replicaSet=rs0&uuidRepresentation=standard
+      KAFKA_BOOTSTRAP: kafka-1:9092,kafka-2:9092,kafka-3:9092
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8084/actuator/health"]
       interval: 5s

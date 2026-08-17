@@ -123,6 +123,18 @@ opentelemetry-logback-appender = { module = "io.opentelemetry.instrumentation:op
 # the producer factory, the KafkaTemplate and the listener container lives in
 # spring-boot-kafka, which the starter carries and the raw client does not.
 spring-kafka = { module = "org.springframework.kafka:spring-kafka" }
+# The AUTOCONFIGURATION, which spring-kafka alone does not carry. Fourth time
+# this project has met the Boot 4 module split - Flyway in phase 0, Redis in 3e,
+# OpenTelemetry in phase 4, and now this. The symptom here is the quietest yet:
+# a @KafkaListener that is never registered, because @EnableKafka lives in this
+# module. The application starts, reports healthy, and consumes nothing.
+spring-boot-kafka = { module = "org.springframework.boot:spring-boot-kafka" }
+# Phase 6e. The ledger's immutable journal.
+#
+# The STARTER, for the Boot 4 reason this project has now met four times: the
+# autoconfiguration that builds a MongoClient and a MongoTemplate lives in
+# spring-boot-data-mongodb, which the starter carries and the driver does not.
+spring-boot-starter-data-mongodb = { module = "org.springframework.boot:spring-boot-starter-data-mongodb" }
 spring-kafka-test = { module = "org.springframework.kafka:spring-kafka-test" }
 
 # --- identifiers ----------------------------------------------------------

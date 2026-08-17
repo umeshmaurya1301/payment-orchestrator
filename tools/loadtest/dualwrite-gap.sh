@@ -122,6 +122,31 @@ sleep 5
 E3_before="$(count_events)"
 send "$N" recovered
 sleep 3
+# WAIT FOR THE RELAY TO DRAIN BEFORE JUDGING.
+#
+# The word in the verdict is PERMANENT, and an asynchronous relay makes that a
+# claim about the end state rather than about this instant. The first version
+# measured three seconds after the last payment and reported a permanent gap of
+# 19 against an outbox that was draining as it printed - the events landed
+# seconds later. A measurement taken before the system has finished is not a
+# measurement of the system.
+#
+# The direct arm needs none of this: it has no backlog by construction, which is
+# exactly its problem.
+pending() {
+    mysql_q "SELECT COUNT(*) FROM outbox_event WHERE published_at IS NULL;"
+}
+if [[ "${publisher}" == "outbox" ]]; then
+    echo -n "   waiting for the outbox to drain"
+    for _ in $(seq 1 60); do
+        left="$(pending)"
+        [[ "${left:-0}" == "0" ]] && break
+        echo -n "."
+        sleep 2
+    done
+    echo " ${left:-?} still pending"
+fi
+
 E3="$(count_events)"; P3="$(count_terminal_payments)"
 echo "   payments +$((P3-P2))   events +$((E3-E3_before))"
 

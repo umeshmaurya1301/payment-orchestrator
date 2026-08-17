@@ -15,6 +15,7 @@ import com.payorch.orchestrator.domain.PspConfig;
 import com.payorch.orchestrator.domain.MerchantRouting;
 import com.payorch.orchestrator.domain.MerchantRoutingRepository;
 import com.payorch.orchestrator.domain.PspConfigRepository;
+import com.payorch.orchestrator.events.OutboxWriter;
 import com.payorch.orchestrator.routing.HealthWeightedRouter;
 import com.payorch.orchestrator.routing.RoutingStrategy;
 import org.springframework.http.HttpStatus;
@@ -44,19 +45,22 @@ public class PaymentPersistence {
     private final PaymentOutcomeMetrics outcomes;
     private final HealthWeightedRouter router;
     private final MerchantRoutingRepository merchants;
+    private final OutboxWriter outbox;
 
     public PaymentPersistence(PaymentRepository payments,
                               PaymentAttemptRepository attempts,
                               PspConfigRepository pspConfigs,
                               PaymentOutcomeMetrics outcomes,
                               HealthWeightedRouter router,
-                              MerchantRoutingRepository merchants) {
+                              MerchantRoutingRepository merchants,
+                              OutboxWriter outbox) {
         this.payments = payments;
         this.attempts = attempts;
         this.pspConfigs = pspConfigs;
         this.outcomes = outcomes;
         this.router = router;
         this.merchants = merchants;
+        this.outbox = outbox;
     }
 
     @Transactional
@@ -159,6 +163,7 @@ public class PaymentPersistence {
         Payment payment = require(paymentId);
         payment.transitionTo(PaymentState.FAILED);
         outcomes.record(PaymentState.FAILED);
+        outbox.record(payment);
         return payment;
     }
 
@@ -170,6 +175,11 @@ public class PaymentPersistence {
         Payment payment = require(paymentId);
         payment.transitionTo(PaymentState.AUTHORIZED);
         outcomes.record(PaymentState.AUTHORIZED);
+        // Phase 6b. Inside THIS transaction, which is the whole point - see
+        // OutboxWriter. Written here rather than at PaymentService's call site
+        // because that call runs after this method has already committed, and an
+        // outbox row written after the commit is just a slower dual write.
+        outbox.record(payment);
         return payment;
     }
 
@@ -182,6 +192,7 @@ public class PaymentPersistence {
         Payment payment = require(paymentId);
         payment.transitionTo(PaymentState.FAILED);
         outcomes.record(PaymentState.FAILED);
+        outbox.record(payment);
         return payment;
     }
 
@@ -235,6 +246,7 @@ public class PaymentPersistence {
         Payment payment = require(paymentId);
         payment.transitionTo(PaymentState.UNKNOWN);
         outcomes.record(PaymentState.UNKNOWN);
+        outbox.record(payment);
         return payment;
     }
 

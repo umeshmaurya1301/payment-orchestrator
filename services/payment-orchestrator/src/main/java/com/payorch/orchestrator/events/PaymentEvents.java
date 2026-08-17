@@ -39,6 +39,23 @@ public class PaymentEvents {
      * reconciliation is the consumer that will.
      */
     public void emit(Payment payment) {
+        PaymentEvent event = toEvent(payment);
+        if (event != null) {
+            publisher.publish(event);
+        }
+    }
+
+    /**
+     * The mapping, as a static so {@link OutboxWriter} shares it exactly.
+     *
+     * <p>Shared rather than duplicated because the two arms of phase 6 must
+     * publish the same bytes to be comparable - a difference in the payload
+     * between the direct and outbox arms would make the comparison measure the
+     * mapping instead of the delivery.
+     *
+     * @return null for a non-terminal state
+     */
+    static PaymentEvent toEvent(Payment payment) {
         String type = switch (payment.getState()) {
             case AUTHORIZED -> PaymentEvent.AUTHORIZED;
             case FAILED -> PaymentEvent.FAILED;
@@ -46,10 +63,9 @@ public class PaymentEvents {
             default -> null;
         };
         if (type == null) {
-            return;
+            return null;
         }
-
-        publisher.publish(new PaymentEvent(
+        return new PaymentEvent(
                 Uuid7.generate(),
                 payment.getId(),
                 payment.getMerchantId(),
@@ -61,6 +77,6 @@ public class PaymentEvents {
                 payment.getCardToken(),
                 payment.getCardBin(),
                 payment.getCardLast4(),
-                Instant.now()));
+                Instant.now());
     }
 }

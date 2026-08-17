@@ -82,6 +82,67 @@ public class EventsConfiguration {
     }
 
     /**
+     * The outbox arm. The relay publishes STRINGS - the payload is already
+     * serialized JSON sitting in a column, and deserializing it only to
+     * re-serialize it would risk the relayed bytes differing from the bytes the
+     * transaction committed.
+     */
+    @Bean
+    @ConditionalOnProperty(name = "payorch.events.publisher", havingValue = "outbox")
+    public ProducerFactory<String, String> outboxProducerFactory(
+            @Value("${payorch.events.bootstrap-servers}") String bootstrapServers) {
+        return new DefaultKafkaProducerFactory<>(Map.of(
+                ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers,
+                ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class,
+                ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class,
+                ProducerConfig.ACKS_CONFIG, "all",
+                ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true,
+                ProducerConfig.RETRIES_CONFIG, 3,
+                ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 10_000,
+                ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, 3_000,
+
+                // MAX_BLOCK_MS, and it is not a detail. send() blocks waiting for
+                // cluster metadata BEFORE it ever returns a future, and the
+                // default is 60 seconds. The relay is a single scheduled thread,
+                // so with the brokers down every send stalls the entire relay for
+                // a minute - measured as a 247-second drain after a 30-second
+                // outage, with zero errors logged, because blocking is not
+                // failing. Five seconds makes it fail, log, and retry on the next
+                // poll instead of disappearing.
+                ProducerConfig.MAX_BLOCK_MS_CONFIG, 5_000));
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "payorch.events.publisher", havingValue = "outbox")
+    public KafkaTemplate<String, String> outboxKafkaTemplate(
+            ProducerFactory<String, String> factory) {
+        return new KafkaTemplate<>(factory);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "payorch.events.publisher", havingValue = "outbox")
+    public OutboxRelay outboxRelay(OutboxStore store,
+                                   KafkaTemplate<String, String> kafka,
+                                   @Value("${payorch.events.topic:payment.events}") String topic,
+                                   @Value("${payorch.events.outbox.batch-size:100}") int batchSize,
+                                   @Value("${payorch.events.outbox.lease-seconds:60}") long leaseSeconds) {
+        return new OutboxRelay(store, kafka, topic, batchSize,
+                java.time.Duration.ofSeconds(leaseSeconds));
+    }
+
+    /**
+     * In the outbox arm the publisher itself does NOTHING, and that is correct:
+     * the event was already durably recorded by OutboxWriter inside the payment's
+     * transaction, and the relay delivers it. A publisher that also sent here
+     * would publish every event twice.
+     */
+    @Bean
+    @ConditionalOnProperty(name = "payorch.events.publisher", havingValue = "outbox")
+    public PaymentEventPublisher outboxPublisher() {
+        return event -> { };
+    }
+
+    /**
      * The default when no publisher is configured: do nothing, loudly enough to
      * be found.
      *

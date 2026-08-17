@@ -425,6 +425,62 @@ services:
     volumes:
       - kafka-3-data:/var/lib/kafka/data
 
+  # Phase 6c. The CDC arm of the outbox comparison.
+  #
+  # A separate container, and that IS the point being measured. The polling relay
+  # is fifty lines inside a service that already exists; this is a second
+  # distributed system with its own memory, its own failure modes and its own
+  # upgrade cycle. The phase-6 plan asks for both so the trade is a measurement
+  # rather than an opinion.
+  #
+  # Kafka Connect stores its own state in Kafka - offsets, configs and statuses -
+  # in the three topics named below. They are created with replication factor 3
+  # for the same reason the payment topics are: a connector whose offsets live on
+  # one broker replays or loses its position when that broker dies, which would
+  # make the whole exercise pointless on the exact test phase 6 exists to pass.
+  debezium-connect:
+    image: quay.io/debezium/connect:3.0.0.Final
+    container_name: payorch-debezium
+    profiles: ["async"]
+    mem_limit: 1g
+    depends_on:
+      kafka-1:
+        condition: service_started
+      mysql:
+        condition: service_healthy
+    environment:
+      BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      GROUP_ID: payorch-connect
+      CONFIG_STORAGE_TOPIC: connect_configs
+      OFFSET_STORAGE_TOPIC: connect_offsets
+      STATUS_STORAGE_TOPIC: connect_statuses
+      CONFIG_STORAGE_REPLICATION_FACTOR: 3
+      OFFSET_STORAGE_REPLICATION_FACTOR: 3
+      STATUS_STORAGE_REPLICATION_FACTOR: 3
+      # The connector produces JSON without a schema envelope. With schemas on,
+      # every message carries a full Connect schema description that is larger
+      # than the payload it wraps, and nothing downstream reads it.
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      HEAP_OPTS: "-Xms256m -Xmx512m"
+    ports:
+      # 8090 on the host. Kafka Connect's REST API defaults to 8083, which
+      # psp-connector already owns; 8084 was the obvious second choice and
+      # ledger-notifier owns that. The services occupy 8080-8088 contiguously, so
+      # the tool moves above the block rather than into a gap that the next
+      # service will want. Same rule as SigNoz's UI in phase 4: move the tool,
+      # not the payment path.
+      - "8090:8083"
+    networks: [payorch]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8083/connectors"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
   mongo:
     image: mongo:8.0
     container_name: payorch-mongo

@@ -1,0 +1,82 @@
+{
+  "name": "payorch-outbox",
+  "config": {
+    "connector.class": "io.debezium.connector.mysql.MySqlConnector",
+    "database.hostname": "mysql",
+    "database.port": "3306",
+    "database.user": "debezium",
+    "database.password": "debezium",
+    "_comment_server_id": [
+      "Must be unique across everything reading this server's binlog, because",
+      "MySQL treats a CDC reader as a replica and two replicas sharing a",
+      "server_id kick each other off in a loop. The database itself is 1, so",
+      "this takes a number far away from anything a real replica would pick."
+    ],
+    "database.server.id": "184054",
+    "topic.prefix": "payorch",
+    "database.include.list": "payorch",
+    "table.include.list": "payorch.outbox_event",
+    "_comment_snapshot": [
+      "schema_only, not initial. An initial snapshot would replay every row",
+      "already in outbox_event - which for this table means republishing every",
+      "event the polling relay has ever delivered. The rows are a log of what",
+      "was already sent, so streaming from now is the correct starting point,",
+      "and it is also why this comparison can be run without wiping the table."
+    ],
+    "snapshot.mode": "schema_only",
+    "_comment_schema_history": [
+      "Debezium stores the table's DDL history in Kafka so it can interpret old",
+      "binlog entries after a schema change. RF 3 for the same reason as every",
+      "other internal topic here: a connector whose history lives on one broker",
+      "cannot recover when that broker dies, which is the exact test phase 6",
+      "has to pass."
+    ],
+    "schema.history.internal.kafka.bootstrap.servers": "kafka-1:9092,kafka-2:9092,kafka-3:9092",
+    "schema.history.internal.kafka.topic": "payorch.schema-history",
+    "schema.history.internal.kafka.replication.factor": "3",
+    "_comment_router": [
+      "The EventRouter SMT is what turns a row change into a domain event. It",
+      "unwraps the Debezium envelope, publishes the payload column as the",
+      "message body, and keys by aggregate_id - the same paymentId key the",
+      "polling relay uses, so per-payment ordering holds in both arms.",
+      "",
+      "Without this, consumers would receive Debezium's change envelope -",
+      "before/after/source/op - and every consumer would need to know it was",
+      "reading a MySQL row rather than a payment event. The CDC arm would then",
+      "be a different contract rather than a different delivery mechanism, and",
+      "the comparison would be meaningless."
+    ],
+    "transforms": "outbox",
+    "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
+    "transforms.outbox.table.field.event.id": "id",
+    "transforms.outbox.table.field.event.key": "aggregate_id",
+    "transforms.outbox.table.field.event.type": "event_type",
+    "transforms.outbox.table.field.event.payload": "payload",
+    "_comment_topic": [
+      "A SEPARATE topic from the polling relay's, deliberately. Both arms can",
+      "then run at once against the same outbox table and be compared on the",
+      "same traffic, rather than on two runs at two different times. Pointing",
+      "them at one topic would double-publish every event and measure nothing."
+    ],
+    "transforms.outbox.route.topic.replacement": "payment.events.cdc",
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "_comment_tombstones": [
+      "Off. The router emits a tombstone when a row is deleted, and nothing",
+      "deletes outbox rows here - but a future retention job would, and a",
+      "tombstone for a payment event would read downstream as 'this payment",
+      "never happened'."
+    ],
+    "transforms.outbox.route.tombstone.on.empty.payload": "false",
+    "_comment_route_by": [
+      "route.by.field is REQUIRED even when the topic is a fixed string. The SMT",
+      "defaults it to `aggregatetype`, Debezium's own outbox convention, and fails",
+      "the record with `aggregatetype is not a valid field name` against any table",
+      "that does not use their column names. The connector reports RUNNING while",
+      "every record dies in the transform - a healthy-looking pipeline publishing",
+      "nothing, which is the same shape of failure phase 4 found in the OTLP",
+      "property rename."
+    ],
+    "transforms.outbox.route.by.field": "event_type"
+  }
+}

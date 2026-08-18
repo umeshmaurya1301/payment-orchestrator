@@ -39,6 +39,14 @@ public class OutboxEvent {
     @Column(name = "payload", nullable = false, columnDefinition = "TEXT")
     private String payload;
 
+    /**
+     * The W3C trace context of the request that created this event, captured
+     * inside its transaction. NULL when nothing was being traced, and for every
+     * row written before V11. See that migration for why this is a column.
+     */
+    @Column(name = "traceparent", length = 64)
+    private String traceparent;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -59,11 +67,17 @@ public class OutboxEvent {
     }
 
     public static OutboxEvent of(UUID aggregateId, String eventType, String payload) {
+        return of(aggregateId, eventType, payload, null);
+    }
+
+    public static OutboxEvent of(UUID aggregateId, String eventType, String payload,
+                                 String traceparent) {
         OutboxEvent event = new OutboxEvent();
         event.id = Uuid7.generate();
         event.aggregateId = aggregateId;
         event.eventType = eventType;
         event.payload = payload;
+        event.traceparent = traceparent;
         event.createdAt = Instant.now();
         event.attempts = 0;
         return event;
@@ -112,6 +126,10 @@ public class OutboxEvent {
 
     public String getPayload() {
         return payload;
+    }
+
+    public String getTraceparent() {
+        return traceparent;
     }
 
     public Instant getCreatedAt() {

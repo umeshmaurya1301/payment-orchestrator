@@ -55,7 +55,8 @@ public class OutboxStore {
         return outbox.claimUnpublished(cutoff, Limit.of(batchSize)).stream()
                 .peek(OutboxEvent::claim)
                 .map(e -> new OutboxRelay.Claimed(
-                        e.getId(), e.getAggregateId().toString(), e.getPayload()))
+                        e.getId(), e.getAggregateId().toString(), e.getPayload(),
+                        e.getTraceparent()))
                 .toList();
     }
 

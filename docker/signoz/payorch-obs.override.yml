@@ -16,10 +16,30 @@
 # to 3, and observability is one extra `-f`. That is also what the phase-0 note
 # in docker-compose.yml promised when it reserved the `obs` profile.
 #
-# The four services listed are the ones that carry a payment. The simulators are
+# The services listed are the ones that carry a payment. The simulators are
 # deliberately absent: they stand in for other people's systems, and a trace
 # that showed our instrumentation inside a provider would be describing a
 # topology we do not have.
+#
+# LEDGER-NOTIFIER WAS MISSING UNTIL PHASE 6g, AND THAT IS WORTH RECORDING
+#
+# It has had observability-starter since phase 4 - its build file still carries
+# the comment "so an event consumed forty seconds after the payment can still be
+# tied back to it" - and it had never exported a single span, because this file
+# is what points a service at the collector and this file did not name it. The
+# service came up clean, logged nothing unusual, and shipped its traces to
+# http://localhost:4318 inside its own container, where nothing listens.
+#
+# The list was correct when it was written. In phase 4 the ledger consumed
+# nothing and the four services above were the whole payment path. Phase 6 made
+# the ledger part of a payment's life and nothing came back to this file, so the
+# service that phase 4's own comment used as its example of why tracing matters
+# was the one service excluded from it.
+#
+# Symptom, from tools/loadtest/trace-propagation.sh: the trace showed four
+# services and the ledger's log lines carried the right trace id - so the
+# context HAD crossed Kafka - while ClickHouse held zero ledger spans. Trace
+# propagation looked half-broken and was entirely fine; the export was missing.
 
 networks:
   signoz-network:
@@ -87,6 +107,14 @@ services:
     networks: [payorch, signoz-network]
 
   mock-psp-simulator:
+    environment:
+      <<: *otlp
+    networks: [payorch, signoz-network]
+
+  # Phase 6g. The async half of a payment's trace. Only started under the
+  # `async` profile, so this block is inert for phases 1 to 5 exactly like the
+  # rest of the ledger's compose entry.
+  ledger-notifier:
     environment:
       <<: *otlp
     networks: [payorch, signoz-network]

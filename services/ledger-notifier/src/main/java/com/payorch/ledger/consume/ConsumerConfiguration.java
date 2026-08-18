@@ -120,6 +120,27 @@ public class ConsumerConfiguration {
         // rely entirely on idempotency to survive its own normal operation.
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.RECORD);
 
+        // Phase 6g. THE CONSUMER HALF OF TRACE PROPAGATION, and it is one line
+        // because the hard half was on the producer side.
+        //
+        // With this on, the container wraps each record in an Observation whose
+        // parent is extracted from the record's W3C `traceparent` header. Two
+        // things follow, and the second is the one people forget:
+        //
+        //   1. the consume span joins the trace of the API call that created
+        //      the payment, however many minutes ago that was;
+        //   2. every log line the listener writes carries that trace id in MDC,
+        //      because the MDC correlation hangs off the observation scope.
+        //
+        // Before this, the ledger consumed events correctly and appeared in
+        // ZERO spans and ZERO log lines of the trace that caused them - measured
+        // in tools/loadtest/trace-propagation.sh before the fix was written.
+        //
+        // It also survives the retry ladder for free: the recoverer copies the
+        // original headers onto the retry record, so a message that lands in the
+        // 10-minute tier is still a descendant of the same request.
+        factory.getContainerProperties().setObservationEnabled(true);
+
         // Off in the context test, which has no broker. Not a test-only hook
         // bolted on: an operator wants this switch during an incident too, to
         // stop consuming without stopping the service and losing its /actuator.

@@ -4,6 +4,7 @@ import java.util.Map;
 
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringSerializer;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -12,6 +13,8 @@ import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.support.serializer.JacksonJsonSerializer;
+
+import com.payorch.infra.observability.TraceCarrier;
 
 /**
  * The producer side of phase 6.
@@ -61,10 +64,28 @@ public class EventsConfiguration {
                 ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, 5));
     }
 
+    /**
+     * The direct arm's template, with observation ON.
+     *
+     * <p>One line, and it is the whole trace-propagation story for a synchronous
+     * publisher: this template sends from the request thread while the trace is
+     * still current, so Spring Kafka's producer observation injects the W3C
+     * headers with nothing further to write.
+     *
+     * <p>It is worth leaving here as the contrast rather than deleting with the
+     * rest of the direct arm. Phase 6g's actual work exists BECAUSE the outbox
+     * cannot use this: {@link OutboxRelay} publishes on a scheduler thread minutes
+     * later, where "the current trace" is the polling loop. The same flag there
+     * would produce well-formed headers pointing at the wrong trace, which is
+     * strictly worse than no headers at all - a broken trace announces itself,
+     * a plausible one does not.
+     */
     @Bean
     public KafkaTemplate<String, PaymentEvent> paymentEventKafkaTemplate(
             ProducerFactory<String, PaymentEvent> factory) {
-        return new KafkaTemplate<>(factory);
+        KafkaTemplate<String, PaymentEvent> template = new KafkaTemplate<>(factory);
+        template.setObservationEnabled(true);
+        return template;
     }
 
     /**
@@ -116,6 +137,8 @@ public class EventsConfiguration {
     @ConditionalOnProperty(name = "payorch.events.publisher", havingValue = "outbox")
     public KafkaTemplate<String, String> outboxKafkaTemplate(
             ProducerFactory<String, String> factory) {
+        // Observation deliberately NOT enabled - see paymentEventKafkaTemplate.
+        // The relay injects the row's stored context by hand instead.
         return new KafkaTemplate<>(factory);
     }
 
@@ -125,9 +148,10 @@ public class EventsConfiguration {
                                    KafkaTemplate<String, String> kafka,
                                    @Value("${payorch.events.topic:payment.events}") String topic,
                                    @Value("${payorch.events.outbox.batch-size:100}") int batchSize,
-                                   @Value("${payorch.events.outbox.lease-seconds:60}") long leaseSeconds) {
+                                   @Value("${payorch.events.outbox.lease-seconds:60}") long leaseSeconds,
+                                   ObjectProvider<TraceCarrier> traces) {
         return new OutboxRelay(store, kafka, topic, batchSize,
-                java.time.Duration.ofSeconds(leaseSeconds));
+                java.time.Duration.ofSeconds(leaseSeconds), traces.getIfAvailable());
     }
 
     /**

@@ -111,6 +111,19 @@ spring-boot-starter-opentelemetry = { module = "org.springframework.boot:spring-
 # payment is - a span per tokenization and per state transition is hand-written.
 micrometer-tracing = { module = "io.micrometer:micrometer-tracing" }
 micrometer-observation = { module = "io.micrometer:micrometer-observation" }
+# Phase 6g, TEST ONLY. The OtelTracer/OtelPropagator bridge, so TraceCarrierTest
+# can build the same Tracer and Propagator Boot's autoconfiguration builds rather
+# than asserting against a mock that echoes whatever it was handed - the claim
+# under test is about the exact bytes of a W3C traceparent surviving a database
+# column, which no stub can fail.
+#
+# Boot 4 split its own autoconfiguration out into
+# spring-boot-micrometer-tracing-opentelemetry, and that module carries the
+# CONFIGURATION - CompositeTextMapPropagator, the OTLP exporters, the sampler
+# properties - not the bridge classes themselves. Those are still in
+# micrometer-tracing-bridge-otel, which arrives transitively at runtime and has
+# to be asked for by name to compile a test against.
+micrometer-tracing-bridge-otel = { module = "io.micrometer:micrometer-tracing-bridge-otel" }
 # Thread-local context across a handoff. Not tracing-specific on purpose: it
 # carries MDC through the same mechanism, so a trace-only implementation would
 # have produced correlated traces attached to uncorrelated logs.

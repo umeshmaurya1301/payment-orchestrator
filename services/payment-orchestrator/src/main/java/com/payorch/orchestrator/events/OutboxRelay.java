@@ -1,10 +1,13 @@
 package com.payorch.orchestrator.events;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -12,6 +15,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 
 import com.payorch.infra.logging.LogEvent;
 import com.payorch.infra.logging.LogFields;
+import com.payorch.infra.observability.TraceCarrier;
 
 /**
  * Moves outbox rows to Kafka, and marks them done.
@@ -62,6 +66,22 @@ import com.payorch.infra.logging.LogFields;
  * annotated method bypasses it entirely - which would have left the marks
  * unflushed and republished every event on every poll. See that class.
  *
+ * <h2>Phase 6g: the trace headers are injected by hand</h2>
+ *
+ * <p>Spring Kafka can inject trace context into a record automatically -
+ * {@code KafkaTemplate.setObservationEnabled(true)} and it happens. That works
+ * for the direct publisher, which sends on the request thread while the trace is
+ * still current, and it is worth exactly nothing here: this method runs on a
+ * scheduler thread, and the only context it could inject automatically is its
+ * own polling loop's. Every event would arrive at the ledger correctly traced
+ * into a trace that contains nothing but the relay.
+ *
+ * <p>So the context is read from the row and injected explicitly. See
+ * {@link TraceCarrier}, {@code V11__outbox_traceparent.sql}, and note that the
+ * span opened here is a CHILD of the stored context rather than a resumption of
+ * it - the relay lag is then visible in the waterfall as the gap between the
+ * request and the publish, which is the number phase 6c compared CDC against.
+ *
  * <h2>What it costs, which phase 6c will measure</h2>
  *
  * <p>A query every poll interval whether or not there is work, and a publish
@@ -73,10 +93,19 @@ public class OutboxRelay {
 
     private static final Logger log = LoggerFactory.getLogger(OutboxRelay.class);
 
+    /** The span name for the publish. Named after the mechanism, not the topic. */
+    public static final String PUBLISH_SPAN = "outbox publish";
+
     private final OutboxStore store;
     private final KafkaTemplate<String, String> kafka;
     private final String topic;
     private final int batchSize;
+
+    /**
+     * Nullable. A relay in a service with no tracing publishes without headers,
+     * which is what it did before phase 6g and is not a failure.
+     */
+    private final TraceCarrier traces;
 
     /**
      * How long a claim is honoured before another relay may take the row.
@@ -94,12 +123,14 @@ public class OutboxRelay {
                        KafkaTemplate<String, String> kafka,
                        String topic,
                        int batchSize,
-                       Duration leaseDuration) {
+                       Duration leaseDuration,
+                       TraceCarrier traces) {
         this.store = store;
         this.kafka = kafka;
         this.topic = topic;
         this.batchSize = batchSize;
         this.leaseDuration = leaseDuration;
+        this.traces = traces;
     }
 
     /** Deliberately NOT {@code @Transactional}. See the class javadoc. */
@@ -114,7 +145,7 @@ public class OutboxRelay {
             try {
                 // Outside any transaction. This is the network call the first
                 // version made while holding the claim's locks.
-                kafka.send(topic, event.key(), event.payload()).get();
+                publish(event);
                 store.markPublished(event.id());
                 relayed.incrementAndGet();
             } catch (Exception e) {
@@ -139,8 +170,43 @@ public class OutboxRelay {
         }
     }
 
-    /** A claimed row, detached from JPA. */
-    public record Claimed(UUID id, String key, String payload) {
+    /**
+     * Publishes one event, carrying the trace context the row remembers.
+     *
+     * <p>The headers come from the span opened around the send, not from the
+     * stored value directly, so what the consumer extracts identifies the
+     * publish rather than the original request. Both are in the same trace; the
+     * difference is whether the waterfall has a publish step in it.
+     */
+    private void publish(Claimed event) throws Exception {
+        if (traces == null) {
+            kafka.send(record(event, Map.of())).get();
+            return;
+        }
+        traces.continuing(event.traceparent(), PUBLISH_SPAN,
+                headers -> kafka.send(record(event, headers)).get());
+    }
+
+    /**
+     * A record rather than the three-argument {@code send}, purely so headers
+     * can be attached. Partition stays null: the key decides it, and that is
+     * what makes per-payment ordering real.
+     */
+    private ProducerRecord<String, String> record(Claimed event, Map<String, String> headers) {
+        ProducerRecord<String, String> record =
+                new ProducerRecord<>(topic, null, event.key(), event.payload());
+        headers.forEach((name, value) ->
+                record.headers().add(name, value.getBytes(StandardCharsets.UTF_8)));
+        return record;
+    }
+
+    /**
+     * A claimed row, detached from JPA.
+     *
+     * @param traceparent the trace context captured when the row was written,
+     *                    or null. See {@code V11__outbox_traceparent.sql}.
+     */
+    public record Claimed(UUID id, String key, String payload, String traceparent) {
     }
 
     public long relayed() {

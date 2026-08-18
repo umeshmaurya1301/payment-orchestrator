@@ -1,8 +1,10 @@
 package com.payorch.orchestrator.events;
 
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import com.payorch.infra.observability.TraceCarrier;
 import com.payorch.orchestrator.domain.Payment;
 
 import tools.jackson.databind.ObjectMapper;
@@ -30,6 +32,15 @@ import tools.jackson.databind.ObjectMapper;
  *
  * <h2>No Kafka here</h2>
  *
+ * <h2>Phase 6g: the trace context is captured HERE, and only here</h2>
+ *
+ * <p>This method runs on the request thread, inside the payment's transaction,
+ * which makes it the last place in the event's life where the originating trace
+ * still exists as a thread-local. Everything downstream - the relay, Debezium,
+ * the consumer, the retry tiers - is on some other thread at some other time.
+ * Capturing it anywhere later captures the wrong thing, and captures it
+ * convincingly enough that the traces look fine until somebody follows one.
+ *
  * <p>Nothing in this class talks to a broker, which is the second half of the
  * point. A network call inside a database transaction holds a pooled connection
  * for the duration of a remote call - phase 2 measured what that does to this
@@ -42,9 +53,19 @@ public class OutboxWriter {
     private final OutboxRepository outbox;
     private final ObjectMapper mapper;
 
-    public OutboxWriter(OutboxRepository outbox, ObjectMapper mapper) {
+    /**
+     * {@code ObjectProvider} because this service must start and work with
+     * tracing switched off - phases 1 to 3 run without a collector, and an
+     * outbox that refused to record an event because nobody was watching would
+     * be a resilience regression dressed up as observability.
+     */
+    private final ObjectProvider<TraceCarrier> traces;
+
+    public OutboxWriter(OutboxRepository outbox, ObjectMapper mapper,
+                        ObjectProvider<TraceCarrier> traces) {
         this.outbox = outbox;
         this.mapper = mapper;
+        this.traces = traces;
     }
 
     /**
@@ -60,10 +81,12 @@ public class OutboxWriter {
             return;
         }
         assertTransactional();
+        TraceCarrier carrier = traces.getIfAvailable();
         outbox.save(OutboxEvent.of(
                 event.paymentId(),
                 event.type(),
-                mapper.writeValueAsString(event)));
+                mapper.writeValueAsString(event),
+                carrier == null ? null : carrier.capture()));
     }
 
     /**

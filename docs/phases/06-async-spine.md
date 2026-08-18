@@ -145,7 +145,16 @@ Alerts on **consumer lag** and **DLQ depth**.
       nothing posted, replayed in one call, and the books balanced: sum = 0, no
       event posted twice. Replaying the *same* records again produced **13
       duplicates and zero new entries**
-- [ ] A single SigNoz trace spanning the sync path **and** the async webhook delivery
+- [ ] A single SigNoz trace spanning the sync path **and** the async webhook
+      delivery — **the Kafka half is done and measured**, the webhook half needs
+      webhooks. `tools/loadtest/trace-propagation.sh`. Before: the ledger posted
+      the event and appeared in **0 spans and 0 log lines** of the trace that
+      caused it. After: **one trace, five services**, `outbox publish` at t+408ms
+      and `payment.events process` at t+418ms in the same waterfall as the
+      merchant's `POST /v1/payments`. A deliberately failed delivery and its
+      5-second-tier redelivery are three spans of that one trace, the second
+      marked `Error`, the third 5.1s later. The webhook will inherit the
+      mechanism rather than need a new one
 - [x] DLQ messages contain no unmasked PII — asserted in the run rather than
       argued from the record definition: **0** digit runs of card length and **0**
       `cvv`/`expiry`/`pan` fields across the sampled DLQ payloads. The message
@@ -207,12 +216,35 @@ started because the handler passed field names that are not on the `LogFields`
 allowlist and `LogEvent` threw — the phase-4 PII control working exactly as
 designed, in the one place where an exception is most expensive.
 
+**Trace context is a THREAD-LOCAL, and the outbox has no thread to hold it.**
+The obvious fix — `KafkaTemplate.setObservationEnabled(true)` — is correct for a
+publisher that sends on the request thread and is worse than nothing for a relay
+that sends on a scheduler thread half a second later. It succeeds: it injects
+well-formed headers naming the polling loop, produces a producer span, and yields
+a trace that is internally consistent and describes nothing anybody asked about.
+There is no error to find. Capture the context where it exists — inside the
+payment's transaction, in the row — and read it back at publish time. Same
+argument the outbox makes about the event, applied to the trace.
+
+**A component can be traced, correlated, and exporting to nowhere.** Found in 6g:
+`ledger-notifier` had observability-starter since phase 4 and had never exported a
+span, because the compose override that points services at the collector lists
+four services by name and the ledger is not one of them. The list was correct when
+written; phase 6 changed what the payment path is and nothing came back to the
+file. The symptom is the confusing one — the right `traceId` in the service's log
+lines, and zero spans in ClickHouse — which reads as half-broken propagation and
+is a missing endpoint.
+
 **Outbox relay double-publishing.** At-least-once is fine — that is what the
 idempotent producer and consumer-side idempotency are for. Design for it rather
 than trying to achieve exactly-once by hand.
 
 **Trace context lost at the Kafka boundary.** It does not propagate for free.
-Inject and extract explicitly, then verify with an actual end-to-end trace.
+Inject and extract explicitly, then verify with an actual end-to-end trace. The
+verification is the load-bearing half: generate the trace id in the harness and
+send it in, rather than making a request and looking for its trace afterwards. A
+run that searches for the trace can only find one that exists, so it cannot fail
+in the way that matters.
 
 ## Interview payload
 

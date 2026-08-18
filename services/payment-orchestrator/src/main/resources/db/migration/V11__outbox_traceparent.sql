@@ -1,0 +1,45 @@
+-- Phase 6g. The trace context, as a column.
+--
+-- WHY A COLUMN AND NOT A HEADER SET AT PUBLISH TIME
+--
+-- Trace context propagates for free over HTTP because both ends of the hop are
+-- joined by a call happening right now, on a thread that still carries the
+-- context. The outbox has neither property. The row is written on a request
+-- thread inside the payment's transaction; it is published by a scheduled
+-- thread half a second later, or sixty seconds later after a lease expiry, or
+-- after a restart, or - in the CDC arm - by Debezium, which is not this JVM and
+-- has never heard of the request.
+--
+-- By the time anything talks to Kafka the ambient context is gone. A relay that
+-- injected "the current trace" would be injecting its own polling loop, and the
+-- result is the failure this phase measured before writing any code: the ledger
+-- consumed the event, posted it correctly, and appeared in ZERO log lines and
+-- ZERO spans of the trace that caused it. Not a broken trace - a missing half.
+--
+-- So the context is captured where it exists and stored where the event is
+-- stored. That is the outbox's own argument (if two facts must agree, one
+-- transaction writes both) applied to the trace rather than to the payload, and
+-- it is why this column is added here rather than solved with a configuration
+-- flag.
+--
+-- THE SHAPE
+--
+-- W3C traceparent: `00-<32 hex trace id>-<16 hex span id>-<2 hex flags>`, 55
+-- characters. VARCHAR(64) leaves room for a longer future version field without
+-- another migration, and costs nothing - the column is NULL for every row
+-- written before this migration and for every event produced while tracing is
+-- off, which the relay treats as "publish without headers" rather than as an
+-- error.
+--
+-- NOT INDEXED, deliberately. Nothing queries the outbox by trace id; the trace
+-- id is queried in SigNoz, which is the entire point. An index here would be a
+-- write cost on the hot insert path of every payment, paid for a lookup nobody
+-- performs.
+--
+-- NO PII CONCERN, and worth stating because every other column here got one: a
+-- traceparent is two random identifiers and a flag byte. It carries no baggage,
+-- no attributes and no user data - W3C `tracestate` would, which is why it is
+-- not stored.
+
+ALTER TABLE outbox_event
+    ADD COLUMN traceparent VARCHAR(64) NULL AFTER payload;

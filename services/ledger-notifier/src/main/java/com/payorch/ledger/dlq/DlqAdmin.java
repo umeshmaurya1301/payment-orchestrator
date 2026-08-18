@@ -21,6 +21,7 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.header.Header;
@@ -31,6 +32,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.retrytopic.RetryTopicHeaders;
 import org.springframework.kafka.support.KafkaHeaders;
+
+import com.payorch.infra.observability.TraceCarrier;
 
 /**
  * Reading and replaying the dead-letter queue.
@@ -170,8 +173,7 @@ public class DlqAdmin {
                     // record failed on: a replay is a fresh attempt, and
                     // dropping it back into retry-600000 would give the operator
                     // a ten-minute wait for a fix they just deployed.
-                    kafka.send(mainTopic, record.key(), (Object) record.value())
-                            .get(10, TimeUnit.SECONDS);
+                    kafka.send(replayRecord(record)).get(10, TimeUnit.SECONDS);
                     sent.incrementAndGet();
                     byOriginalTopic.merge(original == null ? "unknown" : original, 1L, Long::sum);
                 } catch (Exception e) {
@@ -196,6 +198,37 @@ public class DlqAdmin {
         out.put("byOriginalTopic", byOriginalTopic);
         out.put("tookMs", Duration.between(startedAt, Instant.now()).toMillis());
         log.warn("DLQ replay: {} record(s) republished to {}", sent.get(), mainTopic);
+        return out;
+    }
+
+    /**
+     * The record to republish: the original key and bytes, plus the original
+     * trace context.
+     *
+     * <p>Phase 6g. Copying {@code traceparent} verbatim rather than starting a
+     * fresh trace is the whole value of the header here. A replay happens
+     * minutes or days after the payment, run by a human who has just fixed
+     * something, and the question they are about to be asked is "what happened
+     * to payment X". If the replay starts its own trace, the answer lives in two
+     * traces joined by nothing, and the trace of the original request stops at
+     * the DLQ with no ending.
+     *
+     * <p>Copied verbatim, so the replayed record's consume span is a SIBLING of
+     * the four that failed - one trace showing the request, the publish, three
+     * tiers of failure, the dead-letter, and the delivery that finally worked.
+     *
+     * <p>Only {@code traceparent} is copied. The rest of the DLQ headers are
+     * forensics about the failure - the original topic, the exception, the
+     * attempt count - and carrying them onto a fresh attempt would make the
+     * replayed record claim to have already failed.
+     */
+    private ProducerRecord<String, Object> replayRecord(ConsumerRecord<String, byte[]> record) {
+        ProducerRecord<String, Object> out =
+                new ProducerRecord<>(mainTopic, null, record.key(), (Object) record.value());
+        Header traceparent = record.headers().lastHeader(TraceCarrier.TRACEPARENT);
+        if (traceparent != null) {
+            out.headers().add(TraceCarrier.TRACEPARENT, traceparent.value());
+        }
         return out;
     }
 

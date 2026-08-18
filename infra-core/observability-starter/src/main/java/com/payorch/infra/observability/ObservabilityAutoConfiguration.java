@@ -2,6 +2,7 @@ package com.payorch.infra.observability;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.tracing.Tracer;
+import io.micrometer.tracing.propagation.Propagator;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -125,5 +126,29 @@ public class ObservabilityAutoConfiguration {
             return new Seams(io.micrometer.tracing.Tracer.NOOP);
         }
         return new Seams(resolved);
+    }
+
+    /**
+     * Trace context that can be written to a column, for phase 6g.
+     *
+     * <p>Same {@code ObjectProvider} reasoning as {@link #seams}, and one extra:
+     * this one needs a {@code Propagator} as well, and a service can have a
+     * {@code Tracer} without one if propagation has been switched off. Both
+     * fall back to their NOOP instances, which makes {@code capture()} return
+     * null and {@code continuing()} run the work plainly - exactly the untraced
+     * behaviour the outbox relay had before this existed.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnClass({Tracer.class, Propagator.class})
+    public TraceCarrier traceCarrier(ObjectProvider<Tracer> tracer,
+                                     ObjectProvider<Propagator> propagator) {
+        Tracer resolvedTracer = tracer.getIfAvailable();
+        Propagator resolvedPropagator = propagator.getIfAvailable();
+        if (resolvedTracer == null || resolvedPropagator == null) {
+            log.warn("no Tracer or Propagator bean: trace context will not cross the Kafka boundary");
+            return new TraceCarrier(Tracer.NOOP, Propagator.NOOP);
+        }
+        return new TraceCarrier(resolvedTracer, resolvedPropagator);
     }
 }

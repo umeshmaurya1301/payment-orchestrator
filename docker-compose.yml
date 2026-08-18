@@ -540,12 +540,54 @@ services:
       LEDGER_DB_URL: jdbc:mysql://mysql:3306/payorch_ledger?useSSL=false&allowPublicKeyRetrieval=true&createDatabaseIfNotExist=true
       MONGO_URI: mongodb://mongo:27017/payorch_ledger?replicaSet=rs0&uuidRepresentation=standard
       KAFKA_BOOTSTRAP: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      # Phase 6h. Off by default for the same reason EVENTS_PUBLISHER is: a
+      # service that posted to a merchant's URL the moment it started would make
+      # every earlier experiment depend on a receiver being up.
+      WEBHOOKS_ENABLED: ${WEBHOOKS_ENABLED:-false}
+      WEBHOOKS_URL: ${WEBHOOKS_URL:-http://webhook-sink:9096/}
+      # Selectable, like the direct-vs-outbox publisher, so the unsigned arm can
+      # be RE-RUN rather than quoted from a writeup.
+      WEBHOOKS_SIGN: ${WEBHOOKS_SIGN:-true}
+      WEBHOOKS_SECRET: ${WEBHOOK_SECRET:-}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8084/actuator/health"]
       interval: 5s
       timeout: 3s
       retries: 20
       start_period: 60s
+
+  # Phase 6h. A merchant's webhook endpoint - the receiving half of outbound
+  # webhooks, and the only place the signature scheme can actually be tested.
+  #
+  # A test double rather than a real merchant, and deliberately NOT written in
+  # Java against the same signer: two halves of one codebase sharing one helper
+  # will always agree, including when both are wrong. See docker/webhook-sink.
+  #
+  # WEBHOOK_SECRET empty is the "before" arm - an endpoint that accepts whatever
+  # arrives, which is what an unsigned webhook integration is. The experiment
+  # sets it to turn verification on.
+  webhook-sink:
+    image: python:3.13-alpine
+    container_name: payorch-webhook-sink
+    profiles: ["async"]
+    command: ["python", "-u", "/app/sink.py"]
+    volumes:
+      - ./docker/webhook-sink:/app:ro
+    environment:
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+      WEBHOOK_TOLERANCE: ${WEBHOOK_TOLERANCE:-300}
+      WEBHOOK_DEDUPE: ${WEBHOOK_DEDUPE:-false}
+    ports: ["9096:9096"]
+    networks: [payorch]
+    healthcheck:
+      # python, not curl or wget - the slim image has neither, and a healthcheck
+      # that always fails would hold up `docker compose up -d` with a timeout
+      # rather than an error.
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://localhost:9096')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   # ----------------------------------------------------------------- obs ----
   #

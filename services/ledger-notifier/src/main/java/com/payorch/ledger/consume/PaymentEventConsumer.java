@@ -19,10 +19,13 @@ import org.springframework.kafka.support.serializer.DeserializationException;
 import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.stereotype.Component;
 
+import org.springframework.beans.factory.ObjectProvider;
+
 import com.payorch.infra.chaos.ChaosSeams;
 import com.payorch.infra.logging.LogEvent;
 import com.payorch.infra.logging.LogFields;
 import com.payorch.ledger.domain.LedgerPosting;
+import com.payorch.ledger.webhook.WebhookDispatcher;
 
 /**
  * Consumes payment events into the ledger.
@@ -95,15 +98,24 @@ public class PaymentEventConsumer {
 
     private final LedgerPosting ledger;
     private final ChaosSeams seams;
+
+    /**
+     * Absent unless {@code payorch.webhooks.enabled} is on. Phases 1 to 6g run
+     * with no receiver at all, and a consumer that required one would make every
+     * earlier experiment depend on this one.
+     */
+    private final ObjectProvider<WebhookDispatcher> webhooks;
     private final AtomicLong consumed = new AtomicLong();
     private final AtomicLong duplicates = new AtomicLong();
     private final AtomicLong retried = new AtomicLong();
     private final AtomicLong deadLettered = new AtomicLong();
     private final AtomicLong dltLogFailures = new AtomicLong();
 
-    public PaymentEventConsumer(LedgerPosting ledger, ChaosSeams seams) {
+    public PaymentEventConsumer(LedgerPosting ledger, ChaosSeams seams,
+                                ObjectProvider<WebhookDispatcher> webhooks) {
         this.ledger = ledger;
         this.seams = seams;
+        this.webhooks = webhooks;
     }
 
     @RetryableTopic(
@@ -182,14 +194,45 @@ public class PaymentEventConsumer {
             // that climbs means the relay or a rebalance is misbehaving - while
             // a line per duplicate would be noise.
             log.debug("duplicate event ignored ({} so far): {}", dupes, event.eventId());
-            return;
         }
+
+        // Phase 6h. AFTER the ledger, and NOT inside the `applied` branch.
+        //
+        // After, because a merchant must never be told about money the ledger
+        // does not hold. The order also means a webhook failure re-runs a post
+        // that has already happened, which is safe precisely because 6e made it
+        // idempotent.
+        //
+        // Outside the branch, because `applied == false` means "the ledger
+        // already had this event", not "the merchant already heard about it".
+        // Skipping the dispatch there would make a single webhook failure
+        // permanent: the retry redelivers, the post dedupes to false, and the
+        // webhook is never attempted again. Redelivering the webhook instead is
+        // at-least-once, which is the contract, and X-Payorch-Event-Id is how
+        // the receiver tells the difference.
+        dispatch(event);
 
         log.debug("event consumed",
                 LogEvent.event()
                         .with(LogFields.PAYMENT_ID, event.paymentId().toString())
                         .with(LogFields.STATE, event.state())
                         .args());
+    }
+
+    /**
+     * Sends the webhook, if this deployment sends webhooks.
+     *
+     * <p>Deliberately not wrapped in a try/catch. A delivery failure worth
+     * retrying throws {@code WebhookDeliveryException}, which is exactly how a
+     * record gets back onto the retry ladder - swallowing it here would make the
+     * ladder invisible to the one caller that most needs it, and turn "the
+     * merchant was not told" into a silent outcome.
+     */
+    private void dispatch(PaymentEventMessage event) {
+        WebhookDispatcher dispatcher = webhooks.getIfAvailable();
+        if (dispatcher != null) {
+            dispatcher.dispatch(event);
+        }
     }
 
     /**

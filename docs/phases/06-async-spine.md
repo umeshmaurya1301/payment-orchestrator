@@ -72,8 +72,18 @@ transactions**, and the ledger write path needs them.
 
 - **Double-entry ledger.** Balances in MySQL, immutable event journal in Mongo.
 - **Outbound webhooks** with HMAC signing and timestamp replay protection.
-  `infra-cryptography` in your existing `Infra-Core` repo already has an
-  `HmacService` worth lifting.
+  Built in 6h. `t=<unix>,v1=<hmac>` over `"<t>." + rawBody`, with the receiver
+  in `docker/webhook-sink/` written in Python from the header format rather than
+  from the signer — two halves of one codebase always agree, including when both
+  are wrong. Measured in experiment 13, and the measurement includes the arm that
+  matters: **an unmodified replay inside the tolerance window is accepted.**
+  Freshness makes a capture perishable; only the receiver deduplicating on the
+  event id refuses one, and that is on the merchant's side of the integration.
+
+  **No retry machinery.** A delivery worth retrying throws onto 6f's ladder. One
+  retry mechanism for the service, and it is safe only because 6e made the ledger
+  write idempotent — the webhook retry works because the *ledger* is idempotent,
+  not because the webhook is.
 
 ### 5. Tiered retry topics
 
@@ -145,16 +155,18 @@ Alerts on **consumer lag** and **DLQ depth**.
       nothing posted, replayed in one call, and the books balanced: sum = 0, no
       event posted twice. Replaying the *same* records again produced **13
       duplicates and zero new entries**
-- [ ] A single SigNoz trace spanning the sync path **and** the async webhook
-      delivery — **the Kafka half is done and measured**, the webhook half needs
-      webhooks. `tools/loadtest/trace-propagation.sh`. Before: the ledger posted
-      the event and appeared in **0 spans and 0 log lines** of the trace that
-      caused it. After: **one trace, five services**, `outbox publish` at t+408ms
-      and `payment.events process` at t+418ms in the same waterfall as the
-      merchant's `POST /v1/payments`. A deliberately failed delivery and its
-      5-second-tier redelivery are three spans of that one trace, the second
-      marked `Error`, the third 5.1s later. The webhook will inherit the
-      mechanism rather than need a new one
+- [x] A single SigNoz trace spanning the sync path **and** the async webhook
+      delivery — `tools/loadtest/trace-propagation.sh` (6g) and
+      `tools/loadtest/webhook-security.sh` (6h). Before: the ledger posted the
+      event and appeared in **0 spans and 0 log lines** of the trace that caused
+      it. After: **14 spans, five services, one trace** — `http post
+      /v1/payments` at t+0ms, `outbox publish` at t+228ms, `payment.events
+      process` at t+245ms, and the webhook to the merchant at t+271ms. The
+      merchant's own endpoint recorded the same `traceparent` off the wire,
+      which is the stronger half of the evidence: it is exactly what would be
+      missing if the `RestClient` had been built without an observation
+      registry. A deliberately failed delivery and its 5-second-tier redelivery
+      are three spans of one trace, the second marked `Error`
 - [x] DLQ messages contain no unmasked PII — asserted in the run rather than
       argued from the record definition: **0** digit runs of card length and **0**
       `cvv`/`expiry`/`pan` fields across the sampled DLQ payloads. The message
@@ -234,6 +246,19 @@ written; phase 6 changed what the payment path is and nothing came back to the
 file. The symptom is the confusing one — the right `traceId` in the service's log
 lines, and zero spans in ClickHouse — which reads as half-broken propagation and
 is a missing endpoint.
+
+**A webhook dispatch inside `if (applied)` is a permanent drop.** The obvious
+placement — only notify when the ledger actually posted something — makes a single
+webhook failure final: the ladder redelivers, the idempotent post returns
+`false`, the dispatch is skipped, and the merchant is never told.
+`applied == false` means "the ledger already had this event", not "the merchant
+already heard about it", and nothing in the type system distinguishes those.
+
+**A merchant's endpoint is entitled to hang, and ordering is per partition.** A
+webhook client with no read timeout stalls the consumer thread, which stalls
+every payment that hashed to the same partition. That is the head-of-line
+blocking the non-blocking retry ladder was built to prevent, reintroduced one
+layer further out, by an HTTP client that looks nothing like a Kafka concern.
 
 **Outbox relay double-publishing.** At-least-once is fine — that is what the
 idempotent producer and consumer-side idempotency are for. Design for it rather

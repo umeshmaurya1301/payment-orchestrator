@@ -74,6 +74,29 @@ payorch:
     # set them would be a property that silently did nothing.
     dlq-topic: ${LEDGER_DLQ_TOPIC:payment.events.dlq}
 
+  # Phase 6h. Outbound webhooks.
+  #
+  # Off by default, like payorch.events.publisher: a service that posted to a
+  # merchant's URL the moment it started would make every earlier experiment
+  # depend on a receiver being up.
+  webhooks:
+    enabled: ${WEBHOOKS_ENABLED:false}
+    url: ${WEBHOOKS_URL:http://webhook-sink:9096/}
+    # Selectable so the unsigned arm of experiment 13 can be RE-RUN rather than
+    # quoted. `false` means no signer bean at all - not a signer told to stay
+    # quiet, which is one refactor away from signing with an empty secret.
+    sign: ${WEBHOOKS_SIGN:true}
+    # A local development value like every other secret here. Phase 9c is where
+    # secrets stop being literals; until then they are public by design and the
+    # honesty is the point.
+    secret: ${WEBHOOKS_SECRET:}
+    # Somebody else's infrastructure is entitled to hang. Ordering is per
+    # partition, so a consumer blocked on one merchant's endpoint stalls every
+    # payment that hashed to the same partition - head-of-line blocking, one
+    # layer further out than the ladder was built to prevent.
+    connect-timeout-ms: ${WEBHOOKS_CONNECT_TIMEOUT_MS:2000}
+    read-timeout-ms: ${WEBHOOKS_READ_TIMEOUT_MS:5000}
+
 server:
   port: 8084
   # The in-flight drain this enables is demonstrated and tested in phase 7.

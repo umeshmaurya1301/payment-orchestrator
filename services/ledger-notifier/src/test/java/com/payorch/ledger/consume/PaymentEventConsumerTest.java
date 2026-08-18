@@ -9,7 +9,10 @@ import org.junit.jupiter.api.Test;
 
 import com.payorch.infra.chaos.ChaosSeam;
 import com.payorch.infra.chaos.ChaosSeams;
+import org.springframework.beans.factory.ObjectProvider;
+
 import com.payorch.ledger.domain.LedgerPosting;
+import com.payorch.ledger.webhook.WebhookDispatcher;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
@@ -41,7 +44,28 @@ class PaymentEventConsumerTest {
 
     private final LedgerPosting ledger = mock(LedgerPosting.class);
     private final ChaosSeams seams = new ChaosSeams();
-    private final PaymentEventConsumer consumer = new PaymentEventConsumer(ledger, seams);
+    private final WebhookDispatcher webhooks = mock(WebhookDispatcher.class);
+    private final PaymentEventConsumer consumer =
+            new PaymentEventConsumer(ledger, seams, providerOf(webhooks));
+
+    /**
+     * The dispatcher is an ObjectProvider in production because a deployment
+     * with webhooks off has no such bean. Mockito cannot mock a generic
+     * interface usefully here, so this is the two-line real thing.
+     */
+    private static <T> ObjectProvider<T> providerOf(T instance) {
+        return new ObjectProvider<>() {
+            @Override
+            public T getObject() {
+                return instance;
+            }
+
+            @Override
+            public T getIfAvailable() {
+                return instance;
+            }
+        };
+    }
 
     private static PaymentEventMessage event() {
         return new PaymentEventMessage(
@@ -134,6 +158,55 @@ class PaymentEventConsumerTest {
 
         assertThat(consumer.duplicates()).isEqualTo(1);
         assertThat(consumer.consumed()).isEqualTo(1);
+    }
+
+    /**
+     * Phase 6h. The webhook goes out for a duplicate too, and that is not a bug.
+     *
+     * <p>{@code applied == false} means "the ledger already had this event", not
+     * "the merchant already heard about it". Skipping the dispatch there makes a
+     * single webhook failure permanent: the ladder redelivers, the post dedupes,
+     * and the webhook is never attempted again. Re-sending is at-least-once,
+     * which is the contract, and the event id is how the receiver tells.
+     */
+    @Test
+    void aDuplicateStillDispatchesItsWebhook() {
+        when(ledger.post(any())).thenReturn(false);
+
+        consumer.onPaymentEvent(event(), RetryTopics.MAIN);
+
+        verify(webhooks).dispatch(any());
+        assertThat(consumer.duplicates()).isEqualTo(1);
+    }
+
+    /**
+     * Order matters more than it looks: a merchant must never be told about
+     * money the ledger does not hold. If the post throws, nothing is sent.
+     */
+    @Test
+    void nothingIsDispatchedWhenTheLedgerWriteFails() {
+        when(ledger.post(any())).thenThrow(new IllegalStateException("constraint"));
+
+        assertThatThrownBy(() -> consumer.onPaymentEvent(event(), RetryTopics.MAIN))
+                .isInstanceOf(IllegalStateException.class);
+
+        verify(webhooks, never()).dispatch(any());
+    }
+
+    /**
+     * A delivery failure has to reach the container, because that is what puts
+     * the record back on the ladder. A try/catch around the dispatch would turn
+     * "the merchant was not told" into a silent outcome.
+     */
+    @Test
+    void aWebhookFailurePropagatesSoTheLadderCanRetry() {
+        when(ledger.post(any())).thenReturn(true);
+        org.mockito.Mockito.doThrow(new WebhookDispatcher.WebhookDeliveryException(
+                        "receiver down", new RuntimeException()))
+                .when(webhooks).dispatch(any());
+
+        assertThatThrownBy(() -> consumer.onPaymentEvent(event(), RetryTopics.MAIN))
+                .isInstanceOf(WebhookDispatcher.WebhookDeliveryException.class);
     }
 
     /**

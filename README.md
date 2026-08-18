@@ -6,9 +6,9 @@ Built in phases, where each resilience component is added **only after the
 failure it prevents has been observed and measured**. Every phase from 3 onward
 produces a before/after graph in [`docs/experiments/`](docs/experiments/).
 
-> **Status: phases 0–4 complete, phase 5 all but one criterion.**
-> Ten experiments, each with a measured before and after, in
-> [`docs/experiments/`](docs/experiments/).
+> **Status: phases 0–4 complete, phase 5 all but one criterion, phase 6 through
+> the retry ladder (6a–6f).** Eleven experiments, each with a measured before and
+> after, in [`docs/experiments/`](docs/experiments/).
 
 ## The graph
 
@@ -349,10 +349,10 @@ criteria, traps and interview payload.
 | 0 | [Foundations](docs/phases/00-foundations.md) - build, logging, compose skeleton | 1 wk | **done** |
 | 1 | [Vertical slice](docs/phases/01-vertical-slice.md) - one payment, tokenization | 2 wk | **done** |
 | 2 | [Chaos harness and load](docs/phases/02-chaos-harness.md) - the baseline failure report | 1 wk | **done** |
-| 3 | [Resilience layer](docs/phases/03-resilience.md) - one component at a time | 3-4 wk | next |
-| 4 | [Observability](docs/phases/04-observability.md) - SigNoz, trace/log correlation, PAN-leak test | 2 wk | |
-| 5 | [Health-driven routing](docs/phases/05-health-routing.md) - the differentiator | 2 wk | |
-| 6 | [Async spine](docs/phases/06-async-spine.md) - Kafka, outbox, CDC, saga | 3 wk | |
+| 3 | [Resilience layer](docs/phases/03-resilience.md) - one component at a time | 3-4 wk | **done** |
+| 4 | [Observability](docs/phases/04-observability.md) - SigNoz, trace/log correlation, PAN-leak test | 2 wk | **done** |
+| 5 | [Health-driven routing](docs/phases/05-health-routing.md) - the differentiator | 2 wk | 5 of 6 criteria |
+| 6 | [Async spine](docs/phases/06-async-spine.md) - Kafka, outbox, CDC, saga | 3 wk | next - 6a-6f done |
 | 7 | [Concurrency and idempotency](docs/phases/07-concurrency-idempotency.md) | 2-3 wk | |
 | 8 | [Data layer depth](docs/phases/08-data-layer.md) - indexing, reconciliation | 2 wk | |
 | 9 | [gRPC, security, data protection](docs/phases/09-grpc-security.md) | 3 wk | |

@@ -42,6 +42,27 @@ public final class LogFields {
     public static final String PSP_ID = "pspId";
     public static final String OPERATION = "operation";
 
+    // --- messaging (phase 6f) ---------------------------------------------
+    //
+    // Added when the DLT handler threw on its first record and the default
+    // DltStrategy republished the failure to the DLQ it was already on - four
+    // messages became 10,306 records before the producer's max request size
+    // stopped it. The allowlist did exactly what it is for; the cost of adding a
+    // field is meant to be a moment's thought, and this is that thought:
+    //
+    //   SOURCE_TOPIC     a Kafka topic name. Chosen by us, not by a payload.
+    //   FAILURE_TYPE     a Java class name. Same.
+    //   RETRY_ATTEMPT    an integer counter.
+    //
+    // NOT added, deliberately: the exception MESSAGE. A DeserializationException
+    // carries the bytes it could not parse, so that field is a direct route from
+    // a malformed message to a card number in a log index that is retained,
+    // indexed and searchable. It stays available through /actuator/dlq, where a
+    // human is deliberately looking at one record.
+    public static final String SOURCE_TOPIC = "sourceTopic";
+    public static final String FAILURE_TYPE = "failureType";
+    public static final String RETRY_ATTEMPT = "retryAttempt";
+
     // --- outcome ----------------------------------------------------------
     public static final String OUTCOME = "outcome";
     public static final String ERROR_CODE = "errorCode";
@@ -56,6 +77,7 @@ public final class LogFields {
             IDEMPOTENCY_KEY, AMOUNT_MINOR, CURRENCY,
             TOKEN, BIN, LAST4,
             PSP_ID, OPERATION,
+            SOURCE_TOPIC, FAILURE_TYPE, RETRY_ATTEMPT,
             OUTCOME, ERROR_CODE, HTTP_STATUS, LATENCY_MS, DEADLINE_REMAINING_MS);
 
     private LogFields() {

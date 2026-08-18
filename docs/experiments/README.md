@@ -38,7 +38,7 @@ after the run.
 | Downstream PSP | `mock-psp-simulator` | Business-level: latency, errors, hangs, duplicates |
 | Network / connections | Toxiproxy | Latency, timeout, `reset_peer`, bandwidth |
 | In-process beans | `chaos-core` `/actuator/chaosbeans` | Latency and exceptions on our own `@Service` / `@Repository` beans |
-| Bespoke seams | `chaos-core` `/actuator/chaosseams` | Sleep-in-held-lock, per-consumer exceptions |
+| Bespoke seams | `chaos-core` `/actuator/chaosseams` | Sleep-in-held-lock, per-consumer exceptions, at a chosen probability |
 | Process / container | Pumba | `kill`, `pause`, SIGTERM |
 | Concurrency | k6 | The load that makes any of the above chaotic rather than merely faulty |
 
@@ -81,6 +81,7 @@ the **bean**. They are not interchangeable.
 | `tools/loadtest/relay-comparison.sh` | Polling relay vs Debezium CDC on one population of payments: publish lag and idle database load |
 | `tools/kafka/topics.sh` | The phase-6 topics, with RF=3 AND min.insync.replicas=2 - the second half being what makes the first mean anything |
 | `tools/loadtest/failover-safety.sh` | Asserts failover fires only when nothing was sent, and that an ambiguous failure lands in `UNKNOWN` with one provider tried |
+| `tools/loadtest/retry-dlq.sh` | The retry ladder end to end: transient failures at 30% to measure where they land, permanent failures to fill the DLQ, then replay and re-check convergence |
 
 Bean-level chaos and the bespoke seams are actuator endpoints contributed by
 `infra-core/chaos-core`: `/actuator/chaosbeans` and `/actuator/chaosseams`.
@@ -106,3 +107,4 @@ completes, the numbers look interesting, and they are describing two faults.
 | 08 | [Log sampling](08-log-sampling.md) | 4f | Keeping every line costs 4.00 lines / 2,514 bytes per payment - 75 MB/minute at 500 rps. Trace-based sampling at 1% removes 97.6%, and keeps **100% of errors** (2,325 lines against 2,315 failed payments). The finding: sampling silently defeats the PAN-leak test, which would scan 1% of the lines and still report green |
 | 09 | [Health-based routing, failover and strategies](09-health-routing.md) | 5a-5d | Static routing sent a provider degraded to 80% errors **100%** of the traffic and success collapsed 99.7% -> 4.2%. Health-weighted routing moves it in **7s** and holds 97.5% -> 91.2%. Routing on health ALONE cost 5.8 points of steady-state success - "healthy" and "preferred" are different questions - and a generous half-open score produced a 12s oscillation. Failover refuses to fire on an ambiguous failure - and the drill proving it failed by PASSING three times first |
 | 10 | [The outbox](10-outbox.md) | 6a-6d | A 30s broker outage cost **20 of 60** payments their events, permanently - every one AUTHORIZED, every one a 201, no outage visible. The outbox closes it to zero, and its own machinery introduced two worse bugs first: the relay's claim query blocked the payment path (`Lock wait timeout` on the payment's own commit), and Spring's `@Transactional` was silently inert on a self-invoked method. CDC beats polling 5ms vs 260ms p50 and is still not the default. Killing two brokers proves min.insync.replicas earns its keep: `NOT_ENOUGH_REPLICAS`, and the events wait in MySQL |
+| 11 | [Retry ladder and DLQ](11-retry-dlq.md) | 6f | At a 30% per-delivery failure rate the ladder decays **47 → 17 → 4 → 0** over 150 events - the injection rate three times over - and **nothing reaches the DLQ**, because 0.3⁴ = 0.81%. Which is why a second arm exists: the DLQ criterion would otherwise have been ticked by a DLQ nobody wrote to. Building it produced a three-part cascade that turned **4 messages into 10,306 DLQ records in three minutes**, triggered by the phase-4 PII allowlist working *correctly* inside the one handler that must never throw, amplified by a default named `ALWAYS_RETRY_ON_ERROR` whose dead-letter target is the dead-letter topic itself. Deleting the topic to clean up let the broker recreate it at **RF=1** - `autoCreateTopics=false` stops Spring, not the broker. And the fixed run passed all twelve assertions with **every forensic header blank** |

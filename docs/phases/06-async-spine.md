@@ -134,11 +134,33 @@ Alerts on **consumer lag** and **DLQ depth**.
       rather than landing on a single doomed replica. All drained on recovery,
       zero under-replicated partitions after, and `__consumer_offsets` held RF=3
       with full ISR throughout — the internal-topic trap the phase names
-- [ ] Inject 30% consumer failures via `chaos-core` → messages tier through retry
+- [x] Inject 30% consumer failures via `chaos-core` → messages tier through retry
       topics → land in DLQ → replay them → **ledger converges to correct balances**
+      — `tools/loadtest/retry-dlq.sh`, two arms. At p=0.3 over 150 payments the
+      ladder decayed **47 → 17 → 4 → 0**: the injection rate three times over,
+      every one of the 150 posted, and **nothing reached the DLQ**, because
+      0.3⁴ = 0.81%. That is the result, and it is also why a second arm exists —
+      the DLQ clause would otherwise have been ticked by a DLQ that was never
+      written to. At p=1.0, **12 of 12** walked all three tiers into the DLQ with
+      nothing posted, replayed in one call, and the books balanced: sum = 0, no
+      event posted twice. Replaying the *same* records again produced **13
+      duplicates and zero new entries**
 - [ ] A single SigNoz trace spanning the sync path **and** the async webhook delivery
-- [ ] DLQ messages contain no unmasked PII
-- [ ] Alerts on consumer lag and DLQ depth fire during the chaos run
+- [x] DLQ messages contain no unmasked PII — asserted in the run rather than
+      argued from the record definition: **0** digit runs of card length and **0**
+      `cvv`/`expiry`/`pan` fields across the sampled DLQ payloads. The message
+      carries a vault token, a BIN and a last-4 — the same ten digits phase 1
+      already stores in plain text. It holds because masking happens at **produce**
+      time; nothing in the DLQ path masks anything. The exception *message* is
+      deliberately kept out of the log allowlist for the same reason: a
+      `DeserializationException` carries the bytes it could not parse
+- [ ] Alerts on consumer lag and DLQ depth fire during the chaos run — the
+      metrics now exist (`payorch.ledger.dead_lettered`, `payorch.ledger.retried`,
+      `/actuator/dlq` reporting records/pending/replayed separately), but no
+      SigNoz rule queries them yet. Note for that work: **depth is not the number
+      to page on.** Records are never removed from a log-structured DLQ, so a
+      rule on record count fires permanently after the first incident; `pending`
+      is the number that returns to zero when somebody fixes it
 
 "Ledger converges to correct balances" is the criterion that actually tests the
 saga and the retry tiers together.
@@ -157,6 +179,33 @@ compose already wraps it in a `try/catch` on `rs.status()`.
 
 **Blocking retries.** `@RetryableTopic` non-blocking retry exists for a reason;
 a blocking retry stalls the whole partition behind one bad message.
+
+**`DltStrategy` defaults to `ALWAYS_RETRY_ON_ERROR`.** Found in 6f, and it is the
+worst default in this phase. If the DLT handler throws, the record is republished
+**to the dead-letter topic it is already on**, forever. Measured: four messages
+became **10,306 records in three minutes**, and the only thing that stopped it was
+each republish appending stack-trace headers until the record exceeded the
+producer's `max.request.size`. Set `dltStrategy = FAIL_ON_ERROR`, and separately
+make the handler incapable of throwing — a dead-letter queue that re-queues its
+own failures is not a dead end.
+
+**`autoCreateTopics = "false"` does not stop the BROKER.** It stops Spring. A
+consumer *subscribing* to a name that does not exist is enough for a broker with
+`auto.create.topics.enable=true` to create it at its own defaults. Measured: the
+DLQ was deleted to clear a bad run and came back **RF=1, one partition**,
+recreated by the service's own subscription before the topics script could run —
+silently undoing 6a and 6d for the one topic nobody watches. The other half is
+`allow.auto.create.topics=false` on every consumer.
+
+**Retry topic names are derived, not chosen.** Spring builds them from the main
+topic, the suffix and the backoff delay in milliseconds. Readable names like
+`payment.events.retry.5s` are wrong by one character, and the punishment for
+being wrong is the auto-creation trap above rather than an error.
+
+**The DLT handler is inside your logging guardrails.** The 10,306-record loop
+started because the handler passed field names that are not on the `LogFields`
+allowlist and `LogEvent` threw — the phase-4 PII control working exactly as
+designed, in the one place where an exception is most expensive.
 
 **Outbox relay double-publishing.** At-least-once is fine — that is what the
 idempotent producer and consumer-side idempotency are for. Design for it rather

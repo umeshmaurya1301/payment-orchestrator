@@ -68,6 +68,11 @@ payorch:
     bootstrap-servers: ${KAFKA_BOOTSTRAP:kafka-1:9092,kafka-2:9092,kafka-3:9092}
     topic: ${LEDGER_TOPIC:payment.events}
     group: ${LEDGER_GROUP:ledger-notifier}
+    # Phase 6f. The end of the retry ladder. The three tiers between this and
+    # `topic` are NOT configurable here on purpose: Spring derives their names
+    # from the backoff delays on @RetryableTopic, so a property that appeared to
+    # set them would be a property that silently did nothing.
+    dlq-topic: ${LEDGER_DLQ_TOPIC:payment.events.dlq}
 
 server:
   port: 8084
@@ -78,7 +83,10 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,loggers,metrics,prometheus,ledger
+        # chaosseams and dlq are phase 6f. Neither is reachable unless it is
+        # listed here, which keeps shipping the chaos machinery somewhere it
+        # should not be an explicit act rather than an accident.
+        include: health,info,loggers,metrics,prometheus,ledger,chaosseams,dlq
   endpoint:
     health:
       show-details: always

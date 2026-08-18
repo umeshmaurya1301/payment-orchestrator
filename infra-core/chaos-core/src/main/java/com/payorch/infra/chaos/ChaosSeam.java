@@ -3,10 +3,25 @@ package com.payorch.infra.chaos;
 /**
  * What an armed seam does when execution reaches it.
  *
- * @param action  pause or fail
- * @param pauseMs how long to sleep, for {@link Action#PAUSE}
+ * @param action      pause or fail
+ * @param pauseMs     how long to sleep, for {@link Action#PAUSE}
+ * @param probability chance, 0.0 to 1.0, that reaching the seam does anything
  */
-public record ChaosSeam(Action action, long pauseMs) {
+public record ChaosSeam(Action action, long pauseMs, double probability) {
+
+    /**
+     * A seam armed without a stated probability fires every time. That is the
+     * right default for the two faults this class was built for - a deadlock is
+     * demonstrated by making it happen, not by making it likely.
+     */
+    public static final double ALWAYS = 1.0;
+
+    public ChaosSeam {
+        if (probability < 0.0 || probability > 1.0) {
+            throw new IllegalArgumentException(
+                    "probability must be between 0.0 and 1.0, got " + probability);
+        }
+    }
 
     public enum Action {
 
@@ -37,10 +52,34 @@ public record ChaosSeam(Action action, long pauseMs) {
     }
 
     public static ChaosSeam pause(long millis) {
-        return new ChaosSeam(Action.PAUSE, millis);
+        return new ChaosSeam(Action.PAUSE, millis, ALWAYS);
     }
 
     public static ChaosSeam fail() {
-        return new ChaosSeam(Action.FAIL, 0);
+        return new ChaosSeam(Action.FAIL, 0, ALWAYS);
+    }
+
+    /**
+     * Fails a fraction of the time.
+     *
+     * <p>Added for phase 6f, and the reason is worth stating because "make it
+     * fail 30% of the time" sounds like a detail and is not. A seam that fails
+     * <em>every</em> message sends every message to the DLQ, which proves the
+     * DLQ works and proves nothing about the retry tiers - the interesting
+     * assertion is that some messages recover at tier 1, some at tier 2, and
+     * only the persistently unlucky ones exhaust the ladder. That distribution
+     * only exists if each retry gets an independent roll.
+     *
+     * <p>It also means a run is not reproducible message-for-message, which is a
+     * real cost. The experiment is written to assert on invariants that hold for
+     * any seed - the books balance, no event posts twice - rather than on
+     * counts, which would be a flaky test wearing an experiment's clothes.
+     */
+    public static ChaosSeam fail(double probability) {
+        return new ChaosSeam(Action.FAIL, 0, probability);
+    }
+
+    public static ChaosSeam pause(long millis, double probability) {
+        return new ChaosSeam(Action.PAUSE, millis, probability);
     }
 }

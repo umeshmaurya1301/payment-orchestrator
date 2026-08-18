@@ -42,6 +42,20 @@
 # The retry topics implement the phase's 5s -> 1m -> 10m -> DLQ tiering. They are
 # ordinary topics; what makes the retry non-blocking is the consumer publishing
 # forward to the next tier rather than sleeping on the partition.
+#
+# THE NAMES ARE NOT FREE CHOICES
+#
+# Spring Kafka derives them from the main topic, the configured suffix and the
+# BACKOFF DELAY IN MILLISECONDS - see RetryTopics.java and the @RetryableTopic
+# annotation on PaymentEventConsumer. They have to match to the character.
+#
+# They used to be payment.events.retry.5s and friends, which read better and were
+# wrong: with `autoCreateTopics` left at its default, Spring finds the topic it
+# expects missing and CREATES it with the broker defaults - RF=1, one partition.
+# The retry ladder would then be the one part of the system with no replication,
+# in a cluster this project spent two sub-phases proving survives a broker loss,
+# and nothing would have said so. The consumer sets autoCreateTopics=false so a
+# mismatch is a startup failure instead.
 
 set -uo pipefail
 
@@ -57,9 +71,9 @@ MIN_ISR="${MIN_ISR:-2}"
 #   name                              retention   why
 TOPICS=(
     "payment.events"                  # 7d   the event stream itself
-    "payment.events.retry.5s"         # 7d   tier 1
-    "payment.events.retry.1m"         # 7d   tier 2
-    "payment.events.retry.10m"        # 7d   tier 3
+    "payment.events.retry-5000"       # 7d   tier 1,  5 seconds
+    "payment.events.retry-60000"      # 7d   tier 2,  1 minute
+    "payment.events.retry-600000"     # 7d   tier 3, 10 minutes
     "payment.events.dlq"              # 30d  read by humans, days after the fact
 )
 

@@ -37,8 +37,12 @@ public class ChaosSeamsEndpoint {
     }
 
     @ReadOperation
-    public Map<String, ChaosSeam> armed() {
-        return seams.armed();
+    public Map<String, Object> armed() {
+        // Both halves in one response, because the question during a run is
+        // never just "what is armed" - it is "what is armed and has it actually
+        // fired". A seam that is armed and has fired zero times is the shape of
+        // an experiment about to report a false pass.
+        return Map.of("armed", seams.armed(), "injections", seams.injections());
     }
 
     /**
@@ -48,14 +52,18 @@ public class ChaosSeamsEndpoint {
      *        unless it is marked nullable, so without it, arming a {@code FAIL}
      *        seam is rejected with "Missing parameters: pauseMs" for a value
      *        that has no meaning in that case.
+     * @param probability 0.0 to 1.0, defaulting to 1.0. Omitting it keeps the
+     *        old behaviour exactly - a seam armed without one fires every time.
      */
     @WriteOperation
     public Map<String, ChaosSeam> arm(@Selector String name,
                                       ChaosSeam.Action action,
-                                      @Nullable Long pauseMs) {
+                                      @Nullable Long pauseMs,
+                                      @Nullable Double probability) {
+        double p = probability == null ? ChaosSeam.ALWAYS : probability;
         seams.arm(name, action == ChaosSeam.Action.FAIL
-                ? ChaosSeam.fail()
-                : ChaosSeam.pause(pauseMs == null ? 1000 : pauseMs));
+                ? ChaosSeam.fail(p)
+                : ChaosSeam.pause(pauseMs == null ? 1000 : pauseMs, p));
         return seams.armed();
     }
 

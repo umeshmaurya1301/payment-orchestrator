@@ -3,6 +3,9 @@ package com.payorch.infra.chaos;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.LongAdder;
+import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,17 +33,28 @@ public class ChaosSeams {
     private static final Logger log = LoggerFactory.getLogger(ChaosSeams.class);
 
     private final Map<String, ChaosSeam> armed = new ConcurrentHashMap<>();
+    private final Map<String, LongAdder> injections = new ConcurrentHashMap<>();
 
     /**
      * Runs whatever is armed for {@code name}, or returns immediately.
      *
-     * @throws ChaosInjectedException if the seam is armed to fail
+     * @throws ChaosInjectedException if the seam is armed to fail and the roll
+     *         goes against the caller
      */
     public void reach(String name) {
         ChaosSeam seam = armed.get(name);
         if (seam == null) {
             return;
         }
+        // The roll happens per REACH, not per arming, so a message retried
+        // three times gets three independent chances to get through. That is
+        // what makes a partial failure rate produce a spread across the retry
+        // tiers rather than a clean split into "worked" and "doomed".
+        if (seam.probability() < ChaosSeam.ALWAYS
+                && ThreadLocalRandom.current().nextDouble() >= seam.probability()) {
+            return;
+        }
+        injections.computeIfAbsent(name, k -> new LongAdder()).increment();
         switch (seam.action()) {
             case PAUSE -> pause(name, seam.pauseMs());
             case FAIL -> {
@@ -48,6 +62,20 @@ public class ChaosSeams {
                 throw new ChaosInjectedException(name);
             }
         }
+    }
+
+    /**
+     * How many times each seam actually fired.
+     *
+     * <p>Not a nicety. With a probabilistic seam, "the experiment injected 30%
+     * failures" is a claim about a random process, and the only way to state it
+     * afterwards is to have counted. It also catches the failure mode that
+     * wasted three drills in phase 5: a chaos source that was never actually
+     * reached, producing a clean run that looks like a result.
+     */
+    public Map<String, Long> injections() {
+        return injections.entrySet().stream().collect(
+                Collectors.toMap(Map.Entry::getKey, e -> e.getValue().sum()));
     }
 
     public void arm(String name, ChaosSeam seam) {
@@ -73,6 +101,9 @@ public class ChaosSeams {
             log.info("disarming {} chaos seam(s)", armed.size());
             armed.clear();
         }
+        // Counts survive disarming on purpose: the experiment disarms the seam
+        // BEFORE it replays and asserts, and it still needs to report how many
+        // failures it injected.
     }
 
     public Map<String, ChaosSeam> armed() {

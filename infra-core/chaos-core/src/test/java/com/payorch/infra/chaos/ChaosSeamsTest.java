@@ -83,14 +83,89 @@ class ChaosSeamsTest {
     void theEndpointArmsAndDisarms() {
         ChaosSeamsEndpoint endpoint = new ChaosSeamsEndpoint(seams);
 
-        endpoint.arm("payment-row-lock", ChaosSeam.Action.PAUSE, 250L);
+        endpoint.arm("payment-row-lock", ChaosSeam.Action.PAUSE, 250L, null);
         assertThat(seams.armed("payment-row-lock"))
                 .get()
-                .isEqualTo(new ChaosSeam(ChaosSeam.Action.PAUSE, 250));
+                .isEqualTo(new ChaosSeam(ChaosSeam.Action.PAUSE, 250, ChaosSeam.ALWAYS));
 
-        endpoint.arm("ledger-consumer", ChaosSeam.Action.FAIL, null);
+        endpoint.arm("ledger-consumer", ChaosSeam.Action.FAIL, null, null);
         assertThat(seams.armed("ledger-consumer")).get().isEqualTo(ChaosSeam.fail());
 
         assertThat(endpoint.disarmAll()).isEmpty();
+    }
+
+    /**
+     * Omitting the probability must behave exactly as it did before it existed.
+     * The two phase-2 seams are armed without one and depend on firing every
+     * time.
+     */
+    @Test
+    void aSeamArmedWithoutAProbabilityFiresEveryTime() {
+        seams.arm("ledger-consumer", ChaosSeam.fail());
+
+        for (int i = 0; i < 50; i++) {
+            assertThatThrownBy(() -> seams.reach("ledger-consumer"))
+                    .isInstanceOf(ChaosSeams.ChaosInjectedException.class);
+        }
+        assertThat(seams.injections()).containsEntry("ledger-consumer", 50L);
+    }
+
+    /**
+     * Phase 6f arms this at 0.3. The assertion is deliberately loose - it is
+     * checking that the roll happens at all and that it is per-reach, not that a
+     * random process hit a number.
+     */
+    @Test
+    void aProbabilisticSeamFiresSomeOfTheTimeAndNotAll() {
+        seams.arm("ledger-consumer", ChaosSeam.fail(0.3));
+
+        int failures = 0;
+        for (int i = 0; i < 2000; i++) {
+            try {
+                seams.reach("ledger-consumer");
+            } catch (ChaosSeams.ChaosInjectedException expected) {
+                failures++;
+            }
+        }
+
+        // p(all 2000 miss) and p(all 2000 hit) are both far below any number
+        // worth calling flaky. Anything tighter would be asserting on a seed.
+        assertThat(failures).isPositive().isLessThan(2000);
+        assertThat(seams.injections()).containsEntry("ledger-consumer", (long) failures);
+    }
+
+    @Test
+    void aZeroProbabilitySeamNeverFires() {
+        seams.arm("ledger-consumer", ChaosSeam.fail(0.0));
+
+        for (int i = 0; i < 200; i++) {
+            assertThatNoException().isThrownBy(() -> seams.reach("ledger-consumer"));
+        }
+        assertThat(seams.injections()).doesNotContainKey("ledger-consumer");
+    }
+
+    @Test
+    void anImpossibleProbabilityIsRejectedAtArmingTime() {
+        // Rather than clamped. An operator who types 30 meaning "30 percent"
+        // has made a mistake that a clamp would turn into a 100% failure rate
+        // in the middle of a run, and they would read the result as a finding.
+        assertThatThrownBy(() -> ChaosSeam.fail(30))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("between 0.0 and 1.0");
+    }
+
+    /**
+     * The counts outlive disarming, because the experiment disarms the seam
+     * before it replays and asserts - and still has to report what it injected.
+     */
+    @Test
+    void injectionCountsSurviveDisarming() {
+        seams.arm("ledger-consumer", ChaosSeam.fail());
+        assertThatThrownBy(() -> seams.reach("ledger-consumer"))
+                .isInstanceOf(ChaosSeams.ChaosInjectedException.class);
+
+        seams.disarmAll();
+
+        assertThat(seams.injections()).containsEntry("ledger-consumer", 1L);
     }
 }

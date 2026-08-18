@@ -14,7 +14,9 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.annotation.EnableKafkaRetryTopic;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.core.MicrometerConsumerListener;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
@@ -47,7 +49,8 @@ public class ConsumerConfiguration {
     @Bean
     public ConsumerFactory<String, PaymentEventMessage> paymentEventConsumerFactory(
             @Value("${payorch.ledger.bootstrap-servers}") String bootstrapServers,
-            @Value("${payorch.ledger.group:ledger-notifier}") String groupId) {
+            @Value("${payorch.ledger.group:ledger-notifier}") String groupId,
+            MeterRegistry meters) {
 
         JacksonJsonDeserializer<PaymentEventMessage> json =
                 new JacksonJsonDeserializer<>(PaymentEventMessage.class);
@@ -57,7 +60,8 @@ public class ConsumerConfiguration {
         // header and fails every message.
         json.setUseTypeHeaders(false);
 
-        return new DefaultKafkaConsumerFactory<>(
+        DefaultKafkaConsumerFactory<String, PaymentEventMessage> factory =
+                new DefaultKafkaConsumerFactory<>(
                 Map.of(
                         ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers,
                         ConsumerConfig.GROUP_ID_CONFIG, groupId,
@@ -98,6 +102,23 @@ public class ConsumerConfiguration {
                 // payload becomes a failed RECORD rather than a poisoned
                 // consumer that cannot advance past it.
                 new ErrorHandlingDeserializer<>(json));
+
+        // Phase 6i. The client's own metrics, including records-lag-max.
+        //
+        // Boot attaches this to the ConsumerFactory it autoconfigures. This one
+        // is built by hand - for the deserializers and the settings above - so
+        // it gets none of it, and the service had NO kafka.consumer.* meters at
+        // all: /actuator/prometheus listed 80 metric families and not one of
+        // them was lag. The phase-6 exit criterion asks for an alert on consumer
+        // lag, and there was nothing to alert on.
+        //
+        // It is necessary and NOT sufficient, which is why KafkaBacklog exists
+        // as well. This metric is computed BY the client, FROM fetches the
+        // client made; a consumer that has crashed or failed to rejoin its group
+        // publishes no lag at all, so the series goes silent exactly when the
+        // backlog starts growing without bound.
+        factory.addListener(new MicrometerConsumerListener<String, PaymentEventMessage>(meters));
+        return factory;
     }
 
     @Bean

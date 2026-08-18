@@ -1,0 +1,85 @@
+{
+  "_comment": [
+    "Phase 6i. Something is in the dead-letter queue and nobody has dealt with",
+    "it. The other half of phase 6's last exit criterion.",
+    "",
+    "WHY payorch.dlq.pending AND NOT payorch.dlq.records - THE WHOLE POINT",
+    "",
+    "The phase plan says 'alerts on consumer lag and DLQ DEPTH', and depth is the",
+    "wrong number. A Kafka topic is a log: replaying a dead-lettered record moves",
+    "a consumer offset, it does not delete anything. So the record count rises",
+    "forever and never falls.",
+    "",
+    "A rule thresholding it fires during the first incident and then STAYS FIRING",
+    "for the life of the cluster - which is worse than no rule, because it trains",
+    "a team to close the notification without reading it, and the second incident",
+    "arrives on a channel everybody has learned to ignore.",
+    "",
+    "pending is end offset minus the REPLAY GROUP's committed offset. It returns",
+    "to zero when somebody replays or triages, which is the property an alert",
+    "actually needs and the one 'depth' does not have.",
+    "",
+    "payorch.dlq.records is published too, and is deliberately not alerted on: 12",
+    "pending out of 12 records is a new incident, 12 out of 4,000 is a Tuesday,",
+    "and that ratio is what the person who gets paged wants in front of them.",
+    "",
+    "matchType 1 is 'at least once', and here it is right where it is wrong for",
+    "consumer-lag. Lag is a rate problem - a spike that drains is healthy. A",
+    "dead-lettered payment is a discrete event: it has already exhausted 5s, 1m",
+    "and 10m of retries, so by the time it lands here it is not going to resolve",
+    "itself, and one is worth knowing about.",
+    "",
+    "target 0 with op > for the same reason. There is no healthy non-zero level",
+    "of unhandled dead letters.",
+    "",
+    "No alertOnAbsent, unlike consumer-lag. Absence here would fire on every",
+    "stack that runs without the async profile, which is phases 1 to 5 - and the",
+    "gauge that matters for 'is the consumer alive at all' is already the lag one.",
+    "Two rules alerting on the same silence is one rule and one snooze button."
+  ],
+  "version": "v5",
+  "schemaVersion": "v1",
+  "alert": "dlq-pending",
+  "alertType": "METRIC_BASED_ALERT",
+  "ruleType": "threshold_rule",
+  "frequency": "30s",
+  "evalWindow": "5m",
+  "condition": {
+    "compositeQuery": {
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "disabled": false,
+            "stepInterval": 30,
+            "aggregations": [
+              {
+                "metricName": "payorch.dlq.pending",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "groupBy": [
+              { "name": "topic" }
+            ]
+          }
+        }
+      ]
+    },
+    "op": ">",
+    "target": 0,
+    "matchType": "1",
+    "selectedQueryName": "A"
+  },
+  "labels": {
+    "severity": "critical",
+    "component": "ledger-dlq"
+  },
+  "annotations": {
+    "summary": "Unhandled dead letters on {{$labels.topic}}",
+    "description": "Records are sitting in {{$labels.topic}} that the replay group has not consumed. Each one is a payment event that failed its first attempt and all three retry tiers. Inspect with GET /actuator/dlq?sample=5 and replay with POST /actuator/dlq once the cause is fixed."
+  },
+  "preferredChannels": ["payorch-alert-sink"]
+}

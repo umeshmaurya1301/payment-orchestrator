@@ -1,0 +1,96 @@
+{
+  "_comment": [
+    "Phase 6i. The ledger is falling behind the events it is supposed to account",
+    "for. Half of phase 6's last exit criterion.",
+    "",
+    "WHY payorch.consumer.lag AND NOT kafka.consumer.fetch.manager.records.lag.max",
+    "",
+    "Both now exist - 6i attached a MicrometerConsumerListener as well, because",
+    "the client's own view is free and is what the consumer is reacting to. It is",
+    "the wrong one to page on, and for the same shape of reason experiment 07",
+    "found in three of four phase-4 rules: it cannot fire for the incident it",
+    "matters most for.",
+    "",
+    "records-lag-max is computed BY the consumer FROM fetches the consumer made.",
+    "A consumer that has crashed, been descheduled, deadlocked on a merchant's",
+    "webhook endpoint, or failed to rejoin its group after a rebalance publishes",
+    "no lag at all. The series stops. So the metric goes quiet at precisely the",
+    "moment the backlog begins growing without bound, and a `> N` threshold on it",
+    "is unfireable for a dead consumer.",
+    "",
+    "payorch.consumer.lag asks the BROKER: end offset minus committed offset,",
+    "summed over partitions. True whether or not the consumer is alive.",
+    "",
+    "AND IT IS STILL NOT ENOUGH, WHICH IS WHAT alertOnAbsent IS FOR",
+    "",
+    "payorch.consumer.lag is published by the consuming service, so if that",
+    "process dies the gauge dies with it. A lag monitor that shares a fate with",
+    "the thing it monitors is half a monitor. The honest fix is an exporter",
+    "outside the service - Kafka Exporter, Burrow, or the broker's own metrics -",
+    "and until this project has one, silence has to be the alert: absentFor turns",
+    "'no data for 3 minutes' into a firing rule rather than into a green",
+    "dashboard.",
+    "",
+    "matchType 2 is 'all the time'. A lag spike that drains in twenty seconds is",
+    "a consumer doing its job; 'at least once' would page for it. What deserves",
+    "waking somebody is lag that does NOT come down, which is what 'above the",
+    "threshold for the whole window' means.",
+    "",
+    "evalWindow 2m rather than 5m: at 6 partitions and a normal event rate, two",
+    "minutes of sustained backlog is already several hundred payments the ledger",
+    "has not accounted for. Note that SigNoz adds its own eval_delay of 2m on top",
+    "- see tools/obs/alert-drill.sh for how much that costs a drill.",
+    "",
+    "target 50 is deliberately not 0. Lag is normally non-zero: the relay",
+    "publishes in batches and the consumer commits per record, so a healthy",
+    "system is a few records behind at any instant."
+  ],
+  "version": "v5",
+  "schemaVersion": "v1",
+  "alert": "consumer-lag",
+  "alertType": "METRIC_BASED_ALERT",
+  "ruleType": "threshold_rule",
+  "frequency": "30s",
+  "evalWindow": "2m",
+  "condition": {
+    "compositeQuery": {
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "disabled": false,
+            "stepInterval": 30,
+            "aggregations": [
+              {
+                "metricName": "payorch.consumer.lag",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "groupBy": [
+              { "name": "topic" },
+              { "name": "group" }
+            ]
+          }
+        }
+      ]
+    },
+    "op": ">",
+    "target": 50,
+    "matchType": "2",
+    "alertOnAbsent": true,
+    "absentFor": 3,
+    "selectedQueryName": "A"
+  },
+  "labels": {
+    "severity": "critical",
+    "component": "ledger-consumer"
+  },
+  "annotations": {
+    "summary": "Ledger consumer behind on {{$labels.topic}}",
+    "description": "The {{$labels.group}} group has not committed offsets for a sustained backlog on {{$labels.topic}}. Every lagging event is a payment the ledger has not accounted for yet. If this alert fired with NO DATA, the consumer is not reporting at all - check that the service is alive before checking the backlog."
+  },
+  "preferredChannels": ["payorch-alert-sink"]
+}

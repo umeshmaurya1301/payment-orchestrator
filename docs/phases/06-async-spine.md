@@ -175,13 +175,20 @@ Alerts on **consumer lag** and **DLQ depth**.
       time; nothing in the DLQ path masks anything. The exception *message* is
       deliberately kept out of the log allowlist for the same reason: a
       `DeserializationException` carries the bytes it could not parse
-- [ ] Alerts on consumer lag and DLQ depth fire during the chaos run — the
-      metrics now exist (`payorch.ledger.dead_lettered`, `payorch.ledger.retried`,
-      `/actuator/dlq` reporting records/pending/replayed separately), but no
-      SigNoz rule queries them yet. Note for that work: **depth is not the number
-      to page on.** Records are never removed from a log-structured DLQ, so a
-      rule on record count fires permanently after the first incident; `pending`
-      is the number that returns to zero when somebody fixes it
+- [x] Alerts on consumer lag and DLQ depth fire during the chaos run —
+      `tools/obs/async-alert-drill.sh`, three arms, all firing and resolving.
+      **Depth is not the number to page on**, and neither is the client-side lag
+      metric. The unit began by finding there was no lag metric at all: 80 metric
+      families on `ledger-notifier` and not one of them `kafka.consumer.*`,
+      because a hand-built `ConsumerFactory` opts out of Boot's
+      `MicrometerConsumerListener`. Adding it gave 60 series and was still not
+      enough — freezing the consumer took those 60 series to **0**, so a `> 50`
+      threshold cannot fire for the incident that matters most. `consumer-lag`
+      therefore pairs a threshold with `alertOnAbsent`, and fires on **silence**
+      in 390 s. `dlq-pending` thresholds `pending`, which returns to zero, and
+      publishes `records`, which never does. Measured: arm 1 fired at t+180 s and
+      resolved 210 s after the backlog cleared; arm 2 fired on no-data at
+      t+390 s; arm 3 fired at t+180 s and resolved at t+510 s
 
 "Ledger converges to correct balances" is the criterion that actually tests the
 saga and the retry tiers together.
@@ -246,6 +253,25 @@ written; phase 6 changed what the payment path is and nothing came back to the
 file. The symptom is the confusing one — the right `traceId` in the service's log
 lines, and zero spans in ClickHouse — which reads as half-broken propagation and
 is a missing endpoint.
+
+**A hand-built `ConsumerFactory` has no Kafka metrics.** Boot attaches a
+`MicrometerConsumerListener` to the factory it autoconfigures; build your own for
+the deserializers and you silently lose every `kafka.consumer.*` meter, including
+lag. Nothing warns. The symptom is an exit criterion about consumer lag with no
+lag series to query, discovered six units later.
+
+**The client-side lag metric goes quiet exactly when lag matters.**
+`records-lag-max` is computed by the consumer from fetches the consumer made, so
+a crashed, wedged or descheduled consumer publishes none — measured: 60 series to
+0 the moment the process was frozen. A `> N` threshold on it is unfireable for
+the worst incident it exists to catch, so the rule needs a no-data condition and
+the metric needs a broker-side twin.
+
+**The alert is judging a window that ended minutes ago.** Measured in 6i: the lag
+rule fired when the live lag was 40, under its own threshold of 50, because
+`evalWindow` (2 m) and SigNoz's undocumented `eval_delay` (2 m) put the evidence
+four minutes behind the dashboard. Any drill that reads the current value to
+decide whether the alert *should* have fired is asking the wrong question.
 
 **A webhook dispatch inside `if (applied)` is a permanent drop.** The obvious
 placement — only notify when the ledger actually posted something — makes a single

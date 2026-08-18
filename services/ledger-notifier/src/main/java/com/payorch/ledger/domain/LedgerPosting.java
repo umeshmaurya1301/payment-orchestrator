@@ -1,5 +1,6 @@
 package com.payorch.ledger.domain;
 
+import java.util.List;
 import java.util.UUID;
 
 import org.slf4j.Logger;
@@ -60,6 +61,15 @@ public class LedgerPosting {
     /** Every payment's counterparty. Seeded by V1 so it always exists. */
     public static final String CLEARING = "settlement:clearing";
 
+    /**
+     * Where captured funds come from. Phase 6j.
+     *
+     * <p>Opened on first use like a merchant account rather than seeded, because
+     * a deployment that never captures anything should not carry a row implying
+     * it does.
+     */
+    public static final String NETWORK = "settlement:card-network";
+
     private final AccountRepository accounts;
     private final EntryRepository entries;
     private final JournalRepository journal;
@@ -83,33 +93,30 @@ public class LedgerPosting {
             return false;
         }
 
-        boolean movesMoney = "AUTHORIZED".equals(event.state());
-        String disposition = movesMoney ? "POSTED" : "IGNORED";
+        List<Leg> legs = legsFor(event);
+        String disposition = legs.isEmpty() ? "IGNORED" : "POSTED";
         String reason = switch (event.state()) {
-            case "AUTHORIZED" -> null;
+            case "AUTHORIZED", "CAPTURED" -> null;
             case "FAILED" -> "no money moved";
             case "UNKNOWN" -> "outcome unknown - awaiting reconciliation, deliberately not posted";
             default -> "unrecognised state";
         };
 
         try {
-            if (movesMoney) {
-                LedgerAccount merchant = accountFor(
-                        "merchant:" + event.merchantId(), event.currency());
-                LedgerAccount clearing = accountFor(CLEARING, event.currency());
-
-                // The two legs. Signs are opposite and magnitudes equal, so the
-                // sum over the whole table stays zero - which is the invariant
-                // the convergence test asserts.
-                entries.save(LedgerEntry.of(event.eventId(), merchant.getId(),
-                        event.paymentId(), event.amountMinor(), event.currency(),
-                        "MERCHANT_CREDIT"));
-                entries.save(LedgerEntry.of(event.eventId(), clearing.getId(),
-                        event.paymentId(), -event.amountMinor(), event.currency(),
-                        "CLEARING_DEBIT"));
-
-                merchant.apply(event.amountMinor());
-                clearing.apply(-event.amountMinor());
+            if (!legs.isEmpty()) {
+                for (Leg leg : legs) {
+                    LedgerAccount account = accountFor(leg.accountRef(), event.currency());
+                    entries.save(LedgerEntry.of(event.eventId(), account.getId(),
+                            event.paymentId(), leg.amountMinor(), event.currency(),
+                            leg.entryType()));
+                    // NOT account.apply(...). See AccountRepository.applyDelta -
+                    // read-modify-write on a managed entity loses concurrent
+                    // postings, and the clearing account is touched by every
+                    // single payment, so it is the row every consumer thread
+                    // races on. Measured drift before the fix: 1,911,000 minor
+                    // units on one merchant account.
+                    accounts.applyDelta(account.getId(), leg.amountMinor());
+                }
                 // Flush now, inside the try, so a duplicate raises its
                 // constraint violation HERE rather than at commit time where
                 // this catch could not see it.
@@ -135,6 +142,56 @@ public class LedgerPosting {
                         .with(LogFields.OUTCOME, disposition)
                         .args());
         return true;
+    }
+
+    /** One side of a posting. Always produced in balanced pairs - see {@link #legsFor}. */
+    private record Leg(String accountRef, long amountMinor, String entryType) {
+    }
+
+    /**
+     * Which accounts an event moves, and by how much.
+     *
+     * <h2>Two events per payment, two different movements</h2>
+     *
+     * <p>Phase 6j gave a payment a second published state, and the pair is the
+     * whole reason a ledger is more interesting than a counter:
+     *
+     * <pre>
+     *   AUTHORIZED   merchant        +amount     the merchant is owed this
+     *                clearing        -amount     and we carry the liability
+     *
+     *   CAPTURED     clearing        +amount     the funds arrive
+     *                card-network    -amount     from the network
+     * </pre>
+     *
+     * <p>Every pair sums to zero, so {@code SUM(amount_minor)} over the whole
+     * table stays zero regardless of how many payments are half-finished. That
+     * is the invariant the convergence check asserts and it is unchanged from
+     * phase 6e.
+     *
+     * <p>What the second pair adds is a number nobody had before:
+     * <strong>the clearing account nets to zero for a payment that has been
+     * captured, and stays negative for one that has not.</strong> So the clearing
+     * balance is exactly the outstanding authorized-but-uncaptured exposure -
+     * money the merchant has been promised and that has not yet been collected
+     * from anybody. Before this phase that number was unrepresentable, because
+     * the ledger had no idea capture existed.
+     *
+     * <p>{@code UNKNOWN} still posts nothing, for the reason in the class
+     * javadoc: a ledger that guesses is worse than a ledger that is behind.
+     */
+    private List<Leg> legsFor(PaymentEventMessage event) {
+        String merchant = "merchant:" + event.merchantId();
+        long amount = event.amountMinor();
+        return switch (event.state()) {
+            case "AUTHORIZED" -> List.of(
+                    new Leg(merchant, amount, "MERCHANT_CREDIT"),
+                    new Leg(CLEARING, -amount, "CLEARING_DEBIT"));
+            case "CAPTURED" -> List.of(
+                    new Leg(CLEARING, amount, "CLEARING_CREDIT"),
+                    new Leg(NETWORK, -amount, "NETWORK_DEBIT"));
+            default -> List.of();
+        };
     }
 
     /**
@@ -168,6 +225,51 @@ public class LedgerPosting {
     private LedgerAccount accountFor(String accountRef, String currency) {
         return accounts.findByAccountRefAndCurrency(accountRef, currency)
                 .orElseGet(() -> accounts.save(LedgerAccount.open(accountRef, currency)));
+    }
+
+    /**
+     * Every account whose cached balance disagrees with its own entries.
+     *
+     * <p>Empty is the only healthy answer. This is the check that catches a lost
+     * update, and it exists because the phase-6e convergence assertion cannot:
+     * that one sums the ENTRIES, which stay correct while the cache beside them
+     * drifts.
+     */
+    @Transactional(readOnly = true)
+    public List<AccountRepository.Drift> drift() {
+        return accounts.drift().stream().filter(d -> d.delta() != 0).toList();
+    }
+
+    /**
+     * Rewrites every cached balance from the entries.
+     *
+     * <p>Safe to run at any time and safe to run twice, because the entries are
+     * immutable and are the source of truth - which is the property that makes
+     * a denormalized balance acceptable in the first place. If this could not be
+     * done, the balance would not be a cache, it would be a second ledger.
+     *
+     * <p>Deliberately manual rather than scheduled. A repair that runs by itself
+     * hides the bug that made it necessary: drift should be an alert, and this
+     * should be what somebody runs after reading it.
+     *
+     * @return how many accounts were wrong
+     */
+    @Transactional
+    public int repairBalances() {
+        int repaired = 0;
+        for (AccountRepository.Drift d : accounts.drift()) {
+            if (d.delta() == 0) {
+                continue;
+            }
+            accounts.applyDelta(d.id(), -d.delta());
+            log.warn("repaired a drifted ledger balance",
+                    LogEvent.event()
+                            .with(LogFields.OUTCOME, "BALANCE_REPAIRED")
+                            .with(LogFields.AMOUNT_MINOR, d.delta())
+                            .args());
+            repaired++;
+        }
+        return repaired;
     }
 
     /** Zero if the books balance. Used by the convergence check. */

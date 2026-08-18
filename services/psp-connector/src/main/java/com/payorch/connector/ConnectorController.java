@@ -32,15 +32,31 @@ public class ConnectorController {
     private static final Logger log = LoggerFactory.getLogger(ConnectorController.class);
 
     private final AuthorizationService authorizations;
+    private final CaptureService captures;
 
-    public ConnectorController(AuthorizationService authorizations) {
+    public ConnectorController(AuthorizationService authorizations, CaptureService captures) {
         this.authorizations = authorizations;
+        this.captures = captures;
     }
 
     @PostMapping("/authorize")
     public ConnectorApi.AuthorizeResponse authorize(
             @Valid @RequestBody ConnectorApi.AuthorizeRequest request) {
         return authorizations.authorize(request);
+    }
+
+    /**
+     * Phase 6j. Every exception handler below applies to this unchanged, and the
+     * meanings carry across intact: 503 still says nothing was sent, 502 still
+     * says the outcome is unknown. For a capture that second one is heavier -
+     * "unknown" here means the customer may have been charged - but the
+     * distinction is the same one, which is exactly why it was worth making
+     * precisely in phase 1.
+     */
+    @PostMapping("/capture")
+    public ConnectorApi.CaptureResponse capture(
+            @Valid @RequestBody ConnectorApi.CaptureRequest request) {
+        return captures.capture(request);
     }
 
     /**
@@ -135,7 +151,6 @@ public class ConnectorController {
         // times, and stack traces would bury the lines that matter.
         log.warn("provider unavailable",
                 LogEvent.event()
-                        .with(LogFields.OPERATION, "authorize")
                         .with(LogFields.OUTCOME, "UNKNOWN")
                         .with(LogFields.ERROR_CODE, "provider_unavailable")
                         .args());

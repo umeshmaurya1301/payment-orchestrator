@@ -107,6 +107,50 @@ public class PaymentsController {
     }
 
     /**
+     * Phase 6j. Capture a payment the merchant already holds an authorization for.
+     *
+     * <p><strong>No idempotency key, and that is a deliberate asymmetry worth
+     * defending.</strong> Creating a payment needs one because a retried POST
+     * would create a SECOND payment - a new resource, a second charge. Capture
+     * names an existing resource and moves it AUTHORIZED -&gt; CAPTURED, a
+     * transition the state machine permits exactly once; the second call gets a
+     * 409 from {@code PaymentTransitions} rather than a second capture. The
+     * safety comes from the state machine rather than from a key the merchant
+     * has to remember to send, which is the stronger place for it to live.
+     *
+     * <p>The merchant filter is the same one {@code get} applies: a merchant may
+     * only capture their own payment, and a payment belonging to somebody else
+     * is a 404 rather than a 403 - saying "not yours" confirms it exists.
+     */
+    @PostMapping("/{id}/capture")
+    public EdgeApi.PaymentResponse capture(@PathVariable String id, HttpServletRequest httpRequest) {
+        UUID merchantId = authenticatedMerchant(httpRequest);
+
+        orchestrator.find(id)
+                .filter(found -> merchantId.toString().equals(found.merchantId()))
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "payment_not_found",
+                        "no payment with that id"));
+
+        return toEdgeResponse(orchestrator.capture(id));
+    }
+
+    /**
+     * The orchestrator refused the capture and said why. Passed through with its
+     * own status rather than flattened to a 502: "this payment cannot be
+     * captured" and "we could not reach the orchestrator" are different facts
+     * and a merchant will retry exactly one of them.
+     */
+    @ExceptionHandler(OrchestratorClient.CaptureRefusedException.class)
+    public ProblemDetail handleCaptureRefused(OrchestratorClient.CaptureRefusedException ex) {
+        ProblemDetail problem = ProblemDetail.forStatus(ex.status());
+        problem.setTitle("Capture refused");
+        problem.setDetail("The payment could not be captured. It may already be captured, "
+                + "may not be authorized, or the provider declined.");
+        problem.setProperty(LogFields.ERROR_CODE, "capture_refused");
+        return problem;
+    }
+
+    /**
      * The tokenization boundary.
      *
      * <p>The card is swapped for a token before anything else touches the

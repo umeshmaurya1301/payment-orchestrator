@@ -44,6 +44,29 @@ public final class ConnectorApi {
     }
 
     /**
+     * Take the money on an authorization the provider already holds.
+     *
+     * <p>No card token. A capture references the provider's own handle, so the
+     * vault is never opened for one - the tokenization boundary is narrower for
+     * capture than for authorize, and the type says so.
+     *
+     * @param providerRef the handle from the authorize response. Also the
+     *        idempotency key.
+     */
+    public record CaptureRequest(
+            @NotBlank @Size(max = 64) String providerRef,
+            @NotBlank @Size(max = 32) String pspId,
+            @Min(1) long amountMinor) {
+    }
+
+    public record CaptureResponse(
+            String providerRef,
+            Outcome outcome,
+            String errorCode,
+            long capturedAmountMinor) {
+    }
+
+    /**
      * Only the two answers a provider can actually give.
      *
      * <p>There is deliberately no {@code UNKNOWN} member here. A response that

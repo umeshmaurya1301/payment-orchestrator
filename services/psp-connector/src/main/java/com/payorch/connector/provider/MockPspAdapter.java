@@ -284,6 +284,78 @@ public class MockPspAdapter implements PspAdapter {
                 response.providerRef(), approved, response.errorCode(), response.authCode());
     }
 
+    @Override
+    public ProviderCapture capture(CaptureCommand command) {
+        ProviderConfig config = config();
+        RestClient client = clientFor(config);
+        String operation = pspId + ".capture";
+
+        // THE SAME FIVE GATES AS AUTHORIZE, and it is worth saying why rather
+        // than treating it as symmetry for its own sake. A capture is a smaller
+        // call than an authorization and a more dangerous one to leave
+        // unbounded: it happens after the customer has gone, usually in a batch,
+        // so nobody is watching a spinner and the failure mode is a queue rather
+        // than a complaint. The breaker, the bulkhead and the egress budget are
+        // shared with authorize per provider, which is correct - they model the
+        // PROVIDER's capacity, not ours, and a provider drowning in captures
+        // cannot authorize either.
+        //
+        // The retry reference is providerRef, not a fresh id. That is what makes
+        // retrying safe: the provider recognises the handle and does not take
+        // the money twice. See CaptureCommand for what this design would owe a
+        // real acquirer.
+        CaptureResponse response = retrier.call(operation, command.providerRef(),
+                config.retryMaxAttempts(),
+                () -> breakers.call(pspId, "capture",
+                () -> bulkhead.call(pspId,
+                () -> egress(
+                () -> deadlines.callWithin(operation, config.deadlineSliceMs(),
+                () -> measuredCapture(client, command))))));
+        if (response == null) {
+            throw new ProviderUnavailableException(pspId, null);
+        }
+
+        return new ProviderCapture(response.providerRef(),
+                "APPROVED".equals(response.outcome()),
+                response.errorCode(),
+                response.capturedAmountMinor());
+    }
+
+    /** Same shape as {@link #measured}, timed under its own operation label. */
+    private CaptureResponse measuredCapture(RestClient client, CaptureCommand command) throws Exception {
+        long startedAt = System.nanoTime();
+        boolean answered = false;
+        try {
+            CaptureResponse response = seams.inSpan(Seams.PROVIDER_CALL,
+                    () -> sendCapture(client, command), "psp", pspId, "operation", "capture");
+            answered = true;
+            return response;
+        } finally {
+            providerLatency.record(pspId, "capture",
+                    (System.nanoTime() - startedAt) / 1_000_000);
+            providerOutcomes.record(pspId, "capture", answered);
+        }
+    }
+
+    private CaptureResponse sendCapture(RestClient client, CaptureCommand command) {
+        try {
+            return client.post()
+                    .uri("/psp/v1/capture")
+                    .body(new CaptureRequest(command.providerRef(), command.amountMinor()))
+                    .retrieve()
+                    .body(CaptureResponse.class);
+        } catch (RestClientException e) {
+            throw new ProviderUnavailableException(pspId, e);
+        }
+    }
+
+    record CaptureRequest(String providerRef, long amountMinor) {
+    }
+
+    record CaptureResponse(String providerRef, String outcome, String errorCode,
+                           long capturedAmountMinor) {
+    }
+
     /**
      * The outbound authorization body.
      *

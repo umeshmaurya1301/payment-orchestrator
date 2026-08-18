@@ -44,6 +44,21 @@ public class PaymentController {
         return payments.create(request);
     }
 
+    /**
+     * Phase 6j. Capture is a POST to a sub-resource rather than a PATCH of
+     * {@code state}, because it is an ACTION with a side effect at a third party,
+     * not an edit of a field. A caller that could PATCH state to CAPTURED would
+     * be able to tell this service money had moved when it had not.
+     */
+    @PostMapping("/{id}/capture")
+    public OrchestratorApi.PaymentResponse capture(@PathVariable String id) {
+        UUID paymentId = Uuid7.parseOrNull(id);
+        if (paymentId == null) {
+            throw notFound();
+        }
+        return payments.capture(paymentId);
+    }
+
     @GetMapping("/{id}")
     public OrchestratorApi.PaymentResponse get(@PathVariable String id) {
         UUID paymentId = Uuid7.parseOrNull(id);

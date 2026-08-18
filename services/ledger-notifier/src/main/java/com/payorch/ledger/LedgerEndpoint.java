@@ -1,14 +1,18 @@
 package com.payorch.ledger;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
 import org.springframework.boot.actuate.endpoint.annotation.ReadOperation;
+import org.springframework.boot.actuate.endpoint.annotation.WriteOperation;
 import org.springframework.stereotype.Component;
 
 import com.payorch.ledger.backlog.BacklogMetrics;
 import com.payorch.ledger.consume.PaymentEventConsumer;
+import com.payorch.ledger.domain.AccountRepository;
+import com.payorch.ledger.domain.LedgerPosting;
 
 /**
  * What the ledger is doing, in one request.
@@ -41,10 +45,13 @@ public class LedgerEndpoint {
 
     private final PaymentEventConsumer consumer;
     private final BacklogMetrics backlog;
+    private final LedgerPosting ledger;
 
-    public LedgerEndpoint(PaymentEventConsumer consumer, BacklogMetrics backlog) {
+    public LedgerEndpoint(PaymentEventConsumer consumer, BacklogMetrics backlog,
+                          LedgerPosting ledger) {
         this.consumer = consumer;
         this.backlog = backlog;
+        this.ledger = ledger;
     }
 
     @ReadOperation
@@ -65,6 +72,46 @@ public class LedgerEndpoint {
         // reading of zero is the most dangerous thing to say about a cluster
         // you cannot talk to.
         out.put("backlog", backlog.snapshot());
+
+        // Both numbers, because they answer different questions and only one of
+        // them was being asked before phase 6j.
+        //
+        //   imbalance  SUM over every entry. Zero means the double-entry
+        //              invariant holds - and it held throughout the incident
+        //              below, because the entries were never wrong.
+        //   drift      cached balance minus the sum of that account's entries.
+        //              Non-zero means a lost update: the ledger's own denormalized
+        //              totals disagree with the ledger. Measured at 1,911,000
+        //              minor units on one account before applyDelta replaced
+        //              read-modify-write.
+        Map<String, Object> books = new LinkedHashMap<>();
+        books.put("imbalance", ledger.imbalance());
+        List<AccountRepository.Drift> drifted = ledger.drift();
+        books.put("driftedAccounts", drifted.size());
+        books.put("drift", drifted.stream()
+                .map(d -> Map.of("account", d.accountRef(),
+                        "cached", d.cached(),
+                        "entries", d.actual(),
+                        "delta", d.delta()))
+                .toList());
+        out.put("books", books);
         return out;
+    }
+
+    /**
+     * Rewrites every cached balance from the entries.
+     *
+     * <p>A write operation, so it is a POST and cannot happen by refreshing a
+     * page. Deliberately manual - see {@code LedgerPosting.repairBalances} for
+     * why a repair that runs by itself is worse than one somebody has to
+     * decide to run.
+     */
+    @WriteOperation
+    public Map<String, Object> repair() {
+        int before = ledger.drift().size();
+        int repaired = ledger.repairBalances();
+        return Map.of("driftedBefore", before,
+                "repaired", repaired,
+                "driftedAfter", ledger.drift().size());
     }
 }

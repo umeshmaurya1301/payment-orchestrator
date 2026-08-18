@@ -36,6 +36,20 @@ public final class ConnectorApi {
             String authCode) {
     }
 
+    /** Phase 6j. No card token: a capture references the provider's own handle. */
+    public record CaptureRequest(
+            String providerRef,
+            String pspId,
+            long amountMinor) {
+    }
+
+    public record CaptureResponse(
+            String providerRef,
+            Outcome outcome,
+            String errorCode,
+            long capturedAmountMinor) {
+    }
+
     public enum Outcome {
         APPROVED,
         DECLINED

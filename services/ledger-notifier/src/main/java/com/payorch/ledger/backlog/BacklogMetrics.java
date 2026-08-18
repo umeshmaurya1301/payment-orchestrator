@@ -7,6 +7,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.binder.MeterBinder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 
 /**
@@ -55,19 +57,34 @@ import org.springframework.scheduling.annotation.Scheduled;
  */
 public class BacklogMetrics implements MeterBinder {
 
+    private static final Logger log = LoggerFactory.getLogger(BacklogMetrics.class);
+
     private final KafkaBacklog backlog;
     private final String mainTopic;
     private final String group;
     private final String dlqTopic;
     private final String dlqGroup;
 
+    /**
+     * Phase 6j. How many accounts' cached balances disagree with their entries.
+     *
+     * <p>Polled here rather than computed per scrape because it is a query, and
+     * it lives beside the backlog gauges because it answers the same kind of
+     * question: something that should be zero and is not. Zero is the only
+     * healthy value.
+     */
+    private final java.util.function.LongSupplier driftedAccounts;
+
     private final AtomicLong consumerLag = new AtomicLong(-1);
     private final AtomicLong dlqPending = new AtomicLong(-1);
     private final AtomicLong dlqRecords = new AtomicLong(-1);
+    private final AtomicLong drifted = new AtomicLong(0);
 
     public BacklogMetrics(KafkaBacklog backlog, String mainTopic, String group,
-                          String dlqTopic, String dlqGroup) {
+                          String dlqTopic, String dlqGroup,
+                          java.util.function.LongSupplier driftedAccounts) {
         this.backlog = backlog;
+        this.driftedAccounts = driftedAccounts;
         this.mainTopic = mainTopic;
         this.group = group;
         this.dlqTopic = dlqTopic;
@@ -92,6 +109,11 @@ public class BacklogMetrics implements MeterBinder {
                 .description("every record the DLQ has ever held. Context, not an alert")
                 .tag("topic", dlqTopic)
                 .register(registry);
+
+        Gauge.builder("payorch.ledger.drifted_accounts", drifted, AtomicLong::get)
+                .description("accounts whose cached balance disagrees with their entries. "
+                        + "Must be zero; non-zero is a lost update")
+                .register(registry);
     }
 
     /**
@@ -107,6 +129,14 @@ public class BacklogMetrics implements MeterBinder {
         KafkaBacklog.Backlog dlq = backlog.of(dlqTopic, dlqGroup);
         dlqPending.set(dlq.lag());
         dlqRecords.set(dlq.records());
+
+        try {
+            drifted.set(driftedAccounts.getAsLong());
+        } catch (RuntimeException e) {
+            // A database that cannot be queried is somebody else's alert. This
+            // poller must not die on it, or the Kafka gauges above stop too.
+            log.warn("could not read ledger drift: {}", e.toString());
+        }
     }
 
     /** For {@code /actuator/ledger} and for a human during an incident. */
@@ -115,6 +145,7 @@ public class BacklogMetrics implements MeterBinder {
         out.put("consumerLag", consumerLag.get());
         out.put("dlqPending", dlqPending.get());
         out.put("dlqRecords", dlqRecords.get());
+        out.put("driftedAccounts", drifted.get());
         return out;
     }
 }

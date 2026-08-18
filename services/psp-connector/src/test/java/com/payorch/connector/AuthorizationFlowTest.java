@@ -154,6 +154,62 @@ class AuthorizationFlowTest {
                 .andExpect(jsonPath("$.errorCode").value("insufficient_funds"));
     }
 
+    /**
+     * Phase 6j, and the assertion that matters is the NEGATIVE one.
+     *
+     * <p>{@code adapter.received} holds every {@link DetokenizedCard} the
+     * provider was handed. A capture must leave it empty: the operation
+     * references the provider's own handle, so the vault is never opened and the
+     * plaintext window this whole class exists to bound is not widened by adding
+     * a second money-moving operation to the service.
+     */
+    @Test
+    void aCaptureNeverOpensTheVault() throws Exception {
+        adapter.reset();
+
+        mvc.perform(capture("prov_ref_1", "stubpsp"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.outcome").value("APPROVED"))
+                .andExpect(jsonPath("$.capturedAmountMinor").value(1000));
+
+        assertThat(adapter.captured).containsExactly("prov_ref_1");
+        assertThat(adapter.received)
+                .as("a capture must not detokenize - it names an authorization, not a card")
+                .isEmpty();
+    }
+
+    /** A provider that does not answer a capture is a 502, same as for authorize. */
+    @Test
+    void aCaptureThatGetsNoAnswerIsABadGateway() throws Exception {
+        adapter.reset();
+        adapter.failWithUnavailable = true;
+
+        mvc.perform(capture("prov_ref_1", "stubpsp"))
+                .andExpect(status().isBadGateway())
+                .andExpect(jsonPath("$.errorCode").value("provider_unavailable"));
+    }
+
+    /** A refused capture is an outcome, not an error - the authorization survives it. */
+    @Test
+    void aRefusedCaptureIsAnOutcomeNotAnError() throws Exception {
+        adapter.reset();
+        adapter.decline = true;
+
+        mvc.perform(capture("prov_ref_1", "stubpsp"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.outcome").value("DECLINED"))
+                .andExpect(jsonPath("$.errorCode").value("capture_exceeds_authorization"));
+    }
+
+    private static org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder capture(
+            String providerRef, String pspId) {
+        return post("/internal/v1/capture")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"providerRef":"%s","pspId":"%s","amountMinor":1000}"""
+                        .formatted(providerRef, pspId));
+    }
+
     private static org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder authorize(
             String token, String pspId) {
         return post("/internal/v1/authorize")
@@ -197,7 +253,28 @@ class AuthorizationFlowTest {
             return new ProviderAuthorization("stub_ref_1", true, null, "AUTH01");
         }
 
+        /**
+         * Records the providerRef it was asked to capture, and NOT a card - the
+         * assertion in the capture test is that {@link #received} stays empty,
+         * because a capture must never open the vault.
+         */
+        final List<String> captured = new ArrayList<>();
+
+        @Override
+        public ProviderCapture capture(CaptureCommand command) {
+            captured.add(command.providerRef());
+            if (failWithUnavailable) {
+                throw new ProviderUnavailableException(pspId(), null);
+            }
+            if (decline) {
+                return new ProviderCapture(command.providerRef(), false,
+                        "capture_exceeds_authorization", 0);
+            }
+            return new ProviderCapture(command.providerRef(), true, null, command.amountMinor());
+        }
+
         void reset() {
+            captured.clear();
             received.clear();
             failWithUnavailable = false;
             decline = false;

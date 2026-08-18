@@ -7,6 +7,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 
 import com.payorch.ledger.consume.RetryTopics;
 import com.payorch.ledger.dlq.DlqAdmin;
+import com.payorch.ledger.domain.LedgerPosting;
 
 /**
  * Phase 6i. Lag and DLQ backlog, published as metrics.
@@ -42,8 +43,10 @@ public class BacklogConfiguration {
             KafkaBacklog kafkaBacklog,
             @Value("${payorch.ledger.topic:" + RetryTopics.MAIN + "}") String mainTopic,
             @Value("${payorch.ledger.group:ledger-notifier}") String group,
-            @Value("${payorch.ledger.dlq-topic:" + RetryTopics.DLQ + "}") String dlqTopic) {
+            @Value("${payorch.ledger.dlq-topic:" + RetryTopics.DLQ + "}") String dlqTopic,
+            LedgerPosting ledger) {
         return new BacklogMetrics(kafkaBacklog, mainTopic, group,
-                dlqTopic, DlqAdmin.REPLAY_GROUP);
+                dlqTopic, DlqAdmin.REPLAY_GROUP,
+                () -> ledger.drift().size());
     }
 }

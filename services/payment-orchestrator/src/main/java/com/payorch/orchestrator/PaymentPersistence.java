@@ -250,6 +250,41 @@ public class PaymentPersistence {
         return payment;
     }
 
+    /**
+     * Phase 6j. The payment is captured: the money has actually moved.
+     *
+     * <p>The outbox row goes in the same transaction, exactly as
+     * {@link #recordApproved} does, and for the same reason. It is worth
+     * restating for capture because the consequence is different in kind: a lost
+     * {@code payment.authorized} event means a ledger that is behind on a HOLD,
+     * and a lost {@code payment.captured} event means a customer has been
+     * charged and no ledger anywhere knows.
+     *
+     * <p>No attempt row is written. An attempt records a call this service made
+     * to a provider on the authorization path, keyed
+     * {@code (payment_id, operation, attempt_no)}; giving capture its own
+     * attempt row would make {@code attemptNo} mean two different things
+     * depending on which operation you were looking at, and every routing query
+     * in phase 5 reads it. The provider reference is already on the authorizing
+     * attempt, which is where a capture's audit trail belongs.
+     */
+    @Transactional
+    public Payment recordCaptured(UUID paymentId) {
+        Payment payment = require(paymentId);
+        payment.transitionTo(PaymentState.CAPTURED);
+        outcomes.record(PaymentState.CAPTURED);
+        outbox.record(payment);
+        return payment;
+    }
+
+    /** The attempt that produced the authorization, and therefore the providerRef. */
+    @Transactional(readOnly = true)
+    public Optional<PaymentAttempt> authorizedAttempt(UUID paymentId) {
+        return attempts.findByPaymentIdOrderByAttemptNoAsc(paymentId).stream()
+                .filter(a -> a.getProviderRef() != null)
+                .reduce((first, second) -> second);
+    }
+
     @Transactional(readOnly = true)
     public Optional<Payment> find(UUID paymentId) {
         return payments.findById(paymentId);

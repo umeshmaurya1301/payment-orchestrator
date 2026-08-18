@@ -91,6 +91,23 @@ transactions**, and the ledger write path needs them.
 
 Non-blocking retry: a failing message must not head-of-line block its partition.
 
+### 6a. Capture
+
+Built in 6j, because the saga needs something to compensate. `POST
+/v1/payments/{id}/capture` at the edge, `/internal/v1/capture` on the connector,
+`payment.captured` through the outbox, and a second pair of ledger legs.
+
+**No idempotency key on capture**, deliberately, and the asymmetry with payment
+creation is the point: creating twice creates a second charge, so it needs a key;
+capture names an existing resource and moves it `AUTHORIZED → CAPTURED`, which
+the state machine permits exactly once. A second call is a 409 from
+`PaymentTransitions` rather than a second capture.
+
+**Capture never opens the vault.** `PspAdapter.capture` takes no
+`DetokenizedCard` - it references the provider's own handle - so the
+detokenization boundary still has exactly one caller. Enforced by the signature
+and pinned by a test.
+
 ### 6. Saga
 
 For capture → ledger → notify, with compensating reversal on failure.
@@ -253,6 +270,17 @@ written; phase 6 changed what the payment path is and nothing came back to the
 file. The symptom is the confusing one — the right `traceId` in the service's log
 lines, and zero spans in ClickHouse — which reads as half-broken propagation and
 is a missing endpoint.
+
+**`balance += amount` on a JPA entity is a lost update, and double entry will
+not catch it.** Found in 6j: the ledger's cached `balance_minor` had drifted
+**1,911,000 minor units** from the sum of its own entries after two days of
+phase-6 runs, because three consumer threads read-modify-write the same account
+row and every payment touches `settlement:clearing`. The entries were correct
+throughout, so the convergence check was green; the *sum of cached balances* was
+also zero, because both legs of a posting are lost together and the losses arrive
+in balanced pairs. Use `set balance = balance + :delta` so the arithmetic happens
+inside the row lock, and check the cache against the entries separately - the
+double-entry invariant is structurally incapable of seeing this.
 
 **A hand-built `ConsumerFactory` has no Kafka metrics.** Boot attaches a
 `MicrometerConsumerListener` to the factory it autoconfigures; build your own for

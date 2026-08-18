@@ -58,6 +58,13 @@ public class PaymentEvents {
     static PaymentEvent toEvent(Payment payment) {
         String type = switch (payment.getState()) {
             case AUTHORIZED -> PaymentEvent.AUTHORIZED;
+            // Phase 6j. CAPTURED is a second event for the SAME payment, which
+            // makes this the first state that is terminal-for-publishing without
+            // being the end of the payment's life. The ledger needs both: an
+            // authorization is a hold and a capture is money actually taken, and
+            // a ledger that saw only one of them would be describing a different
+            // business.
+            case CAPTURED -> PaymentEvent.CAPTURED;
             case FAILED -> PaymentEvent.FAILED;
             case UNKNOWN -> PaymentEvent.UNKNOWN;
             default -> null;

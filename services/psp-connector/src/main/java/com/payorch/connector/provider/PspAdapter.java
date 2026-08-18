@@ -25,7 +25,38 @@ public interface PspAdapter {
      */
     ProviderAuthorization authorize(AuthorizeCommand command, DetokenizedCard card);
 
+    /**
+     * Takes the money that {@link #authorize} put a hold on.
+     *
+     * <p><strong>No {@code DetokenizedCard} argument, and that is the point.</strong>
+     * A capture references an authorization the provider already holds, so the
+     * card number is not needed and the vault is not touched. The
+     * detokenization boundary that {@code AuthorizationService} guards has
+     * exactly one caller, and capture is not one of them - visible in the
+     * signature rather than asserted in a comment.
+     *
+     * @throws ProviderUnavailableException when no answer was received, which
+     *         for a capture is worse than for an authorize: the money may have
+     *         moved and nothing here knows
+     */
+    ProviderCapture capture(CaptureCommand command);
+
     record AuthorizeCommand(String reference, long amountMinor, String currency) {
+    }
+
+    /**
+     * @param providerRef the handle the provider gave us at authorization time.
+     *        Also the idempotency key: capturing the same reference twice must
+     *        not take the money twice. The simulator gets that right by
+     *        REPLACING the capture rather than accumulating it; a real acquirer
+     *        generally wants an explicit idempotency key on the capture as well,
+     *        and this design would need one before it met a real one.
+     */
+    record CaptureCommand(String providerRef, long amountMinor) {
+    }
+
+    record ProviderCapture(String providerRef, boolean captured, String errorCode,
+                           long capturedAmountMinor) {
     }
 
     record ProviderAuthorization(String providerRef, boolean approved, String errorCode, String authCode) {

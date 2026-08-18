@@ -93,6 +93,40 @@ public class ConnectorClient {
         });
     }
 
+    /**
+     * Phase 6j. Take the money.
+     *
+     * <p>Same two exceptions and the same meanings, and the stakes are higher on
+     * one of them. {@code ConnectorRejectedException} still means nothing was
+     * sent, so the capture simply has not happened yet and can be retried
+     * freely. {@code ConnectorUnavailableException} means the money MAY have
+     * moved with no record of it here - the {@code UNKNOWN} shape, applied to an
+     * operation that debits a customer rather than one that holds a balance.
+     */
+    public ConnectorApi.CaptureResponse capture(ConnectorApi.CaptureRequest request) {
+        return deadlines.callWithin("connector.capture", () -> {
+            try {
+                ConnectorApi.CaptureResponse response = client.post()
+                        .uri("/internal/v1/capture")
+                        .body(request)
+                        .retrieve()
+                        .body(ConnectorApi.CaptureResponse.class);
+
+                if (response == null || response.outcome() == null) {
+                    throw new ConnectorUnavailableException(null);
+                }
+                return response;
+            } catch (HttpServerErrorException e) {
+                if (e.getStatusCode() == HttpStatus.SERVICE_UNAVAILABLE) {
+                    throw new ConnectorRejectedException(e);
+                }
+                throw new ConnectorUnavailableException(e);
+            } catch (RestClientException e) {
+                throw new ConnectorUnavailableException(e);
+            }
+        });
+    }
+
     /** No usable response. Deliberately not the same thing as a decline. */
     public static class ConnectorUnavailableException extends RuntimeException {
 

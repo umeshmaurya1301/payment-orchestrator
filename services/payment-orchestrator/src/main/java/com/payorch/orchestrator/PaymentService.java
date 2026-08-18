@@ -15,6 +15,8 @@ import com.payorch.orchestrator.connector.ConnectorApi;
 import com.payorch.orchestrator.connector.ConnectorClient;
 import com.payorch.orchestrator.domain.Payment;
 import com.payorch.orchestrator.domain.PaymentAttempt;
+import com.payorch.orchestrator.domain.PaymentState;
+import com.payorch.orchestrator.domain.PaymentTransitions;
 import com.payorch.orchestrator.events.PaymentEvents;
 import com.payorch.orchestrator.routing.FailoverPolicy;
 import org.slf4j.Logger;
@@ -88,6 +90,85 @@ public class PaymentService {
 
     public Optional<OrchestratorApi.PaymentResponse> find(UUID paymentId) {
         return persistence.find(paymentId).map(this::toResponse);
+    }
+
+    /**
+     * Phase 6j. Takes the money an authorization is holding.
+     *
+     * <h2>The order, and why it is the opposite of the outbox's</h2>
+     *
+     * <p>Call the provider first, record second. That looks like the dual write
+     * phase 6a spent an experiment condemning, and it is not the same shape: the
+     * provider is not a second database we own, it is the authoritative record
+     * of whether money moved. There is no transaction that can span it. What the
+     * outbox fixed was two writes to systems we control; what remains here is
+     * irreducible, and it is exactly why phase 6k needs a saga rather than a
+     * bigger transaction.
+     *
+     * <p>So the window is real and named: the provider has taken the money and
+     * this service has not yet written it down. A crash in that window leaves a
+     * captured payment recorded as {@code AUTHORIZED}, which is a customer
+     * charged for a payment the ledger thinks is a hold. Phase 8's
+     * reconciliation is what closes it, by asking the provider what it actually
+     * did - the same answer as for {@code UNKNOWN}, for the same reason.
+     *
+     * @throws ApiException 409 if the payment is not in a state that can be
+     *         captured, which {@link PaymentTransitions} decides rather than
+     *         this method
+     */
+    public OrchestratorApi.PaymentResponse capture(UUID paymentId) {
+        Payment payment = persistence.find(paymentId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "payment_not_found",
+                        "no payment with that id"));
+
+        // Checked here as well as enforced by transitionTo, and the duplication
+        // is deliberate: this one produces a 409 an operator can act on, the
+        // other produces a 500 that says a bug reached production.
+        if (payment.getState() != PaymentState.AUTHORIZED) {
+            throw new ApiException(HttpStatus.CONFLICT, "not_capturable",
+                    "only an AUTHORIZED payment can be captured; this one is "
+                            + payment.getState());
+        }
+
+        PaymentAttempt authorized = persistence.authorizedAttempt(paymentId)
+                .orElseThrow(() -> new ApiException(HttpStatus.CONFLICT, "no_provider_reference",
+                        "the payment is AUTHORIZED but carries no provider reference"));
+
+        ConnectorApi.CaptureResponse response = connector.capture(
+                new ConnectorApi.CaptureRequest(
+                        authorized.getProviderRef(),
+                        authorized.getPspId(),
+                        payment.getAmountMinor()));
+
+        if (response.outcome() != ConnectorApi.Outcome.APPROVED) {
+            // A refused capture is not a failed payment. The authorization still
+            // stands and the money has not moved, so the payment stays
+            // AUTHORIZED and somebody can try again or let the hold expire.
+            // Transitioning to FAILED here would discard a live authorization on
+            // the strength of one refusal.
+            log.warn("provider refused the capture - the authorization still stands",
+                    LogEvent.event()
+                            .with(LogFields.PAYMENT_ID, paymentId.toString())
+                            .with(LogFields.PSP_ID, authorized.getPspId())
+                            .with(LogFields.OPERATION, "capture")
+                            .with(LogFields.OUTCOME, "DECLINED")
+                            .with(LogFields.ERROR_CODE, response.errorCode())
+                            .args());
+            throw new ApiException(HttpStatus.CONFLICT, "capture_declined",
+                    "the provider refused the capture: " + response.errorCode());
+        }
+
+        Payment captured = persistence.recordCaptured(paymentId);
+        log.info("payment captured",
+                LogEvent.event()
+                        .with(LogFields.PAYMENT_ID, paymentId.toString())
+                        .with(LogFields.PSP_ID, authorized.getPspId())
+                        .with(LogFields.OPERATION, "capture")
+                        .with(LogFields.AMOUNT_MINOR, payment.getAmountMinor())
+                        .with(LogFields.PREVIOUS_STATE, PaymentState.AUTHORIZED.name())
+                        .with(LogFields.STATE, PaymentState.CAPTURED.name())
+                        .args());
+        return toResponse(captured);
     }
 
     /**

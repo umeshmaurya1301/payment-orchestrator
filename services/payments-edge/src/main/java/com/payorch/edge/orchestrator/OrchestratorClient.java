@@ -100,6 +100,50 @@ public class OrchestratorClient {
         });
     }
 
+    /**
+     * Phase 6j. Capture, proxied through.
+     *
+     * <p>A 409 from the orchestrator - not capturable, already captured, the
+     * provider refused - is a genuine answer about the payment and is passed
+     * back rather than turned into an {@code OrchestratorUnavailableException}.
+     * Wrapping it would tell the merchant "we do not know what happened" about
+     * a case where we know exactly what happened.
+     */
+    public PaymentResponse capture(String paymentId) {
+        return deadlines.callWithin("orchestrator.capture", () -> {
+            try {
+                PaymentResponse response = client.post()
+                        .uri("/internal/v1/payments/{id}/capture", paymentId)
+                        .retrieve()
+                        .body(PaymentResponse.class);
+                if (response == null) {
+                    throw new OrchestratorUnavailableException(null);
+                }
+                return response;
+            } catch (HttpClientErrorException e) {
+                throw new CaptureRefusedException(e.getStatusCode().value(),
+                        e.getResponseBodyAsString());
+            } catch (RestClientException e) {
+                throw new OrchestratorUnavailableException(e);
+            }
+        });
+    }
+
+    /** The orchestrator answered, and the answer was no. */
+    public static class CaptureRefusedException extends RuntimeException {
+
+        private final int status;
+
+        public CaptureRefusedException(int status, String body) {
+            super("capture refused: " + body);
+            this.status = status;
+        }
+
+        public int status() {
+            return status;
+        }
+    }
+
     public Optional<PaymentResponse> find(String paymentId) {
         return deadlines.callWithin("orchestrator.find", () -> findInternal(paymentId));
     }

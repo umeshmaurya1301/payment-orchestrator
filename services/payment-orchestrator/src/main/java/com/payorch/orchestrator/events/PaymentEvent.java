@@ -48,6 +48,7 @@ public record PaymentEvent(
         Instant occurredAt) {
 
     public static final String AUTHORIZED = "payment.authorized";
+    public static final String CAPTURED = "payment.captured";
     public static final String FAILED = "payment.failed";
     public static final String UNKNOWN = "payment.unknown";
 

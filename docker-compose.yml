@@ -286,6 +286,13 @@ services:
       VAULT_DB_URL: jdbc:mysql://toxiproxy:23306/payorch_vault
       VAULT_DB_USER: vault_writer
       VAULT_DB_PASSWORD: vault_writer_pw
+      # Phase 9d. Key material, separate database, separate credential.
+      # Without this the store is in-memory and per-process: the edge mints a
+      # merchant's KEK in its own heap and the connector cannot find it, so
+      # every payment fails at detokenization.
+      KEK_DB_URL: jdbc:mysql://mysql:3306/payorch_kek
+      KEK_DB_USER: kek_user
+      KEK_DB_PASSWORD: kek_user_pw
       VAULT_KEY: *vault-key
       # 3e. The rate limiters' shared store. Redis rather than an in-process
       # counter because a per-instance limit is not a per-merchant limit: it
@@ -367,6 +374,13 @@ services:
       VAULT_DB_URL: jdbc:mysql://toxiproxy:23306/payorch_vault
       VAULT_DB_USER: vault_reader
       VAULT_DB_PASSWORD: vault_reader_pw
+      # Phase 9d. Key material, separate database, separate credential.
+      # Without this the store is in-memory and per-process: the edge mints a
+      # merchant's KEK in its own heap and the connector cannot find it, so
+      # every payment fails at detokenization.
+      KEK_DB_URL: jdbc:mysql://mysql:3306/payorch_kek
+      KEK_DB_USER: kek_user
+      KEK_DB_PASSWORD: kek_user_pw
       VAULT_KEY: *vault-key
       # 3f. base_url is a psp_config column now, so the connector is told
       # how to reach the CONFIG rather than how to reach a provider - the

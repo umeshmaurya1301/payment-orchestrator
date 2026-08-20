@@ -202,6 +202,18 @@ payorch:
       username: ${VAULT_DB_USER:vault_writer}
       password: ${VAULT_DB_PASSWORD:vault_writer_pw}
       pool-size: ${VAULT_DB_POOL_SIZE:5}
+    # Phase 9d. Key material, on its own credentials in its own database.
+    # Separate from the vault datasource above because KekStore's contract says
+    # key material must not share a backup domain with the ciphertext it
+    # protects - see docker/mysql/init/03-kek.sql for how much of that a
+    # single MySQL instance can actually enforce.
+    #
+    # Absent means the in-memory store, which works in one process and breaks
+    # the moment a second one needs the same key.
+    kek-datasource:
+      url: ${KEK_DB_URL:}
+      username: ${KEK_DB_USER:kek_user}
+      password: ${KEK_DB_PASSWORD:kek_user_pw}
     # Local development key, and it must match psp-connector's or every
     # detokenization fails the GCM tag check. Phase 9c replaces the whole
     # static-key arrangement with envelope encryption.

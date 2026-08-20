@@ -28,7 +28,8 @@ public record VaultProperties(String key,
                               java.util.Map<String, String> keys,
                               String currentKey,
                               Boolean verifyOnStartup,
-                              Datasource datasource) {
+                              Datasource datasource,
+                              Datasource kekDatasource) {
 
     public VaultProperties {
         if (keys == null) {
@@ -43,6 +44,19 @@ public record VaultProperties(String key,
         }
         if (datasource == null) {
             datasource = new Datasource(null, null, null, 5);
+        }
+        // Phase 9d. Separate from `datasource` on purpose, and not merely for
+        // tidiness: KekStore's contract says key material must not share a
+        // backup domain with the ciphertext it protects. Different schema,
+        // different credentials, so no vault grant can read a KEK and no KEK
+        // grant can read a card. On one MySQL instance that is a weaker form of
+        // the rule than it deserves - see JdbcKekStore - but it is the half that
+        // can be enforced here.
+        //
+        // Absent means "keep the in-memory store", which is what every unit test
+        // and every service that does not touch cards wants.
+        if (kekDatasource == null) {
+            kekDatasource = new Datasource(null, null, null, 2);
         }
     }
 

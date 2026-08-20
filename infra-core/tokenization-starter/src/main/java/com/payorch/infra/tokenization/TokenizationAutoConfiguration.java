@@ -100,6 +100,33 @@ public class TokenizationAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public KekStore kekStore(VaultProperties properties) {
+        // Phase 9d. A SHARED store when one is configured, and this is not a
+        // preference - it is the difference between a payment working and not.
+        //
+        // The live path spans two JVMs: payments-edge mints a merchant-scoped
+        // KEK when it tokenizes, and psp-connector needs that same key to
+        // detokenize. An in-memory store gives them one heap each, so the
+        // connector looks up a scope it has never heard of and every payment
+        // fails with UnknownKeyException. 9b and 9c were both unit-tested and
+        // both correct in one process; nothing exercised two until the stack
+        // was started again at the end of the roadmap.
+        if (properties.kekDatasource().url() != null
+                && !properties.kekDatasource().url().isBlank()) {
+            VaultProperties.Datasource ds = properties.kekDatasource();
+            HikariConfig config = new HikariConfig();
+            config.setJdbcUrl(ds.url());
+            config.setUsername(ds.username());
+            config.setPassword(ds.password());
+            config.setMaximumPoolSize(ds.poolSize());
+            config.setPoolName("kek-pool");
+            config.setAutoCommit(true);
+            return new JdbcKekStore(JdbcClient.create(new HikariDataSource(config)),
+                    properties.keys().isEmpty() && properties.key() != null
+                            ? java.util.Map.of("v1", properties.key())
+                            : properties.keys(),
+                    properties.keys().isEmpty() ? "v1" : properties.currentKey());
+        }
+
         if (!properties.keys().isEmpty()) {
             String current = properties.currentKey();
             if (current == null || current.isBlank()) {

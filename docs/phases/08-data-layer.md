@@ -201,11 +201,33 @@ it costs.
 - [ ] At least one deliberately *bad* index measured and explained
 - [ ] Recon job produces a mismatch report across all three classes
 - [~] `UNKNOWN` payments resolve automatically; alert fires when the backlog
-      grows — 8a. The poller is built and unit-tested (20 tests, most of them
-      about the answers it must **refuse** to act on), with bounded backoff, a
-      give-up state, and age/count gauges to alert on. **The alert has not been
-      fired against a live stack**, and the `EXPLAIN` evidence for its index is
-      part of the benchmark table below
+      grows — 8a. **The resolution half is now measured**
+      ([experiment 20](../experiments/20-unknown-resolution.md), run 2026-08-21);
+      the alert half is not, and needs a SigNoz rule on gauges that already
+      exist.
+
+      Enabling the poller against 11,601 real `UNKNOWN` payments — oldest 4.3
+      days — resolved **nothing**, 250 polls, 250 inconclusive, every provider
+      `silent` while the same reference answered a direct `curl` with HTTP 200.
+      Three stacked bugs, none of which produced an error:
+
+      1. `StatusFanout.askEveryone` **discarded `subtask.exception()`**, so the
+         class that exists to tell "said no" from "said nothing" was silent about
+         its own silence and no log line named a cause.
+      2. `MockPspAdapter` deserialized `/psp/v1/references/{ref}` into a flat
+         record; that endpoint returns a **list**, deliberately, because one
+         reference with two authorizations is a double charge. Jackson threw,
+         `RestClient` wrapped it, and the adapter reported
+         `ProviderUnavailableException` — a provider answering in 2ms with a 200
+         recorded as unreachable.
+      3. **`RedisLock` had never been created in any service.** It is
+         `@ConditionalOnBean(StringRedisTemplate.class)` inside an
+         `@AutoConfiguration` with no ordering, and `@ConditionalOnBean` is a
+         registration-order check — so phase 7h's lock did not exist at runtime,
+         anywhere, from the day it was written.
+
+      After: 50 resolved per tick, `inconclusive` flat at its pre-fix value,
+      backlog 11,601 → 11,201 and falling
 - [ ] Every index added via a Flyway migration
 
 The "deliberately bad index" row is worth including. Showing what does *not* work

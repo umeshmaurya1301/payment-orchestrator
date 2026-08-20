@@ -46,7 +46,26 @@ import org.springframework.web.client.RestClient;
  * jitter and a retry budget. Circuit breaker, bulkhead and the rate limiters
  * follow in order, each with its own before/after graph.
  */
-@AutoConfiguration
+// AFTER RedisAutoConfiguration, and this is load-bearing rather than tidy.
+//
+// The RedisLock bean below is @ConditionalOnBean(StringRedisTemplate.class),
+// which is the right condition and was silently never true. @ConditionalOnBean
+// is evaluated against the beans registered SO FAR, so an auto-configuration
+// that runs before Redis's own registers nothing and the condition simply does
+// not match - no error, no warning, no bean.
+//
+// Found in phase 8a: enabling the UNKNOWN poller made the orchestrator refuse to
+// start with "required a bean of type RedisLock that could not be found", on a
+// service that has spring-boot-starter-data-redis on the classpath and
+// SPRING_DATA_REDIS_HOST set. The lock had never been created in ANY service
+// since phase 7h - the one component whose javadoc argues at length about
+// failing loudly rather than degrading silently.
+// afterName, not after: a String reference so this starter needs no compile
+// dependency on Redis's autoconfiguration, which a service without Redis must
+// not be forced to carry. The class is DataRedisAutoConfiguration and not
+// RedisAutoConfiguration - Boot 4 renamed it, which is the fourth module or
+// class rename this project has tripped over.
+@AutoConfiguration(afterName = "org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration")
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 @ConditionalOnClass(Filter.class)
 @EnableConfigurationProperties(ResilienceProperties.class)

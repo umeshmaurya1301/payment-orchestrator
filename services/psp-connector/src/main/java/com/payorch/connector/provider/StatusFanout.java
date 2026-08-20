@@ -247,6 +247,33 @@ public class StatusFanout {
                     PspAdapter.ProviderLookup answer = subtask.get();
                     answers.add(answer);
                     silent.remove(answer.pspId());
+                } else if (subtask.state() == Subtask.State.FAILED) {
+                    // WHY A FAILED SUBTASK IS LOGGED AT ALL.
+                    //
+                    // It was not, and that made this class silent about its own
+                    // silence. `silent` is the field every caller uses to decide
+                    // whether "nobody has it" is safe to conclude, and it was
+                    // populated by discarding the exception that explained it.
+                    //
+                    // Found in phase 8a: the UNKNOWN poller reported 250 polls
+                    // and 250 inconclusive results, with all four providers
+                    // silent on every one, while those same providers answered a
+                    // direct HTTP call correctly. No breaker was open, no
+                    // bulkhead rejecting and no deadline declining - and there
+                    // was no line anywhere saying what had actually thrown,
+                    // because this branch did not exist.
+                    //
+                    // The exception TYPE, not the message: a provider reference
+                    // can appear in a message and this line is written on every
+                    // failed lookup.
+                    Throwable cause = subtask.exception();
+                    log.warn("a provider did not answer a lookup",
+                            LogEvent.event()
+                                    .with(LogFields.OPERATION, "lookup")
+                                    .with(LogFields.OUTCOME, "SILENT")
+                                    .with(LogFields.ERROR_CODE,
+                                            cause == null ? "unknown" : cause.getClass().getSimpleName())
+                                    .args());
                 }
             });
 

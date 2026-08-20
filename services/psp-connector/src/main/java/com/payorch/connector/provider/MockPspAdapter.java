@@ -413,7 +413,7 @@ public class MockPspAdapter implements PspAdapter {
         RestClient client = clientFor(config);
         String operation = pspId + ".lookup";
 
-        LookupResponse response = retrier.call(operation, command.reference(),
+        ReferenceView response = retrier.call(operation, command.reference(),
                 config.retryMaxAttempts(),
                 () -> breakers.call(pspId, operation,
                 () -> bulkhead.call(pspId,
@@ -421,20 +421,44 @@ public class MockPspAdapter implements PspAdapter {
                 () -> deadlines.callWithin(operation, config.deadlineSliceMs(),
                 () -> measuredLookup(client, command))))));
 
-        if (response == null) {
+        // THE PROVIDER RETURNS A LIST, AND IT MATTERS THAT IT DOES.
+        //
+        // This method used to deserialize the reference endpoint straight into a
+        // flat single-authorization record. The endpoint has never returned that
+        // shape: it returns {reference, authorizations: [...]}, deliberately,
+        // because one reference with TWO authorizations is a double charge and a
+        // providerRef-keyed lookup can never show it (see ProviderApi.ReferenceView).
+        //
+        // Jackson threw on the unknown property, RestClient turned that into a
+        // RestClientException, and this adapter turned THAT into
+        // ProviderUnavailableException - so a provider answering correctly was
+        // recorded as silent. Measured in phase 8a: 250 polls, 250 inconclusive,
+        // all four providers "silent" on every one, while the same endpoint
+        // answered a direct curl with HTTP 200. The lookup path had never been
+        // exercised end to end.
+        if (response == null || response.authorizations() == null
+                || response.authorizations().isEmpty()) {
+            // An answer, not a failure: this provider has never seen the
+            // reference. That is what lets the caller conclude "nobody has it".
             return ProviderLookup.notFound(pspId);
         }
-        return new ProviderLookup(pspId, true, response.providerRef(),
-                response.outcome(), response.captured(), response.reversed(),
-                response.amountMinor());
+
+        // The FIRST authorization. If there are two, this reference was charged
+        // twice and the second is not something a status lookup can resolve - it
+        // is an incident. Phase 8's reconciliation report is where that belongs;
+        // answering with the first here at least stops the payment being stuck.
+        LookupResponse first = response.authorizations().get(0);
+        return new ProviderLookup(pspId, true, first.providerRef(),
+                first.outcome(), first.captured(), first.reversed(),
+                first.amountMinor());
     }
 
     /** Same shape as {@link #measured}, timed under its own operation label. */
-    private LookupResponse measuredLookup(RestClient client, LookupCommand command) throws Exception {
+    private ReferenceView measuredLookup(RestClient client, LookupCommand command) throws Exception {
         long startedAt = System.nanoTime();
         boolean answered = false;
         try {
-            LookupResponse response = seams.inSpan(Seams.PROVIDER_CALL,
+            ReferenceView response = seams.inSpan(Seams.PROVIDER_CALL,
                     () -> sendLookup(client, command), "psp", pspId, "operation", "lookup");
             answered = true;
             return response;
@@ -445,7 +469,7 @@ public class MockPspAdapter implements PspAdapter {
         }
     }
 
-    private LookupResponse sendLookup(RestClient client, LookupCommand command) {
+    private ReferenceView sendLookup(RestClient client, LookupCommand command) {
         try {
             return client.get()
                     .uri("/psp/v1/references/{reference}", command.reference())
@@ -457,7 +481,7 @@ public class MockPspAdapter implements PspAdapter {
                     // circuit breaker.
                     .onStatus(status -> status.value() == 404, (req, res) -> {
                     })
-                    .body(LookupResponse.class);
+                    .body(ReferenceView.class);
         } catch (RestClientException e) {
             throw new ProviderUnavailableException(pspId, e);
         }
@@ -507,6 +531,15 @@ public class MockPspAdapter implements PspAdapter {
     @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
     record LookupResponse(String providerRef, String reference, String outcome,
                           long amountMinor, boolean captured, boolean reversed) {
+    }
+
+    /**
+     * What {@code /psp/v1/references/{reference}} actually returns.
+     *
+     * <p>A list, because one reference may carry more than one authorization and
+     * that is precisely the case a lookup must not hide.
+     */
+    record ReferenceView(String reference, java.util.List<LookupResponse> authorizations) {
     }
 
     record ReverseResponse(String providerRef, String outcome, String errorCode,

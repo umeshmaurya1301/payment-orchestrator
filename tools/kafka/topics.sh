@@ -75,6 +75,22 @@ TOPICS=(
     "payment.events.retry-60000"      # 7d   tier 2,  1 minute
     "payment.events.retry-600000"     # 7d   tier 3, 10 minutes
     "payment.events.dlq"              # 30d  read by humans, days after the fact
+
+    # Phase 6k. The saga.
+    #
+    # Not a retry tier and not a dead-letter queue - a different KIND of topic.
+    # The four above all carry the same message at different stages of trying to
+    # process it. This one carries a REQUEST, published by the consumer of those
+    # topics and addressed to their producer, which is the shape that makes the
+    # thing a saga rather than a pipeline.
+    #
+    # Six partitions like the rest, keyed by paymentId, even though the expected
+    # depth on a healthy day is zero: the partition count is what orders two
+    # compensations for one payment against each other, and a topic that is
+    # empty until the worst day of the year is exactly the one whose ordering
+    # nobody wants to be discovering then.
+    "payment.compensation"            # 7d   requests to undo a capture
+    "payment.compensation.dlq"        # 30d  compensations a provider refused
 )
 
 retention_for() {

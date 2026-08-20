@@ -59,10 +59,55 @@ class PaymentTransitionsTest {
         assertThat(PaymentTransitions.isAllowed(PaymentState.UNKNOWN, PaymentState.ROUTED)).isFalse();
     }
 
+    /**
+     * Phase 6k. A captured payment has two ends now, and the second one is the
+     * saga: settled, or given back.
+     */
+    @Test
+    void aCapturedPaymentCanBeSettledOrReversed() {
+        assertThat(PaymentTransitions.allowedFrom(PaymentState.CAPTURED))
+                .containsExactlyInAnyOrder(PaymentState.SETTLED, PaymentState.REVERSED);
+    }
+
+    /**
+     * REVERSED is an END, and specifically not a way back to AUTHORIZED.
+     *
+     * <p>The authorization is gone once the capture is reversed - the provider
+     * has released the hold, and there is nothing left to capture against. An
+     * edge back to AUTHORIZED would read as a helpful retry and would be a
+     * second charge on a cardholder who has already been refunded, which is the
+     * same class of mistake the UNKNOWN row exists to prevent.
+     */
+    @Test
+    void reversedIsTerminalAndNeverRecaptured() {
+        assertThat(PaymentState.REVERSED.isTerminal()).isTrue();
+        assertThat(PaymentTransitions.isAllowed(PaymentState.REVERSED, PaymentState.CAPTURED)).isFalse();
+        assertThat(PaymentTransitions.isAllowed(PaymentState.REVERSED, PaymentState.AUTHORIZED)).isFalse();
+        assertThat(PaymentTransitions.isAllowed(PaymentState.REVERSED, PaymentState.SETTLED)).isFalse();
+    }
+
+    /**
+     * Only a CAPTURED payment can be reversed. An authorization that was never
+     * captured expires at the provider by itself, and reversing one would be
+     * undoing something nobody collected.
+     */
+    @Test
+    void onlyACapturedPaymentCanBeReversed() {
+        for (PaymentState from : PaymentState.values()) {
+            if (from == PaymentState.CAPTURED) {
+                continue;
+            }
+            assertThat(PaymentTransitions.isAllowed(from, PaymentState.REVERSED))
+                    .as("%s must not be reversible", from)
+                    .isFalse();
+        }
+    }
+
     @Test
     void terminalStatesGoNowhere() {
         assertThat(PaymentState.SETTLED.isTerminal()).isTrue();
         assertThat(PaymentState.FAILED.isTerminal()).isTrue();
+        assertThat(PaymentState.REVERSED.isTerminal()).isTrue();
         assertThat(PaymentState.UNKNOWN.isTerminal())
                 .as("UNKNOWN is unresolved, not terminal - phase 8's poller has to be able to move it")
                 .isFalse();

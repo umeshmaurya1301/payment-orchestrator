@@ -115,6 +115,67 @@ public class ProviderController {
                 captured.providerRef(), captured.outcome(), null, captured.capturedAmountMinor());
     }
 
+    /**
+     * Gives a capture back. Phase 6k, and the only compensating action the
+     * provider offers.
+     *
+     * <h2>Idempotent, and it has to be more carefully than capture is</h2>
+     *
+     * <p>Capturing twice is caught by the state check above - the second call
+     * finds an authorization that is already captured and simply replaces the
+     * capture with an identical one. A reversal is money going the other way, so
+     * a second call that "just did it again" would give the money back twice.
+     * Reversing an already-reversed authorization therefore returns the SAME
+     * answer without moving anything, which is what makes it safe for the saga
+     * to retry - and the saga will retry, because a compensation that cannot be
+     * retried is a compensation that fails permanently the first time the
+     * network hiccups.
+     *
+     * <h2>409 on an uncaptured authorization</h2>
+     *
+     * <p>Not a silent success. Reversing something that was never captured is
+     * the caller believing money moved when it did not, and answering 200 would
+     * confirm that belief. The saga's whole purpose is to act on a disagreement
+     * about whether money moved, so the one thing the provider must not do is
+     * agree politely.
+     */
+    @PostMapping("/reverse")
+    public ProviderApi.ReverseResponse reverse(@Valid @RequestBody ProviderApi.ReverseRequest request) {
+        chaos.beforeResponse();
+
+        var authorization = ledger.findByProviderRef(request.providerRef())
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "unknown_provider_ref",
+                        "no authorization with that provider reference"));
+
+        if (!authorization.captured()) {
+            throw new ApiException(HttpStatus.CONFLICT, "not_captured",
+                    "the authorization was never captured, so there is nothing to reverse");
+        }
+
+        if (authorization.reversed()) {
+            log.info("reversal ignored - already reversed",
+                    LogEvent.event()
+                            .with(LogFields.OPERATION, "reverse")
+                            .with(LogFields.OUTCOME, "DUPLICATE")
+                            .with(LogFields.AMOUNT_MINOR, authorization.capturedAmountMinor())
+                            .args());
+            return new ProviderApi.ReverseResponse(authorization.providerRef(),
+                    ProviderApi.Outcome.APPROVED, null, authorization.capturedAmountMinor());
+        }
+
+        var reversed = ledger.reverse(authorization);
+        log.info("capture reversed",
+                LogEvent.event()
+                        .with(LogFields.OPERATION, "reverse")
+                        .with(LogFields.OUTCOME, "APPROVED")
+                        .with(LogFields.AMOUNT_MINOR, reversed.capturedAmountMinor())
+                        .with(LogFields.CURRENCY, reversed.currency())
+                        .args());
+
+        return new ProviderApi.ReverseResponse(reversed.providerRef(),
+                ProviderApi.Outcome.APPROVED, null, reversed.capturedAmountMinor());
+    }
+
     @GetMapping("/authorizations/{providerRef}")
     public ProviderApi.StatusResponse status(@PathVariable String providerRef) {
         chaos.beforeResponse();
@@ -152,7 +213,8 @@ public class ProviderController {
     private static ProviderApi.StatusResponse toStatus(AuthorizationLedger.Authorization a) {
         return new ProviderApi.StatusResponse(
                 a.providerRef(), a.reference(), a.outcome(), a.errorCode(),
-                a.amountMinor(), a.currency(), a.last4(), a.captured(), a.createdAt());
+                a.amountMinor(), a.currency(), a.last4(), a.captured(), a.reversed(),
+                a.createdAt());
     }
 
     /**

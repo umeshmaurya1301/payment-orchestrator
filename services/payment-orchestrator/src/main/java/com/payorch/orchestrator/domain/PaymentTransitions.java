@@ -9,6 +9,7 @@ import static com.payorch.orchestrator.domain.PaymentState.AUTHORIZING;
 import static com.payorch.orchestrator.domain.PaymentState.CAPTURED;
 import static com.payorch.orchestrator.domain.PaymentState.FAILED;
 import static com.payorch.orchestrator.domain.PaymentState.INITIATED;
+import static com.payorch.orchestrator.domain.PaymentState.REVERSED;
 import static com.payorch.orchestrator.domain.PaymentState.ROUTED;
 import static com.payorch.orchestrator.domain.PaymentState.SETTLED;
 import static com.payorch.orchestrator.domain.PaymentState.UNKNOWN;
@@ -82,7 +83,20 @@ public final class PaymentTransitions {
         table.put(AUTHORIZING, Set.of(AUTHORIZED, FAILED, UNKNOWN, ROUTED));
 
         table.put(AUTHORIZED, Set.of(CAPTURED, FAILED));
-        table.put(CAPTURED, Set.of(SETTLED));
+
+        // Phase 6k. The compensating edge, and the only one in the table that
+        // exists to undo something rather than to advance it.
+        //
+        // Reachable ONLY from CAPTURED, which is what makes the compensation
+        // honest: a reversal claims money moved and was returned, so it must be
+        // impossible to reach from a state where money never moved. An
+        // AUTHORIZED payment that goes wrong has nothing to give back - the hold
+        // expires on its own - and letting it reach REVERSED would put a
+        // reversal in the ledger for a capture that never happened.
+        //
+        // There is no edge back. See PaymentState.REVERSED.
+        table.put(CAPTURED, Set.of(SETTLED, REVERSED));
+        table.put(REVERSED, Set.of());
 
         // Resolution only. Phase 8's status poller asks the provider what
         // happened and moves the payment to whichever of these it says.

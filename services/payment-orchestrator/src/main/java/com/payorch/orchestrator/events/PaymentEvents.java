@@ -65,6 +65,12 @@ public class PaymentEvents {
             // a ledger that saw only one of them would be describing a different
             // business.
             case CAPTURED -> PaymentEvent.CAPTURED;
+            // Phase 6k. Published for the same reason UNKNOWN is: it is a fact
+            // somebody downstream has to act on. It is also the only event here
+            // that exists BECAUSE a downstream consumer failed, which makes it
+            // the one event whose delivery matters most and whose consumer has
+            // most recently proved it can fail.
+            case REVERSED -> PaymentEvent.REVERSED;
             case FAILED -> PaymentEvent.FAILED;
             case UNKNOWN -> PaymentEvent.UNKNOWN;
             default -> null;

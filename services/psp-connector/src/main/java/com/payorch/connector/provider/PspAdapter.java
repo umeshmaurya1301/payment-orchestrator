@@ -41,6 +41,32 @@ public interface PspAdapter {
      */
     ProviderCapture capture(CaptureCommand command);
 
+    /**
+     * Gives back a capture, in full. The saga's compensating action.
+     *
+     * <p>No {@code DetokenizedCard} here either, for the same reason as
+     * {@link #capture} - and the count is now the claim worth making: this
+     * interface has three money-moving operations and exactly ONE of them opens
+     * the vault. That is not an accident of who wrote which method. A card
+     * number is needed to create an obligation and never to modify one, so the
+     * boundary tracks a real property of payments rather than a convention this
+     * codebase adopted.
+     *
+     * <p><strong>Must be safe to call twice.</strong> The saga retries a failed
+     * compensation, and a compensation that cannot be retried fails permanently
+     * on the first network hiccup. The provider - not this system - is what
+     * makes that true, by recognising a reversal it has already performed and
+     * answering with the original result rather than moving money again.
+     *
+     * @throws ProviderUnavailableException when no answer was received. Worse
+     *         here than anywhere else in this interface: the compensation for a
+     *         capture whose outcome is unknown is a reversal whose outcome is
+     *         also unknown, and there is no third action that resolves it. Phase
+     *         8's reconciliation is the only way out, which is the honest limit
+     *         of what a saga buys.
+     */
+    ProviderReversal reverse(ReverseCommand command);
+
     record AuthorizeCommand(String reference, long amountMinor, String currency) {
     }
 
@@ -57,6 +83,20 @@ public interface PspAdapter {
 
     record ProviderCapture(String providerRef, boolean captured, String errorCode,
                            long capturedAmountMinor) {
+    }
+
+    /**
+     * @param providerRef the same handle the capture used. There is no separate
+     *        reversal id, and no amount: a compensation undoes one action
+     *        exactly once, so the action's own identifier is the whole of what
+     *        it needs. A partial refund is a different operation and would need
+     *        both.
+     */
+    record ReverseCommand(String providerRef) {
+    }
+
+    record ProviderReversal(String providerRef, boolean reversed, String errorCode,
+                            long reversedAmountMinor) {
     }
 
     record ProviderAuthorization(String providerRef, boolean approved, String errorCode, String authCode) {

@@ -12,12 +12,15 @@ import com.payorch.infra.chaos.ChaosSeams;
 import org.springframework.beans.factory.ObjectProvider;
 
 import com.payorch.ledger.domain.LedgerPosting;
+import com.payorch.ledger.saga.CompensationPublisher;
+import com.payorch.ledger.saga.CompensationRequest;
 import com.payorch.ledger.webhook.WebhookDispatcher;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -45,8 +48,9 @@ class PaymentEventConsumerTest {
     private final LedgerPosting ledger = mock(LedgerPosting.class);
     private final ChaosSeams seams = new ChaosSeams();
     private final WebhookDispatcher webhooks = mock(WebhookDispatcher.class);
+    private final CompensationPublisher compensations = mock(CompensationPublisher.class);
     private final PaymentEventConsumer consumer =
-            new PaymentEventConsumer(ledger, seams, providerOf(webhooks));
+            new PaymentEventConsumer(ledger, seams, providerOf(webhooks), compensations);
 
     /**
      * The dispatcher is an ObjectProvider in production because a deployment
@@ -68,10 +72,18 @@ class PaymentEventConsumerTest {
     }
 
     private static PaymentEventMessage event() {
+        return event("payment.authorized", "AUTHORIZED");
+    }
+
+    private static PaymentEventMessage event(String type, String state) {
         return new PaymentEventMessage(
                 UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
-                "payment.authorized", "AUTHORIZED", 4200, "INR",
+                type, state, 4200, "INR",
                 "mockpsp", "tok_test", "424242", "4242", Instant.now());
+    }
+
+    private static PaymentEventMessage capture() {
+        return event("payment.captured", "CAPTURED");
     }
 
     /** Four bytes, big-endian, which is how Spring writes the attempts header. */
@@ -221,5 +233,71 @@ class PaymentEventConsumerTest {
         assertThatNoException().isThrownBy(() -> consumer.onPaymentEvent(event(), null));
         assertThat(consumer.consumed()).isEqualTo(1);
         assertThat(consumer.retried()).isZero();
+    }
+
+    // --- phase 6k: what the end of the ladder now does -------------------
+
+    /**
+     * A dead-lettered capture that never reached the ledger is money at a
+     * provider that this service cannot account for. That, and only that, is
+     * what justifies asking for a reversal.
+     */
+    @Test
+    void aDeadLetteredCaptureWithNoLedgerEntryRequestsACompensation() {
+        when(ledger.hasEntryFor(any())).thenReturn(false);
+
+        consumer.onDeadLetter(capture(), null, null, null);
+
+        verify(compensations).request(any(), eq(CompensationRequest.LEDGER_DEAD_LETTERED));
+        assertThat(consumer.compensationsSkipped()).isZero();
+    }
+
+    /**
+     * THE GUARD THAT STOPS THE COMPENSATION BECOMING THE INCIDENT.
+     *
+     * <p>A capture can reach the DLQ with its ledger entries already posted: the
+     * write succeeds and the WEBHOOK then fails four times because a merchant's
+     * endpoint is down. The books are complete and the merchant simply has not
+     * been told. Reversing on that basis would take back money the ledger says
+     * is owed, to fix somebody else's HTTP 502.
+     */
+    @Test
+    void aDeadLetteredCaptureThatWasAlreadyPostedIsNotCompensated() {
+        when(ledger.hasEntryFor(any())).thenReturn(true);
+
+        consumer.onDeadLetter(capture(), null, null, null);
+
+        verify(compensations, never()).request(any(), any());
+        assertThat(consumer.compensationsSkipped()).isEqualTo(1);
+    }
+
+    /**
+     * An authorization that dead-letters needs no compensation - an
+     * authorization nobody captured expires at the provider by itself, and
+     * reversing one would be undoing something nobody has collected.
+     */
+    @Test
+    void aDeadLetteredAuthorizationIsNeverCompensated() {
+        consumer.onDeadLetter(event(), null, null, null);
+
+        verify(compensations, never()).request(any(), any());
+        verify(ledger, never()).hasEntryFor(any());
+    }
+
+    /**
+     * Still the rule that governs this method: nothing thrown from the DLT
+     * handler, ever. A database that is down when the guard runs must not turn
+     * the end of the ladder into a failure - phase 6f measured what happens
+     * when it does.
+     */
+    @Test
+    void aFailureDecidingWhetherToCompensateDoesNotEscapeTheDltHandler() {
+        when(ledger.hasEntryFor(any())).thenThrow(new IllegalStateException("db down"));
+
+        assertThatNoException().isThrownBy(() ->
+                consumer.onDeadLetter(capture(), null, null, null));
+
+        assertThat(consumer.deadLettered()).isEqualTo(1);
+        assertThat(consumer.dltLogFailures()).isZero();
     }
 }

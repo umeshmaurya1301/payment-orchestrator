@@ -127,6 +127,45 @@ public class ConnectorClient {
         });
     }
 
+    /**
+     * Phase 6k. Give the capture back.
+     *
+     * <p>The two exceptions keep their meanings and one of them changes value.
+     * {@code ConnectorRejectedException} - nothing was sent - is comparatively
+     * good news here: the compensation is still owed, still possible, and the
+     * saga's ladder will hold it until the provider is reachable. It is the only
+     * failure on this path that a retry actually fixes.
+     *
+     * <p>{@code ConnectorUnavailableException} is the end of what this design can
+     * do on its own. The compensation for an unrecorded capture is now itself
+     * unrecorded, and no further compensating action exists - the loop does not
+     * close, and phase 8's reconciliation is the only thing that can close it by
+     * asking the provider what it actually did.
+     */
+    public ConnectorApi.ReverseResponse reverse(ConnectorApi.ReverseRequest request) {
+        return deadlines.callWithin("connector.reverse", () -> {
+            try {
+                ConnectorApi.ReverseResponse response = client.post()
+                        .uri("/internal/v1/reverse")
+                        .body(request)
+                        .retrieve()
+                        .body(ConnectorApi.ReverseResponse.class);
+
+                if (response == null || response.outcome() == null) {
+                    throw new ConnectorUnavailableException(null);
+                }
+                return response;
+            } catch (HttpServerErrorException e) {
+                if (e.getStatusCode() == HttpStatus.SERVICE_UNAVAILABLE) {
+                    throw new ConnectorRejectedException(e);
+                }
+                throw new ConnectorUnavailableException(e);
+            } catch (RestClientException e) {
+                throw new ConnectorUnavailableException(e);
+            }
+        });
+    }
+
     /** No usable response. Deliberately not the same thing as a decline. */
     public static class ConnectorUnavailableException extends RuntimeException {
 

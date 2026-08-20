@@ -70,6 +70,27 @@ public final class ProviderApi {
             long capturedAmountMinor) {
     }
 
+    /**
+     * Give back a capture, in full. Phase 6k.
+     *
+     * <p><strong>No amount.</strong> A reversal here undoes a capture entirely,
+     * and the missing field is the design rather than an omission: a partial
+     * refund is a different operation with different rules - it needs its own
+     * idempotency key, it can happen many times against one capture, and it has
+     * to be checked against how much has already been given back. Compensating a
+     * saga step is none of those things. It undoes one action exactly once, so
+     * the only identifier it needs is the action's own.
+     */
+    public record ReverseRequest(@NotBlank String providerRef) {
+    }
+
+    public record ReverseResponse(
+            String providerRef,
+            Outcome outcome,
+            String errorCode,
+            long reversedAmountMinor) {
+    }
+
     /** Everything the provider will admit to knowing about one authorization. */
     public record StatusResponse(
             String providerRef,
@@ -80,6 +101,7 @@ public final class ProviderApi {
             String currency,
             String last4,
             boolean captured,
+            boolean reversed,
             Instant createdAt) {
     }
 

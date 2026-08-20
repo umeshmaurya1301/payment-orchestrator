@@ -25,6 +25,8 @@ import com.payorch.infra.chaos.ChaosSeams;
 import com.payorch.infra.logging.LogEvent;
 import com.payorch.infra.logging.LogFields;
 import com.payorch.ledger.domain.LedgerPosting;
+import com.payorch.ledger.saga.CompensationPublisher;
+import com.payorch.ledger.saga.CompensationRequest;
 import com.payorch.ledger.webhook.WebhookDispatcher;
 
 /**
@@ -105,17 +107,24 @@ public class PaymentEventConsumer {
      * earlier experiment depend on this one.
      */
     private final ObjectProvider<WebhookDispatcher> webhooks;
+
+    /** Phase 6k. Asks the orchestrator to undo a capture this service gave up on. */
+    private final CompensationPublisher compensations;
+
     private final AtomicLong consumed = new AtomicLong();
     private final AtomicLong duplicates = new AtomicLong();
     private final AtomicLong retried = new AtomicLong();
     private final AtomicLong deadLettered = new AtomicLong();
     private final AtomicLong dltLogFailures = new AtomicLong();
+    private final AtomicLong compensationsSkipped = new AtomicLong();
 
     public PaymentEventConsumer(LedgerPosting ledger, ChaosSeams seams,
-                                ObjectProvider<WebhookDispatcher> webhooks) {
+                                ObjectProvider<WebhookDispatcher> webhooks,
+                                CompensationPublisher compensations) {
         this.ledger = ledger;
         this.seams = seams;
         this.webhooks = webhooks;
+        this.compensations = compensations;
     }
 
     @RetryableTopic(
@@ -321,6 +330,78 @@ public class PaymentEventConsumer {
             dltLogFailures.incrementAndGet();
             log.error("event dead-lettered, and the DLT log line itself failed: {}", e.toString());
         }
+
+        compensateIfNeeded(event);
+    }
+
+    /**
+     * Phase 6k. Turns a dead-lettered capture into a request to undo it.
+     *
+     * <h2>The guard is the whole of the design</h2>
+     *
+     * <p>Two conditions, and the second one is the one worth arguing about.
+     *
+     * <p><strong>The state must be CAPTURED.</strong> A dead-lettered
+     * {@code AUTHORIZED} needs no compensation - an authorization that was never
+     * captured expires by itself at the provider, and asking to reverse one
+     * would be undoing something nobody has collected. A dead-lettered
+     * {@code FAILED} or {@code UNKNOWN} moved no money here by definition.
+     * Capture is the only state in this system where the provider has taken real
+     * funds that this service has failed to account for.
+     *
+     * <p><strong>The ledger must have no entry for the event.</strong> This is
+     * the condition that stops the compensation being worse than the problem.
+     * There is a way for a capture to reach the DLQ with its legs already
+     * posted: the ledger write succeeds and then the WEBHOOK dispatch throws,
+     * four times, because a merchant&#39;s endpoint is down. The books are
+     * complete, the merchant simply has not been told - and reversing on that
+     * basis would take back money the ledger says is owed, to fix somebody
+     * else&#39;s HTTP 502. The compensation would become the incident.
+     *
+     * <p>So the question this asks is not "did processing fail" but "is there
+     * money the ledger cannot account for", and only the second one justifies
+     * touching a provider.
+     *
+     * <h2>Not transactional, and cannot be</h2>
+     *
+     * <p>{@code hasEntryFor} reads MySQL and the send goes to Kafka. Between
+     * them, a DLQ replay could post the entries this just found missing, and the
+     * compensation would then be requested for a capture that has since been
+     * accounted for. That is survivable rather than fixed: the orchestrator
+     * answers such a request on its own state, and a payment whose ledger has
+     * caught up is still {@code CAPTURED} there, so the reversal WOULD go
+     * through and the ledger would end up with both pairs and a reversal. The
+     * window is named in docs/experiments/16-compensating-reversal.md rather
+     * than papered over.
+     */
+    private void compensateIfNeeded(PaymentEventMessage event) {
+        try {
+            if (!"CAPTURED".equals(event.state())) {
+                return;
+            }
+            if (ledger.hasEntryFor(event.eventId())) {
+                // Posted, then failed downstream. Nothing to undo.
+                compensationsSkipped.incrementAndGet();
+                log.warn("dead-lettered capture already posted - not compensating",
+                        LogEvent.event()
+                                .with(LogFields.PAYMENT_ID, String.valueOf(event.paymentId()))
+                                .with(LogFields.STATE, event.state())
+                                .with(LogFields.OUTCOME, "ALREADY_POSTED")
+                                .args());
+                return;
+            }
+            compensations.request(event, CompensationRequest.LEDGER_DEAD_LETTERED);
+        } catch (RuntimeException e) {
+            // Same rule as the logging above: nothing thrown from the DLT
+            // handler, ever. CompensationPublisher.request already swallows its
+            // own failures and counts them; this catches the rest - a database
+            // that is down when hasEntryFor runs, most likely - and is counted
+            // through the publisher's failure series by not being counted
+            // anywhere else, which is a gap this deliberately leaves visible in
+            // the log rather than hiding in a third counter.
+            log.error("compensation decision failed for payment {}: {}",
+                    event.paymentId(), e.toString());
+        }
     }
 
     private static int attemptCount(byte[] header) {
@@ -356,5 +437,18 @@ public class PaymentEventConsumer {
      */
     public long dltLogFailures() {
         return dltLogFailures.get();
+    }
+
+    /**
+     * Dead-lettered captures that needed no compensation because the ledger had
+     * already posted them. Phase 6k.
+     *
+     * <p>A healthy number here is not zero. It means the guard is doing its job:
+     * these are captures whose books are correct and whose failure was
+     * downstream, and every one of them is a provider reversal that did not
+     * happen.
+     */
+    public long compensationsSkipped() {
+        return compensationsSkipped.get();
     }
 }

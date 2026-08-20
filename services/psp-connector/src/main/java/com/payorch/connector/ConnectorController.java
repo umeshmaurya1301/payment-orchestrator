@@ -33,10 +33,13 @@ public class ConnectorController {
 
     private final AuthorizationService authorizations;
     private final CaptureService captures;
+    private final ReversalService reversals;
 
-    public ConnectorController(AuthorizationService authorizations, CaptureService captures) {
+    public ConnectorController(AuthorizationService authorizations, CaptureService captures,
+                               ReversalService reversals) {
         this.authorizations = authorizations;
         this.captures = captures;
+        this.reversals = reversals;
     }
 
     @PostMapping("/authorize")
@@ -57,6 +60,27 @@ public class ConnectorController {
     public ConnectorApi.CaptureResponse capture(
             @Valid @RequestBody ConnectorApi.CaptureRequest request) {
         return captures.capture(request);
+    }
+
+    /**
+     * Phase 6k. The saga's compensating action, and the handlers below matter
+     * more here than anywhere else on this controller.
+     *
+     * <p>503 means nothing was sent, so the compensation has simply not happened
+     * yet and the caller's ladder should hold it and try again - which is the
+     * correct behaviour against a provider that is struggling, and is why the
+     * reversal goes through the breaker rather than around it.
+     *
+     * <p>502 means the outcome is unknown, and for a reversal that is the worst
+     * answer in this system: a compensation whose result nobody knows, for a
+     * capture whose result nobody knows. Retrying it is safe - the provider
+     * recognises a reversal it has already done - but retrying cannot resolve
+     * it. Only asking the provider what it did resolves it, and that is phase 8.
+     */
+    @PostMapping("/reverse")
+    public ConnectorApi.ReverseResponse reverse(
+            @Valid @RequestBody ConnectorApi.ReverseRequest request) {
+        return reversals.reverse(request);
     }
 
     /**

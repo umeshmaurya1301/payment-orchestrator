@@ -67,6 +67,31 @@ public final class ConnectorApi {
     }
 
     /**
+     * Give a capture back, in full. Phase 6k.
+     *
+     * <p>No amount and no card token. The saga is undoing one capture, and the
+     * capture's own handle names it completely.
+     *
+     * <p>Not merchant-facing, and the {@code /internal} prefix is doing real
+     * work for this one. A merchant-initiated refund is a different feature with
+     * different rules - it is partial, repeatable, has its own idempotency key,
+     * and answers to a customer rather than to a failed message. This endpoint
+     * exists so a saga can undo its own step, and nothing else should ever call
+     * it.
+     */
+    public record ReverseRequest(
+            @NotBlank @Size(max = 64) String providerRef,
+            @NotBlank @Size(max = 32) String pspId) {
+    }
+
+    public record ReverseResponse(
+            String providerRef,
+            Outcome outcome,
+            String errorCode,
+            long reversedAmountMinor) {
+    }
+
+    /**
      * Only the two answers a provider can actually give.
      *
      * <p>There is deliberately no {@code UNKNOWN} member here. A response that

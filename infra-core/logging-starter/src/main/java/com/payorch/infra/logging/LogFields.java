@@ -63,6 +63,20 @@ public final class LogFields {
     public static final String FAILURE_TYPE = "failureType";
     public static final String RETRY_ATTEMPT = "retryAttempt";
 
+    /**
+     * Phase 6k. Why a saga step was compensated.
+     *
+     * <p>Same moment's thought as the three above. It is a value from a small
+     * closed set this system defines - {@code ledger_dead_lettered} and its
+     * siblings - not free text and never anything a payload chose, so it cannot
+     * become a route for card data into a log index. It earns a field of its own
+     * rather than borrowing {@link #ERROR_CODE} because it is not an error code:
+     * the reversal succeeded, and this says what made one necessary. Filing the
+     * two under one name would make "why are we reversing captures" unanswerable
+     * by a query, which is the only question anyone asks about this log line.
+     */
+    public static final String COMPENSATION_REASON = "compensationReason";
+
     // --- outcome ----------------------------------------------------------
     public static final String OUTCOME = "outcome";
     public static final String ERROR_CODE = "errorCode";
@@ -77,7 +91,7 @@ public final class LogFields {
             IDEMPOTENCY_KEY, AMOUNT_MINOR, CURRENCY,
             TOKEN, BIN, LAST4,
             PSP_ID, OPERATION,
-            SOURCE_TOPIC, FAILURE_TYPE, RETRY_ATTEMPT,
+            SOURCE_TOPIC, FAILURE_TYPE, RETRY_ATTEMPT, COMPENSATION_REASON,
             OUTCOME, ERROR_CODE, HTTP_STATUS, LATENCY_MS, DEADLINE_REMAINING_MS);
 
     private LogFields() {

@@ -144,6 +144,16 @@ services:
       # Phase 6. Defaults to `none` so `docker compose up` without the async
       # profile still starts a service with no broker to talk to.
       EVENTS_PUBLISHER: ${EVENTS_PUBLISHER:-none}
+      # Phase 6k. This service had no KAFKA_BOOTSTRAP until now, because it had
+      # never needed to reach a broker itself - the outbox relay publishes, and
+      # it only publishes when EVENTS_PUBLISHER says so. Consuming compensations
+      # is what makes the address necessary.
+      KAFKA_BOOTSTRAP: ${KAFKA_BOOTSTRAP:-kafka-1:9092,kafka-2:9092,kafka-3:9092}
+      # OFF unless asked for. On, the orchestrator subscribes to a topic written
+      # by the ledger, which is downstream of it on payment.events - so turning
+      # this on turns a one-way dependency into a cycle. That is what a
+      # choreographed saga is, and it is still worth being an explicit decision.
+      COMPENSATION_ENABLED: ${COMPENSATION_ENABLED:-false}
       <<: *java-env
       # Points at the MySQL service name. Phase 2 repoints this at Toxiproxy's
       # listener instead, which is a compose change and no code change.

@@ -74,6 +74,23 @@ payorch:
     # set them would be a property that silently did nothing.
     dlq-topic: ${LEDGER_DLQ_TOPIC:payment.events.dlq}
 
+  # Phase 6k. The request this service publishes when it gives up on a capture.
+  #
+  # No enabled flag, unlike the webhooks below, and the asymmetry is deliberate.
+  # A webhook is a feature a deployment may not want. A capture that the ledger
+  # cannot account for is money in the wrong place, and a build of this service
+  # that noticed and said nothing would be worse than one that never noticed at
+  # all. The only switch is on the CONSUMER, which is where "is anyone able to
+  # act on this" is actually knowable.
+  compensation:
+    topic: ${COMPENSATION_TOPIC:payment.compensation}
+    # The DLT handler blocks on this send, so it is also how long the last rung
+    # of the retry ladder can stall a listener thread. Ten seconds matches the
+    # producer's delivery.timeout.ms - a shorter value here would abandon a send
+    # the producer is still going to complete, and count a failure that was not
+    # one.
+    send-timeout-ms: ${COMPENSATION_SEND_TIMEOUT_MS:10000}
+
   # Phase 6h. Outbound webhooks.
   #
   # Off by default, like payorch.events.publisher: a service that posted to a

@@ -43,7 +43,9 @@ class LedgerPostingTest {
     private final AccountRepository accounts = mock(AccountRepository.class);
     private final EntryRepository entries = mock(EntryRepository.class);
     private final JournalRepository journal = mock(JournalRepository.class);
-    private final LedgerPosting ledger = new LedgerPosting(accounts, entries, journal);
+    private final ReversedCaptureRepository tombstones = mock(ReversedCaptureRepository.class);
+    private final LedgerPosting ledger =
+            new LedgerPosting(accounts, entries, journal, tombstones);
 
     private final LedgerAccount merchantAccount = LedgerAccount.open("merchant:m1", "INR");
     private final LedgerAccount clearingAccount = LedgerAccount.open(LedgerPosting.CLEARING, "INR");
@@ -61,6 +63,7 @@ class LedgerPostingTest {
     private void stubAccounts() {
         when(entries.existsByEventId(any())).thenReturn(false);
         when(journal.existsByEventId(any())).thenReturn(false);
+        when(tombstones.existsById(any())).thenReturn(false);
         when(accounts.findByAccountRefAndCurrency(anyString(), eq("INR")))
                 .thenAnswer(invocation -> {
                     String ref = invocation.getArgument(0);
@@ -193,5 +196,93 @@ class LedgerPostingTest {
         assertThat(ledger.repairBalances()).isEqualTo(1);
 
         verify(accounts).applyDelta(id, -20L);
+    }
+
+    // --- phase 6k: the compensating reversal ----------------------------
+
+    /**
+     * THE ONE THAT IS EASY TO GET BACKWARDS.
+     *
+     * <p>A reversal compensates a capture the ledger never posted, so there is
+     * no clearing/card-network pair to undo. What exists is the AUTHORIZATION,
+     * and the reversal cancels that.
+     *
+     * <p>Reversing the capture legs instead - credit card-network, debit
+     * clearing - would balance perfectly, keep {@code SUM(amount_minor)} at
+     * zero, and leave two accounts permanently wrong. The invariant cannot see
+     * the difference; this test is the thing that can.
+     */
+    @Test
+    void aReversalUndoesTheAuthorizationAndNotTheCapture() {
+        stubAccounts();
+
+        assertThat(ledger.post(event("REVERSED", "payment.reversed"))).isTrue();
+
+        verify(accounts).applyDelta(merchantAccount.getId(), -4200L);
+        verify(accounts).applyDelta(clearingAccount.getId(), 4200L);
+        verify(accounts, never()).applyDelta(eq(networkAccount.getId()), any(Long.class));
+    }
+
+    /** Authorize then reverse leaves every account this payment touched at zero. */
+    @Test
+    void authorizeThenReverseNetsToNothing() {
+        stubAccounts();
+
+        ledger.post(event("AUTHORIZED", "payment.authorized"));
+        ledger.post(event("REVERSED", "payment.reversed"));
+
+        verify(accounts).applyDelta(merchantAccount.getId(), 4200L);
+        verify(accounts).applyDelta(merchantAccount.getId(), -4200L);
+        verify(accounts).applyDelta(clearingAccount.getId(), -4200L);
+        verify(accounts).applyDelta(clearingAccount.getId(), 4200L);
+    }
+
+    /** The tombstone is written in the same transaction as the reversal legs. */
+    @Test
+    void aReversalWritesTheTombstoneThatSuppressesTheCapture() {
+        stubAccounts();
+
+        ledger.post(event("REVERSED", "payment.reversed"));
+
+        verify(tombstones).save(any(ReversedCapture.class));
+    }
+
+    /**
+     * THE REPLAY HOLE, closed.
+     *
+     * <p>A compensated capture is still sitting in payment.events.dlq, and the
+     * replay tool built in phase 6f exists precisely so a human can push it back
+     * through. Nothing else in this service would stop it: the event genuinely
+     * has never been posted, so {@code existsByEventId} is false and the unique
+     * constraint would accept both legs happily.
+     */
+    @Test
+    void aCaptureReplayedAfterItsReversalPostsNothing() {
+        stubAccounts();
+        when(tombstones.existsById(any())).thenReturn(true);
+
+        // true, not false: this is not a duplicate. The event was handled -
+        // deliberately, by ignoring it - and it is journalled as IGNORED so the
+        // decision is auditable rather than invisible.
+        assertThat(ledger.post(event("CAPTURED", "payment.captured"))).isTrue();
+
+        verify(accounts, never()).applyDelta(any(), any(Long.class));
+        verify(entries, never()).save(any());
+    }
+
+    /**
+     * The tombstone suppresses the CAPTURE and nothing else. A payment that was
+     * reversed and later re-authorized is not this system's flow today, but a
+     * tombstone that swallowed every subsequent event would be a silent data
+     * loss waiting for the day it is.
+     */
+    @Test
+    void theTombstoneDoesNotSuppressOtherStates() {
+        stubAccounts();
+        when(tombstones.existsById(any())).thenReturn(true);
+
+        ledger.post(event("AUTHORIZED", "payment.authorized"));
+
+        verify(accounts).applyDelta(merchantAccount.getId(), 4200L);
     }
 }

@@ -24,6 +24,13 @@ import com.payorch.ledger.journal.JournalRepository;
  *   <li><strong>AUTHORIZED</strong> posts two legs: the merchant is credited
  *       what they are owed, and the clearing account is debited the same amount.
  *       They sum to zero, always.</li>
+ *   <li><strong>CAPTURED</strong> posts the second pair: the clearing
+ *       account is credited as the funds arrive and the card network is
+ *       debited. See {@link #legsFor} for what the clearing balance means
+ *       once both pairs exist.</li>
+ *   <li><strong>REVERSED</strong> posts the inverse of the AUTHORIZATION -
+ *       not of the capture - and writes a tombstone so a later DLQ replay of
+ *       the capture cannot resurrect it. Phase 6k.</li>
  *   <li><strong>FAILED</strong> posts nothing. No money moved, so no entry
  *       moves. It is still journalled - see below.</li>
  *   <li><strong>UNKNOWN</strong> posts nothing, and this is the interesting
@@ -74,12 +81,17 @@ public class LedgerPosting {
     private final EntryRepository entries;
     private final JournalRepository journal;
 
+    /** Phase 6k. Captures that have been compensated and must never post. */
+    private final ReversedCaptureRepository tombstones;
+
     public LedgerPosting(AccountRepository accounts,
                          EntryRepository entries,
-                         JournalRepository journal) {
+                         JournalRepository journal,
+                         ReversedCaptureRepository tombstones) {
         this.accounts = accounts;
         this.entries = entries;
         this.journal = journal;
+        this.tombstones = tombstones;
     }
 
     /**
@@ -93,14 +105,27 @@ public class LedgerPosting {
             return false;
         }
 
-        List<Leg> legs = legsFor(event);
+        // Phase 6k. The one check no other idempotency in this service can
+        // stand in for.
+        //
+        // This capture has never been posted - that is precisely why it was
+        // dead-lettered and then compensated - so existsByEventId above said
+        // false, and the unique constraint below would accept it happily. The
+        // only thing that knows this event is stale is the tombstone written by
+        // its own reversal.
+        boolean compensated = "CAPTURED".equals(event.state())
+                && tombstones.existsById(event.paymentId());
+
+        List<Leg> legs = compensated ? List.of() : legsFor(event);
         String disposition = legs.isEmpty() ? "IGNORED" : "POSTED";
-        String reason = switch (event.state()) {
-            case "AUTHORIZED", "CAPTURED" -> null;
-            case "FAILED" -> "no money moved";
-            case "UNKNOWN" -> "outcome unknown - awaiting reconciliation, deliberately not posted";
-            default -> "unrecognised state";
-        };
+        String reason = compensated
+                ? "capture was compensated before this arrived - see reversed_capture"
+                : switch (event.state()) {
+                    case "AUTHORIZED", "CAPTURED", "REVERSED" -> null;
+                    case "FAILED" -> "no money moved";
+                    case "UNKNOWN" -> "outcome unknown - awaiting reconciliation, deliberately not posted";
+                    default -> "unrecognised state";
+                };
 
         try {
             if (!legs.isEmpty()) {
@@ -116,6 +141,16 @@ public class LedgerPosting {
                     // races on. Measured drift before the fix: 1,911,000 minor
                     // units on one merchant account.
                     accounts.applyDelta(account.getId(), leg.amountMinor());
+                }
+                // Phase 6k. Same transaction as the legs it is about, on
+                // purpose. A tombstone without its reversal entries would
+                // suppress a capture that was never actually given back; the
+                // entries without the tombstone would leave the replay hole
+                // open. Neither half is any use alone, so neither half commits
+                // alone.
+                if ("REVERSED".equals(event.state())) {
+                    tombstones.save(ReversedCapture.of(event.paymentId(), event.eventId(),
+                            event.amountMinor(), event.currency()));
                 }
                 // Flush now, inside the try, so a duplicate raises its
                 // constraint violation HERE rather than at commit time where
@@ -162,6 +197,9 @@ public class LedgerPosting {
      *
      *   CAPTURED     clearing        +amount     the funds arrive
      *                card-network    -amount     from the network
+     *
+     *   REVERSED     merchant        -amount     the merchant is owed nothing
+     *                clearing        +amount     and we carry no liability
      * </pre>
      *
      * <p>Every pair sums to zero, so {@code SUM(amount_minor)} over the whole
@@ -190,6 +228,26 @@ public class LedgerPosting {
             case "CAPTURED" -> List.of(
                     new Leg(CLEARING, amount, "CLEARING_CREDIT"),
                     new Leg(NETWORK, -amount, "NETWORK_DEBIT"));
+            // Phase 6k. THE INVERSE OF THE AUTHORIZATION, not of the capture.
+            //
+            // Worth being exact about, because the obvious reading is wrong. A
+            // compensation is raised for a capture the ledger never posted, so
+            // the clearing/card-network pair does not exist here and there is
+            // nothing on it to undo. What DOES exist is the authorization: the
+            // merchant is credited and we are carrying the liability. The
+            // reversal cancels that, and all three accounts return to zero for
+            // this payment - which is the correct answer, because money left the
+            // cardholder and came back, and the books should end up saying
+            // nothing happened.
+            //
+            // Reversing the capture legs instead would credit card-network for
+            // funds it never sent and leave clearing short by the same amount.
+            // SUM(amount_minor) would still be zero. That is the second time in
+            // two phases the balanced-books invariant has been unable to see a
+            // real error, and it is why drift() and this tombstone both exist.
+            case "REVERSED" -> List.of(
+                    new Leg(merchant, -amount, "MERCHANT_REVERSAL"),
+                    new Leg(CLEARING, amount, "CLEARING_REVERSAL"));
             default -> List.of();
         };
     }
@@ -281,5 +339,17 @@ public class LedgerPosting {
     @Transactional(readOnly = true)
     public boolean hasEntryFor(UUID eventId) {
         return entries.existsByEventId(eventId);
+    }
+
+    /** Whether this payment&#39;s capture has been compensated. Phase 6k. */
+    @Transactional(readOnly = true)
+    public boolean captureReversed(UUID paymentId) {
+        return tombstones.existsById(paymentId);
+    }
+
+    /** How many captures this ledger has had to have compensated. */
+    @Transactional(readOnly = true)
+    public long reversedCaptures() {
+        return tombstones.count();
     }
 }

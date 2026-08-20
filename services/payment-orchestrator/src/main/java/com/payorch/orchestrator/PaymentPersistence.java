@@ -277,6 +277,25 @@ public class PaymentPersistence {
         return payment;
     }
 
+    /**
+     * Phase 6k. The capture was given back.
+     *
+     * <p>Same shape as {@link #recordCaptured} - transition, count, outbox row,
+     * one transaction - and the outbox row is doing something new. Every other
+     * event this service publishes says a payment moved forward. This one says
+     * the system undid its own work, and it is the ONLY way the ledger can find
+     * out: the ledger reached this situation by failing to process a message, so
+     * it cannot be told by the message it already failed on.
+     */
+    @Transactional
+    public Payment recordReversed(UUID paymentId) {
+        Payment payment = require(paymentId);
+        payment.transitionTo(PaymentState.REVERSED);
+        outcomes.record(PaymentState.REVERSED);
+        outbox.record(payment);
+        return payment;
+    }
+
     /** The attempt that produced the authorization, and therefore the providerRef. */
     @Transactional(readOnly = true)
     public Optional<PaymentAttempt> authorizedAttempt(UUID paymentId) {

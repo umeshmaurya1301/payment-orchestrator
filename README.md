@@ -6,9 +6,11 @@ Built in phases, where each resilience component is added **only after the
 failure it prevents has been observed and measured**. Every phase from 3 onward
 produces a before/after graph in [`docs/experiments/`](docs/experiments/).
 
-> **Status: phases 0–4 complete, phase 5 all but one criterion, phase 6 exit
-> criteria all met (6a–6j).** Fifteen experiments, each with a measured before
-> and after, in [`docs/experiments/`](docs/experiments/).
+> **Status: phases 0–4 complete, phase 5 all but one criterion, phase 6
+> implementation complete (6a–6k) with every exit criterion met except the
+> saga's, which is built and unit-tested but not yet measured.** Fifteen
+> experiments with a measured before and after, plus one written and not yet
+> run, in [`docs/experiments/`](docs/experiments/).
 
 ## The graph
 

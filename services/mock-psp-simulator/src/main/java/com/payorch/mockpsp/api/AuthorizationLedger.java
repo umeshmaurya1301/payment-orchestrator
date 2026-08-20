@@ -36,6 +36,12 @@ public class AuthorizationLedger {
     /**
      * @param captured mutable in the sense that capture replaces the record;
      *        the record itself stays immutable
+     * @param reversed phase 6k. Kept ALONGSIDE {@code captured} rather than
+     *        clearing it, because the provider's history is that the money was
+     *        taken and then given back - which is what the customer's statement
+     *        will say, and a record that reads as though the capture never
+     *        happened would disagree with it. A reversal is a second movement,
+     *        not an erasure of the first.
      */
     public record Authorization(
             String providerRef,
@@ -48,6 +54,7 @@ public class AuthorizationLedger {
             String last4,
             boolean captured,
             long capturedAmountMinor,
+            boolean reversed,
             Instant createdAt) {
     }
 
@@ -86,6 +93,7 @@ public class AuthorizationLedger {
                 last4,
                 false,
                 0,
+                false,
                 Instant.now());
 
         byProviderRef.put(authorization.providerRef(), authorization);
@@ -106,9 +114,37 @@ public class AuthorizationLedger {
                 authorization.last4(),
                 true,
                 amountMinor,
+                authorization.reversed(),
                 authorization.createdAt());
         byProviderRef.put(captured.providerRef(), captured);
         return captured;
+    }
+
+    /**
+     * Gives a capture back. Phase 6k.
+     *
+     * <p>{@code capturedAmountMinor} is deliberately left where it is. It is the
+     * amount that WAS taken, and the reversal is a fact about that amount rather
+     * than a correction to it - zeroing it here would leave the provider unable
+     * to answer "how much did you give back", which is the one question a
+     * reconciliation asks about a reversal.
+     */
+    public Authorization reverse(Authorization authorization) {
+        Authorization reversed = new Authorization(
+                authorization.providerRef(),
+                authorization.reference(),
+                authorization.outcome(),
+                authorization.errorCode(),
+                authorization.authCode(),
+                authorization.amountMinor(),
+                authorization.currency(),
+                authorization.last4(),
+                authorization.captured(),
+                authorization.capturedAmountMinor(),
+                true,
+                authorization.createdAt());
+        byProviderRef.put(reversed.providerRef(), reversed);
+        return reversed;
     }
 
     private static String newProviderRef() {

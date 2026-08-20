@@ -321,6 +321,43 @@ public class MockPspAdapter implements PspAdapter {
                 response.capturedAmountMinor());
     }
 
+    @Override
+    public ProviderReversal reverse(ReverseCommand command) {
+        ProviderConfig config = config();
+        RestClient client = clientFor(config);
+        String operation = pspId + ".reverse";
+
+        // THE SAME FIVE GATES AGAIN, and this is the one where the gates are
+        // most easily argued away. A reversal is the compensation for something
+        // that already went wrong, so there is a pull towards "just send it, it
+        // is important" - which is exactly backwards. A provider that is failing
+        // captures is the most likely provider to be failing reversals, and an
+        // unbounded compensation loop against a struggling provider is how a
+        // small incident becomes a retry storm on top of an outage.
+        //
+        // The breaker matters most of the three. When it opens, the connector
+        // answers 503 - "nothing was sent" - and the saga's own retry ladder
+        // holds the compensation until the provider is back, instead of
+        // hammering it. Compensations are the least urgent work in the system
+        // in the second they fail and the most urgent work by the end of the
+        // day, and a ladder is how both are true at once.
+        ReverseResponse response = retrier.call(operation, command.providerRef(),
+                config.retryMaxAttempts(),
+                () -> breakers.call(pspId, "reverse",
+                () -> bulkhead.call(pspId,
+                () -> egress(
+                () -> deadlines.callWithin(operation, config.deadlineSliceMs(),
+                () -> measuredReverse(client, command))))));
+        if (response == null) {
+            throw new ProviderUnavailableException(pspId, null);
+        }
+
+        return new ProviderReversal(response.providerRef(),
+                "APPROVED".equals(response.outcome()),
+                response.errorCode(),
+                response.reversedAmountMinor());
+    }
+
     /** Same shape as {@link #measured}, timed under its own operation label. */
     private CaptureResponse measuredCapture(RestClient client, CaptureCommand command) throws Exception {
         long startedAt = System.nanoTime();
@@ -349,7 +386,42 @@ public class MockPspAdapter implements PspAdapter {
         }
     }
 
+    /** Same shape as {@link #measured}, timed under its own operation label. */
+    private ReverseResponse measuredReverse(RestClient client, ReverseCommand command) throws Exception {
+        long startedAt = System.nanoTime();
+        boolean answered = false;
+        try {
+            ReverseResponse response = seams.inSpan(Seams.PROVIDER_CALL,
+                    () -> sendReverse(client, command), "psp", pspId, "operation", "reverse");
+            answered = true;
+            return response;
+        } finally {
+            providerLatency.record(pspId, "reverse",
+                    (System.nanoTime() - startedAt) / 1_000_000);
+            providerOutcomes.record(pspId, "reverse", answered);
+        }
+    }
+
+    private ReverseResponse sendReverse(RestClient client, ReverseCommand command) {
+        try {
+            return client.post()
+                    .uri("/psp/v1/reverse")
+                    .body(new ReverseRequest(command.providerRef()))
+                    .retrieve()
+                    .body(ReverseResponse.class);
+        } catch (RestClientException e) {
+            throw new ProviderUnavailableException(pspId, e);
+        }
+    }
+
     record CaptureRequest(String providerRef, long amountMinor) {
+    }
+
+    record ReverseRequest(String providerRef) {
+    }
+
+    record ReverseResponse(String providerRef, String outcome, String errorCode,
+                           long reversedAmountMinor) {
     }
 
     record CaptureResponse(String providerRef, String outcome, String errorCode,

@@ -110,11 +110,47 @@ and pinned by a test.
 
 ### 6. Saga
 
-For capture → ledger → notify, with compensating reversal on failure.
+For capture → ledger → notify, with compensating reversal on failure. Built in
+6k.
 
 **Build choreography; be able to argue orchestration.** Choreography suits this
 shape (few steps, clear events). Orchestration wins when the flow grows branches
 and you need one place to see the state. Know which you would pick at 15 steps.
+
+**What is actually being compensated.** Not a failed capture — the capture
+*succeeded*, the provider took the money and answered 200. What failed is the
+ledger, four topics later, after the retry ladder gave up. The disagreement is
+between two services that both did their jobs, and neither can see it: the
+orchestrator's books balance, the ledger's books balance, and they describe
+different worlds. There was never a moment when one lock could have covered the
+provider, the orchestrator's database and the ledger's database — the
+compensation is what not having had one costs.
+
+**The DLT handler requests, it does not recover.** It publishes to
+`payment.compensation` and the orchestrator decides. No service tells another
+what to do, and the orchestrator answers `NOT_CAPTURED` and does nothing whenever
+the original problem was fixed first.
+
+**The reversal cancels the AUTHORIZATION, not the capture** — the capture legs do
+not exist, that is why there is a compensation. Reversing them instead would
+credit `settlement:card-network` for funds it never sent and leave clearing
+short, with `SUM(amount_minor)` still exactly zero. Second time in two phases the
+balanced-books invariant has been unable to see a real error.
+
+**Two guards, both necessary.** The DLT handler compensates only when
+`state == CAPTURED && !ledger.hasEntryFor(eventId)` — a capture can dead-letter
+with its legs already posted, when the *webhook* fails, and reversing on that
+basis takes back money the ledger says is owed to fix somebody else's 502. And a
+`reversed_capture` tombstone stops a later DLQ replay of the compensated capture
+from posting after the fact; nothing else in the ledger would, because that event
+genuinely has never been posted.
+
+**Blocking retry on `payment.compensation`, deliberately** — the opposite of the
+ledger's ladder, and not an inconsistency. That topic carries at most one record
+per dead-lettered capture, so there is no line behind a stuck record to block,
+while the two things the ladder gives up (ordering, and four topics of machinery)
+matter more here: a compensation is a state transition, and reordering one
+against its sibling is not harmless.
 
 ### 7. Trace and correlation-ID propagation through Kafka headers
 
@@ -207,6 +243,17 @@ Alerts on **consumer lag** and **DLQ depth**.
       resolved 210 s after the backlog cleared; arm 2 fired on no-data at
       t+390 s; arm 3 fired at t+180 s and resolved at t+510 s
 
+- [ ] The saga compensates a capture the ledger could not record —
+      `tools/loadtest/saga-reversal.sh`, three arms.
+      **Written, not yet run**: the implementation is complete and unit-tested
+      (343 tests, 0 failures) but the stack was unavailable when it was built, so
+      there are no measured numbers and none have been invented. See
+      [experiment 16](../experiments/16-compensating-reversal.md) for the
+      hypotheses and what each arm asserts. Arm B is the one worth reading — it
+      replays the DLQ *after* the reversal, which is a person using the phase-6f
+      feature correctly and would silently corrupt two accounts without a
+      tombstone
+
 "Ledger converges to correct balances" is the criterion that actually tests the
 saga and the retry tiers together.
 
@@ -223,7 +270,24 @@ matter.
 compose already wraps it in a `try/catch` on `rs.status()`.
 
 **Blocking retries.** `@RetryableTopic` non-blocking retry exists for a reason;
-a blocking retry stalls the whole partition behind one bad message.
+a blocking retry stalls the whole partition behind one bad message. The converse
+trap is applying that lesson everywhere: 6k's compensation topic uses a *blocking*
+`DefaultErrorHandler` on purpose, because it carries at most one record per
+incident and the ladder's cost — reordering, and four topics per listener — buys
+nothing there.
+
+**A compensation can be the incident.** A dead-lettered capture is not
+automatically money that needs giving back. If the ledger posted it and the
+*webhook* is what failed, the books are complete and reversing would take back
+funds the ledger says are owed. Found while writing 6k rather than after: the
+guard is `!ledger.hasEntryFor(eventId)`, and the arm that asserts it is the one
+that makes the green result mean anything.
+
+**A tombstone is the only thing that survives a helpful operator.** The DLQ
+replay built in 6f will happily push a compensated capture back through days
+later. `existsByEventId` is false — that event never posted, which is *why* it
+was compensated — so every duplicate defence in the ledger says go ahead, and
+`SUM(amount_minor)` stays at zero while two accounts are permanently wrong.
 
 **`DltStrategy` defaults to `ALWAYS_RETRY_ON_ERROR`.** Found in 6f, and it is the
 worst default in this phase. If the DLT handler throws, the record is republished

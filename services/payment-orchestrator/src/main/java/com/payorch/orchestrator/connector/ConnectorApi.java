@@ -50,6 +50,22 @@ public final class ConnectorApi {
             long capturedAmountMinor) {
     }
 
+    /**
+     * Phase 6k. Give the capture back. No amount: a compensation undoes one
+     * action in full, and the action's own handle names it completely.
+     */
+    public record ReverseRequest(
+            String providerRef,
+            String pspId) {
+    }
+
+    public record ReverseResponse(
+            String providerRef,
+            Outcome outcome,
+            String errorCode,
+            long reversedAmountMinor) {
+    }
+
     public enum Outcome {
         APPROVED,
         DECLINED

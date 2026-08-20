@@ -13,6 +13,7 @@ import com.payorch.ledger.backlog.BacklogMetrics;
 import com.payorch.ledger.consume.PaymentEventConsumer;
 import com.payorch.ledger.domain.AccountRepository;
 import com.payorch.ledger.domain.LedgerPosting;
+import com.payorch.ledger.saga.CompensationPublisher;
 
 /**
  * What the ledger is doing, in one request.
@@ -46,12 +47,14 @@ public class LedgerEndpoint {
     private final PaymentEventConsumer consumer;
     private final BacklogMetrics backlog;
     private final LedgerPosting ledger;
+    private final CompensationPublisher compensations;
 
     public LedgerEndpoint(PaymentEventConsumer consumer, BacklogMetrics backlog,
-                          LedgerPosting ledger) {
+                          LedgerPosting ledger, CompensationPublisher compensations) {
         this.consumer = consumer;
         this.backlog = backlog;
         this.ledger = ledger;
+        this.compensations = compensations;
     }
 
     @ReadOperation
@@ -95,6 +98,26 @@ public class LedgerEndpoint {
                         "delta", d.delta()))
                 .toList());
         out.put("books", books);
+
+        // Phase 6k. The saga's side of the same ninety seconds.
+        //
+        // `failed` is the number that decides what to do next: zero means every
+        // capture the ledger could not record has been asked to be undone, so
+        // the disagreement is being resolved and the DLQ can wait. Anything else
+        // means money is captured, unaccounted for, and nothing has asked for it
+        // back - which is the one state in this system that needs a person
+        // tonight rather than in the morning.
+        Map<String, Object> saga = new LinkedHashMap<>();
+        saga.put("requested", compensations.requested());
+        saga.put("failed", compensations.failures());
+        // Not a fault. Dead-lettered captures whose entries were already posted,
+        // where the guard correctly declined to reverse anything.
+        saga.put("skipped", consumer.compensationsSkipped());
+        // Tombstones: captures suppressed from ever posting, including by a
+        // future DLQ replay.
+        saga.put("reversedCaptures", ledger.reversedCaptures());
+        out.put("compensation", saga);
+
         return out;
     }
 

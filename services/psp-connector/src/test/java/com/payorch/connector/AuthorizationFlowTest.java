@@ -273,8 +273,28 @@ class AuthorizationFlowTest {
             return new ProviderCapture(command.providerRef(), true, null, command.amountMinor());
         }
 
+        /**
+         * Records what it was asked to reverse, and never a card. Phase 6k adds
+         * a third money-moving operation and the vault assertion still holds
+         * over all of them.
+         */
+        final List<String> reversed = new ArrayList<>();
+
+        @Override
+        public ProviderReversal reverse(ReverseCommand command) {
+            reversed.add(command.providerRef());
+            if (failWithUnavailable) {
+                throw new ProviderUnavailableException(pspId(), null);
+            }
+            if (decline) {
+                return new ProviderReversal(command.providerRef(), false, "not_captured", 0);
+            }
+            return new ProviderReversal(command.providerRef(), true, null, 1000);
+        }
+
         void reset() {
             captured.clear();
+            reversed.clear();
             received.clear();
             failWithUnavailable = false;
             decline = false;

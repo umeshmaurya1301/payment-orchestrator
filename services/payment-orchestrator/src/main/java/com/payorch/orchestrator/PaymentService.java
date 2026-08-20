@@ -172,6 +172,154 @@ public class PaymentService {
     }
 
     /**
+     * Phase 6k. Undoes a capture the ledger never recorded.
+     *
+     * <h2>What this is compensating, exactly</h2>
+     *
+     * <p>Not a failure to capture. The capture SUCCEEDED - the provider took the
+     * money and answered 200, and this service wrote {@code CAPTURED}. What
+     * failed is the ledger, four topics later, after the retry ladder gave up.
+     * So the disagreement being compensated is between two systems that both did
+     * their jobs, and neither of them can see it: the orchestrator's books
+     * balance, the ledger's books balance, and they describe different worlds.
+     *
+     * <p>That is why this is a saga and not a transaction. There was never a
+     * moment when one lock could have covered the provider, this database and
+     * the ledger's database, and the compensation is what not having had one
+     * costs.
+     *
+     * <h2>Provider first, record second - the same window as capture, on purpose</h2>
+     *
+     * <p>A crash between the two leaves the provider reversed and this service
+     * still saying {@code CAPTURED}, and unlike the equivalent window in
+     * {@link #capture} this one heals itself: the compensation is redelivered,
+     * the provider recognises a reversal it has already performed and answers
+     * with the original result rather than moving money again, and this method
+     * goes on to record it. That healing is bought entirely by the provider's
+     * idempotency, which is worth noticing - the saga's retry safety is not a
+     * property of the saga.
+     *
+     * @param reason carried from the compensation request, for the log line. The
+     *        interesting question about a reversal is never "did it work" but
+     *        "why was one needed", and that answer originates in another service
+     * @throws ReversalRefusedException when the provider refuses. Deliberately
+     *         thrown rather than returned: a refused compensation is an
+     *         unresolved disagreement about real money, and the caller's retry
+     *         ladder ending in a queue somebody reads is exactly where it should
+     *         end up
+     */
+    public ReversalOutcome reverseCapture(UUID paymentId, String reason) {
+        Payment payment = persistence.find(paymentId)
+                .orElseThrow(() -> new IllegalStateException(
+                        "compensation requested for a payment this service has no record of: "
+                                + paymentId));
+
+        // Idempotent, and it must be: the compensation request is an
+        // at-least-once Kafka message like every other, so this method WILL be
+        // called twice for one dead-lettered capture. Returning early means the
+        // second call never reaches the provider - belt to the provider's own
+        // braces, and the cheaper of the two.
+        if (payment.getState() == PaymentState.REVERSED) {
+            log.info("compensation ignored - already reversed",
+                    LogEvent.event()
+                            .with(LogFields.PAYMENT_ID, paymentId.toString())
+                            .with(LogFields.OPERATION, "reverse")
+                            .with(LogFields.OUTCOME, "DUPLICATE")
+                            .args());
+            return ReversalOutcome.ALREADY_REVERSED;
+        }
+
+        // NOT an error, and not retried. The commonest way to get here is the
+        // benign one: the ledger dead-lettered a capture, somebody replayed the
+        // DLQ, the ledger posted it properly, and the compensation arrived after
+        // the problem had already been fixed. Reversing on that basis would take
+        // money back from a payment whose books are now correct - the
+        // compensation causing the damage it exists to prevent.
+        if (payment.getState() != PaymentState.CAPTURED) {
+            log.warn("compensation skipped - the payment is no longer captured",
+                    LogEvent.event()
+                            .with(LogFields.PAYMENT_ID, paymentId.toString())
+                            .with(LogFields.OPERATION, "reverse")
+                            .with(LogFields.STATE, payment.getState().name())
+                            .with(LogFields.OUTCOME, "SKIPPED")
+                            .args());
+            return ReversalOutcome.NOT_CAPTURED;
+        }
+
+        PaymentAttempt authorized = persistence.authorizedAttempt(paymentId)
+                .orElseThrow(() -> new IllegalStateException(
+                        "payment is CAPTURED but carries no provider reference: " + paymentId));
+
+        ConnectorApi.ReverseResponse response = connector.reverse(
+                new ConnectorApi.ReverseRequest(
+                        authorized.getProviderRef(),
+                        authorized.getPspId()));
+
+        if (response.outcome() != ConnectorApi.Outcome.APPROVED) {
+            log.error("the provider refused to reverse a capture",
+                    LogEvent.event()
+                            .with(LogFields.PAYMENT_ID, paymentId.toString())
+                            .with(LogFields.PSP_ID, authorized.getPspId())
+                            .with(LogFields.OPERATION, "reverse")
+                            .with(LogFields.OUTCOME, "DECLINED")
+                            .with(LogFields.ERROR_CODE, response.errorCode())
+                            .args());
+            throw new ReversalRefusedException(paymentId, response.errorCode());
+        }
+
+        Payment reversed = persistence.recordReversed(paymentId);
+
+        // WARN for a success, like the connector's own line. Every reversal is
+        // work the system should not have had to do, and the rate of them is the
+        // number worth watching - INFO would file it with the captures that went
+        // fine.
+        log.warn("capture reversed",
+                LogEvent.event()
+                        .with(LogFields.PAYMENT_ID, paymentId.toString())
+                        .with(LogFields.PSP_ID, authorized.getPspId())
+                        .with(LogFields.OPERATION, "reverse")
+                        .with(LogFields.AMOUNT_MINOR, response.reversedAmountMinor())
+                        .with(LogFields.PREVIOUS_STATE, PaymentState.CAPTURED.name())
+                        .with(LogFields.STATE, reversed.getState().name())
+                        .with(LogFields.COMPENSATION_REASON, reason)
+                        .args());
+        return ReversalOutcome.REVERSED;
+    }
+
+    /** What {@link #reverseCapture} did, so the caller can tell a no-op from work. */
+    public enum ReversalOutcome {
+
+        /** The provider gave the money back and the payment is now REVERSED. */
+        REVERSED,
+
+        /** A redelivered compensation for a payment that was already reversed. */
+        ALREADY_REVERSED,
+
+        /**
+         * The payment was not CAPTURED when the compensation arrived - usually
+         * because the original problem was fixed first. Nothing was done, and
+         * nothing should be.
+         */
+        NOT_CAPTURED
+    }
+
+    /**
+     * The provider would not give the money back.
+     *
+     * <p>Its own type rather than an {@code ApiException}, because nobody is
+     * making an HTTP request: this happens on a consumer thread, and the only
+     * useful destination for it is the retry ladder and then a queue a human
+     * reads.
+     */
+    public static class ReversalRefusedException extends RuntimeException {
+
+        public ReversalRefusedException(UUID paymentId, String errorCode) {
+            super("provider refused to reverse the capture on payment " + paymentId
+                    + ": " + errorCode);
+        }
+    }
+
+    /**
      * Authorizes the payment, failing over to another provider when - and only
      * when - the previous one provably never received the request.
      *

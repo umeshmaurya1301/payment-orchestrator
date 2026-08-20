@@ -50,6 +50,32 @@ payorch:
     bootstrap-servers: ${KAFKA_BOOTSTRAP:kafka-1:9092,kafka-2:9092,kafka-3:9092}
     topic: ${EVENTS_TOPIC:payment.events}
 
+  # Phase 6k. The compensating half of the saga.
+  #
+  # OFF BY DEFAULT, like the publisher above and for the same reason: phases 1
+  # to 6j run with no broker, and a service that refused to start without one
+  # would make every earlier experiment depend on this one. Switched on in the
+  # async compose profile.
+  #
+  # Note what this service becomes when it is on. Until now the orchestrator has
+  # only ever published; this makes it a CONSUMER of a topic written by a
+  # service downstream of it, which is what a choreographed saga looks like from
+  # inside - the dependency graph stops being a line and becomes a cycle, on
+  # purpose.
+  saga:
+    compensation:
+      enabled: ${COMPENSATION_ENABLED:false}
+      topic: ${COMPENSATION_TOPIC:payment.compensation}
+      group: ${COMPENSATION_GROUP:orchestrator-compensation}
+      dlq-topic: ${COMPENSATION_DLQ_TOPIC:payment.compensation.dlq}
+      # Three tries, five seconds apart, then the DLQ. Short on purpose: a
+      # provider refusing to reverse a capture is rarely transient, and the
+      # useful outcome is a human seeing it quickly rather than a machine
+      # trying for eleven minutes. Contrast the ledger's ladder, which is long
+      # because most of what it retries IS transient.
+      retry-attempts: ${COMPENSATION_RETRY_ATTEMPTS:3}
+      retry-delay-ms: ${COMPENSATION_RETRY_DELAY_MS:5000}
+
   resilience:
     deadline:
       # Internal hop: it MUST trust the inbound header, because the remaining

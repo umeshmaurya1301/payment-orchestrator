@@ -5,8 +5,8 @@ package com.payorch.orchestrator.domain;
  *
  * <pre>
  * INITIATED → ROUTED → AUTHORIZING → AUTHORIZED → CAPTURED → SETTLED
- *                           ↓
- *                     FAILED / UNKNOWN
+ *                           ↓                                ↓
+ *                     FAILED / UNKNOWN                    REVERSED
  * </pre>
  *
  * <p>A plain enum with an explicit transition table beside it - see
@@ -32,6 +32,26 @@ public enum PaymentState {
 
     /** The provider captured. Funds are taken. */
     CAPTURED,
+
+    /**
+     * The capture was given back. Phase 6k's compensating action.
+     *
+     * <p><strong>Not {@code FAILED}, and the difference is not cosmetic.</strong>
+     * A failed payment never moved money: the customer's statement has nothing
+     * on it and the merchant was never owed. A reversed payment took the money
+     * and returned it, so there are two entries on that statement and a customer
+     * who may well ring up about them. Collapsing the two would make the
+     * orchestrator's state disagree with the only record the customer can see,
+     * and every support conversation about a reversal would start from a lie.
+     *
+     * <p>Terminal, deliberately. There is no {@code REVERSED → AUTHORIZED} and no
+     * re-capture: the authorization was consumed by the capture that was undone,
+     * and a system that could quietly re-take money it had just given back is one
+     * bug away from doing it in a loop. A merchant who still wants the money
+     * creates a new payment, with a new authorization, which the customer's bank
+     * gets to decide on again - which is the correct place for that decision.
+     */
+    REVERSED,
 
     /** Settlement confirmed by the provider's report. */
     SETTLED,

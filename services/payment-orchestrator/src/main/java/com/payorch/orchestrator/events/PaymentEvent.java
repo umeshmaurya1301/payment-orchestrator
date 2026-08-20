@@ -49,6 +49,16 @@ public record PaymentEvent(
 
     public static final String AUTHORIZED = "payment.authorized";
     public static final String CAPTURED = "payment.captured";
+    /**
+     * Phase 6k. The capture was given back.
+     *
+     * <p>The only event in this list that reports an <em>undo</em>, and the
+     * ledger treats it as one: it posts the inverse of the authorization rather
+     * than deleting anything. A ledger that could delete an entry would not be a
+     * ledger.
+     */
+    public static final String REVERSED = "payment.reversed";
+
     public static final String FAILED = "payment.failed";
     public static final String UNKNOWN = "payment.unknown";
 

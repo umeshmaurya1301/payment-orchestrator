@@ -3,6 +3,7 @@ package com.payorch.orchestrator;
 import java.util.UUID;
 
 import com.payorch.infra.persistence.Uuid7;
+import com.payorch.infra.logging.LogFields;
 import com.payorch.infra.web.ApiException;
 import com.payorch.orchestrator.api.OrchestratorApi;
 import com.payorch.orchestrator.domain.PaymentTransitions;
@@ -10,6 +11,7 @@ import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -87,6 +89,65 @@ public class PaymentController {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.INTERNAL_SERVER_ERROR);
         problem.setTitle("Internal Server Error");
         problem.setDetail("The request could not be completed.");
+        return problem;
+    }
+
+    /**
+     * Two requests changed one payment at the same time. Phase 7d.
+     *
+     * <h2>Why this had never been handled, and what it was doing instead</h2>
+     *
+     * <p>{@code @Version} has been on {@link com.payorch.orchestrator.domain.Payment}
+     * since phase 1 - added early on the argument that backfilling it later
+     * would be worse - and until now nothing caught what it throws. A concurrent
+     * update therefore produced an unhandled exception and a 500 with a stack
+     * trace, on the payment path. The column was doing its job and the service
+     * was reporting it as a bug in itself.
+     *
+     * <h2>409, and specifically NOT a retry here</h2>
+     *
+     * <p>The reflex with an optimistic-lock conflict is to re-read and try
+     * again, and it is wrong at this layer. The work these endpoints do is not
+     * a pure function of the row: {@code capture} calls a provider and moves
+     * real money before it writes anything. Re-running it means a second
+     * provider call, so an automatic retry would turn a lock conflict - which is
+     * the mechanism working - into the double charge it exists to prevent.
+     *
+     * <p>Retrying is right where the work IS repeatable, which is why the saga's
+     * compensation consumer lets this escape into its error handler instead:
+     * {@code reverseCapture} is idempotent, re-reading is exactly the correct
+     * response, and the provider recognises a reversal it has already performed.
+     * Same exception, opposite handling, and the difference is a property of the
+     * work rather than of the exception.
+     *
+     * <p>So the caller is told what happened and left to decide. 409 rather than
+     * 500 because nothing is broken; rather than 503 because retrying the same
+     * request unchanged may well be wrong.
+     *
+     * <h2>What this does NOT protect</h2>
+     *
+     * <p>The version column guards the ROW, not the provider call. Two
+     * concurrent captures both read {@code AUTHORIZED}, both pass the state
+     * check, and <strong>both call the provider</strong> - only then does one of
+     * them lose on version. What stops that being a double charge is the
+     * provider's own idempotency on {@code providerRef}, built in 6j. Two
+     * independent mechanisms, and the system needs both: this one bounds what
+     * the database ends up believing, and that one bounds what the customer is
+     * charged.
+     */
+    @ExceptionHandler(ObjectOptimisticLockingFailureException.class)
+    public ProblemDetail handleConcurrentModification(ObjectOptimisticLockingFailureException ex) {
+        // WARN, not ERROR. This is a control reporting a real event, not a
+        // failure - and at ERROR it would page somebody for two clients racing
+        // each other.
+        log.warn("concurrent modification of a payment - one writer lost on version: {}",
+                ex.getMessage());
+
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Payment modified concurrently");
+        problem.setDetail("Another request changed this payment while this one was running. "
+                + "Re-read the payment before deciding whether to repeat this request.");
+        problem.setProperty(LogFields.ERROR_CODE, "payment_modified_concurrently");
         return problem;
     }
 

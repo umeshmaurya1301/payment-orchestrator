@@ -69,6 +69,16 @@ public class CompensationConsumer {
      * turns it into three more tries and then a dead-letter topic a human reads.
      * Catching it here would silently drop the request to give real money back.
      *
+     * <p>That includes an optimistic-lock conflict, and this is the one place in
+     * the system where retrying one is the RIGHT answer. Phase 7d maps the same
+     * exception to a 409 on the HTTP path, because the work there is not
+     * repeatable - {@code capture} moves real money before it writes anything,
+     * so an automatic retry would turn the lock working into a second provider
+     * call. Here the work IS repeatable: re-reading and reversing again is
+     * exactly correct, and the provider recognises a reversal it has already
+     * performed. Same exception, opposite handling, decided by the work rather
+     * than by the exception.
+     *
      * <p>{@link PaymentService#reverseCapture} is idempotent, which is what
      * makes those retries safe. The at-least-once delivery that every other
      * consumer in this system designs for applies here too, and with more at

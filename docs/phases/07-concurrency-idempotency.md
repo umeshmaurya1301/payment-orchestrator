@@ -204,12 +204,62 @@ table that never stopped growing.
 `@Version` on the payment row. Suits payment state transitions: conflicts are
 rare, and a retry on conflict is cheap and correct.
 
+#### 7d, as built
+
+**The column had been there since phase 1 and had never done anything
+observable.** It was added early on the argument that backfilling it later would
+be worse — a good argument — and then nothing ever contended it and nothing ever
+caught what it throws. A concurrent update produced an unhandled
+`ObjectOptimisticLockingFailureException` and a **500 with a stack trace on the
+payment path**: the control working correctly, reported as a bug in the service.
+A column that is never contended is indistinguishable from a column that is
+ignored.
+
+**"A retry on conflict is cheap and correct" is only half true, and the half
+that is wrong is the dangerous one.** It holds when the work is repeatable. It
+does not hold for `capture`, which calls a provider and moves real money
+*before* it writes anything — an automatic retry there turns a lock conflict,
+which is the mechanism working, into the second provider call it exists to
+prevent. So the HTTP path answers **409** and lets the caller re-read and decide;
+409 rather than 500 because nothing is broken, and rather than 503 because
+repeating the request unchanged may well be wrong.
+
+**The same exception is retried in the saga, and that is not an
+inconsistency.** `CompensationConsumer` lets it escape into its error handler,
+because `reverseCapture` *is* idempotent: re-reading and reversing again is
+exactly correct, and the provider recognises a reversal it has already
+performed. Same exception, opposite handling, decided by the nature of the work
+rather than the type of the failure.
+
+**The finding: the version column guards the row, not the money.** Two
+concurrent captures both read `AUTHORIZED`, both pass the state check, and
+**both call the provider** — the version is consulted at commit, long after the
+funds have moved. What stops that being a double charge is the provider's own
+idempotency on `providerRef`, built in 6j. Two independent mechanisms, neither
+sufficient: one bounds what the database ends up believing, the other bounds
+what the customer is charged. `OptimisticLockingTest` asserts both halves, so
+removing either fails there rather than in production.
+
 ### 3. Pessimistic locking
 
 `SELECT … FOR UPDATE` on ledger balances. Suits balances: conflicts are common,
 and optimistic retry under contention degenerates into a livelock.
 
 Being able to say *why each one is used where* is the point.
+
+**Note what 6j already did here, before this phase asked.** The ledger does not
+read a balance and write it back at all — `AccountRepository.applyDelta` is a
+single `UPDATE … SET balance = balance + :delta`, which needs no application-level
+lock because the row lock the database takes for the update *is* the critical
+section. That arrived as the fix for 1,911,000 minor units of drift from a
+read-modify-write lost update, and it is strictly better than `FOR UPDATE` for
+this case: no round trip between the read and the write for anything to happen
+in.
+
+So pessimistic locking earns its place in this phase for the case an atomic
+delta cannot express — the deadlock demo below, where two refunds must hold
+**two** balance rows at once and the interesting question is the order they take
+them in.
 
 ### 4. Deliberately reproduce a deadlock
 
@@ -296,6 +346,11 @@ connections flat at `maximum-pool-size`, throughput flat, latency climbing.
       and completed records do not accumulate forever — 7c. Thirteen tests,
       most of them about the takeovers that must **not** happen, which is the
       half that fails silently
+- [x] A concurrent modification of one payment is detected and answered, not
+      swallowed and not 500'd — 7d. Two genuinely concurrent captures held
+      inside the provider call by a barrier: one 200, one 409, one `CAPTURED`,
+      exactly one `payment.captured` outbox row — and **two** provider calls,
+      which is the part worth knowing
 - [ ] Deadlock reproduced on command, then eliminated — **both documented**
 - [ ] Pool-starvation graph showing that unbounded concurrency just relocates
       the bottleneck
@@ -350,6 +405,21 @@ object, which cannot quietly not be there.
 **Assuming the unique constraint is enough.** It prevents the duplicate row; it
 does not stop two threads both calling the provider before either commits. That
 is what the in-flight marker is for.
+
+**A `@Version` column nobody has ever contended.** It looks identical to one
+that works. Found in 7d, six phases after the column was added: nothing caught
+the exception either, so the first real conflict would have been a 500 on the
+payment path. Contend it in a test, and handle what it throws.
+
+**"Retry on optimistic-lock conflict" as a reflex.** Correct only when the work
+is repeatable. When the work called a provider before it wrote, the retry is a
+second provider call — the lock conflict was the mechanism working, and the
+retry is what turns it into the double charge.
+
+**Expecting optimistic locking to prevent a double charge.** It bounds what the
+database believes, not what the customer is charged: both writers had already
+called the provider by the time either was refused. The provider's own
+idempotency is the other half, and neither is sufficient alone.
 
 **Pinning carrier threads.** `synchronized` blocks around blocking I/O pin the
 carrier thread and quietly destroy virtual-thread scaling. Use `ReentrantLock`.

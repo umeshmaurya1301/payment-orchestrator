@@ -18,6 +18,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.payorch.connector.provider.PspAdapter;
+import com.payorch.connector.provider.StatusFanout;
+
 /**
  * The connector's only endpoint in phase 1.
  *
@@ -35,11 +38,15 @@ public class ConnectorController {
     private final CaptureService captures;
     private final ReversalService reversals;
 
+    /** Phase 8a. Built in 7f with no caller; this is it. */
+    private final StatusFanout fanout;
+
     public ConnectorController(AuthorizationService authorizations, CaptureService captures,
-                               ReversalService reversals) {
+                               ReversalService reversals, StatusFanout fanout) {
         this.authorizations = authorizations;
         this.captures = captures;
         this.reversals = reversals;
+        this.fanout = fanout;
     }
 
     @PostMapping("/authorize")
@@ -77,6 +84,55 @@ public class ConnectorController {
      * recognises a reversal it has already done - but retrying cannot resolve
      * it. Only asking the provider what it did resolves it, and that is phase 8.
      */
+    /**
+     * Phase 8a. Asks every provider about one reference, in parallel.
+     *
+     * <p>This is {@code StatusFanout}'s caller - it was built in 7f with none,
+     * because the thing that needs it is the {@code UNKNOWN} poller and that
+     * belongs to this phase.
+     *
+     * <h2>Always 200, even when nobody has it</h2>
+     *
+     * <p>"No provider holds this reference" is a successful answer to the
+     * question that was asked, not a 404. A 404 would say "no such lookup
+     * endpoint" to anything reading status codes generically - a retry layer, a
+     * dashboard, the orchestrator's own client - and it would make the most
+     * important answer this endpoint can give indistinguishable from a routing
+     * mistake.
+     *
+     * <p>The caller is expected to read {@code silent} before acting. See
+     * {@code LookupResponse.definitivelyAbsent}.
+     */
+    @PostMapping("/lookup")
+    public ConnectorApi.LookupResponse lookup(@Valid @RequestBody ConnectorApi.LookupRequest request) {
+        StatusFanout.FanoutResult result = fanout.askEveryone(request.reference());
+
+        PspAdapter.ProviderLookup claimed = result.claimed().orElse(null);
+        return new ConnectorApi.LookupResponse(
+                request.reference(),
+                claimed == null ? null : claimed.pspId(),
+                claimed == null ? null : outcomeOf(claimed),
+                claimed != null && claimed.captured(),
+                claimed != null && claimed.reversed(),
+                claimed == null ? 0 : claimed.amountMinor(),
+                result.answers().stream().map(PspAdapter.ProviderLookup::pspId).toList(),
+                result.silent());
+    }
+
+    /**
+     * The provider's own word for what it did, mapped onto our two outcomes.
+     *
+     * <p>Anything that is not an explicit approval is a decline. A provider that
+     * holds the reference and will not call it approved has not approved it, and
+     * guessing in the generous direction here would resolve an UNKNOWN payment
+     * to AUTHORIZED on the strength of a string nobody recognised.
+     */
+    private static ConnectorApi.Outcome outcomeOf(PspAdapter.ProviderLookup lookup) {
+        return "APPROVED".equals(lookup.outcome())
+                ? ConnectorApi.Outcome.APPROVED
+                : ConnectorApi.Outcome.DECLINED;
+    }
+
     @PostMapping("/reverse")
     public ConnectorApi.ReverseResponse reverse(
             @Valid @RequestBody ConnectorApi.ReverseRequest request) {

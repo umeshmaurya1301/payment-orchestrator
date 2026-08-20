@@ -1,0 +1,73 @@
+-- Phase 8a. Bounded polling for payments whose outcome nobody knows.
+--
+-- WHAT AN UNKNOWN PAYMENT IS
+--
+-- The connector timed out. The provider may have authorized the card and lost
+-- the response on the way back, or may never have received the request at all.
+-- Phase 3a created this state rather than calling it FAILED, because calling it
+-- FAILED is how home-built payment systems double-charge people.
+--
+-- Nothing has ever resolved one. Until this migration the state was a place
+-- payments went and stayed.
+--
+-- WHY THE COUNTER AND THE TIMESTAMP ARE ON THE PAYMENT
+--
+-- Two columns rather than a separate poll_attempt table, because the question
+-- they answer - "may this payment be polled now, and has it been polled too
+-- often" - is asked as part of SELECTING the batch. A join to a second table on
+-- the hot path of a job that runs every thirty seconds buys normalisation
+-- nobody needs: there is exactly one poller and it keeps exactly one number.
+--
+-- The audit trail is not lost by this. Every attempt is a log line with the
+-- payment id, and every resolution is a state transition, which is what an
+-- investigator actually reads.
+--
+-- WHY next_poll_at RATHER THAN last_polled_at
+--
+-- The query wants "everything due now", and `next_poll_at <= NOW()` is a range
+-- predicate the index can serve directly. Storing last_polled_at instead would
+-- mean computing the backoff in SQL - the interval depends on the attempt count
+-- - so every candidate row would have to be examined to find out whether it was
+-- due. Writing the decision at the point it is MADE turns a computed filter into
+-- an indexed one.
+--
+-- Nullable, and NULL means due immediately. A payment that has just become
+-- UNKNOWN should be asked about as soon as the next tick comes round, and
+-- defaulting to NOW() would be a lie about when it was scheduled.
+
+ALTER TABLE payment
+    -- How many times the poller has asked a provider about this payment. The
+    -- give-up bound; see UnknownResolver for why the bound exists at all.
+    ADD COLUMN resolution_attempts INT NOT NULL DEFAULT 0 AFTER version,
+
+    -- When this payment may next be polled. NULL means now.
+    ADD COLUMN next_poll_at DATETIME(3) NULL AFTER resolution_attempts;
+
+-- THE INDEX, AND ITS COLUMN ORDER IS THE POINT
+--
+-- The poller's query is:
+--
+--     SELECT ... FROM payment
+--      WHERE state = 'UNKNOWN'
+--        AND (next_poll_at IS NULL OR next_poll_at <= ?)
+--      ORDER BY next_poll_at
+--      LIMIT ?
+--
+-- Equality column first, range column second - phase 8's first implementation
+-- note, applied to the query that motivated it. (state, next_poll_at) serves
+-- this; (next_poll_at, state) does not, because once the index has been
+-- traversed as a range on next_poll_at there is no further narrowing available
+-- within it and every row in the range must be examined to test the state.
+--
+-- AND AN INDEX ON `state` ALONE WOULD BE WORTHLESS HERE, which is the other
+-- thing phase 8 asks to be able to explain. `state` has nine values; on a table
+-- where the overwhelming majority of rows are AUTHORIZED or CAPTURED, an index
+-- on it alone is either useless (the optimiser prefers a scan) or a
+-- low-cardinality index the write path pays for on every insert. It becomes
+-- useful only COMPOSED with something selective, and here the selective part is
+-- the range on next_poll_at.
+--
+-- The happy accident is that UNKNOWN is rare, so this index is also small - it
+-- indexes the states nobody queries alongside the one everybody does, but the
+-- range column keeps the traversal short.
+CREATE INDEX idx_payment_unknown_poll ON payment (state, next_poll_at);

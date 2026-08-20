@@ -105,6 +105,45 @@ payorch:
       min-slice-ms: ${DEADLINE_MIN_SLICE_MS:50}
       trust-inbound-header: true
 
+  # Phase 8a. The job that finally takes payments OUT of UNKNOWN.
+  #
+  # OFF BY DEFAULT, like the compensation consumer in 6k. It needs Redis and a
+  # reachable connector, and a service that refused to start without them would
+  # make every earlier experiment depend on this one.
+  recon:
+    unknown-poller:
+      enabled: ${UNKNOWN_POLLER_ENABLED:false}
+      interval-ms: ${UNKNOWN_POLLER_INTERVAL_MS:30000}
+      # Startup is when the pool is coldest and nothing is warm. A payment that
+      # has been UNKNOWN for an hour can wait another minute; the first real
+      # requests cannot.
+      initial-delay-ms: ${UNKNOWN_POLLER_INITIAL_DELAY_MS:60000}
+      batch-size: ${UNKNOWN_POLLER_BATCH_SIZE:50}
+
+      # THE GIVE-UP BOUND. Phase 8's trap: "a status poller without a give-up
+      # state - payments stuck in UNKNOWN forever, polled forever - is a
+      # slow-motion outage". A provider that has genuinely lost a payment will
+      # never start answering, and an unbounded poller aimed at it is a
+      # permanent load floor that grows with every incident this system has
+      # ever had.
+      max-attempts: ${UNKNOWN_POLLER_MAX_ATTEMPTS:8}
+
+      # Exponential from a minute, CAPPED AT AN HOUR - and the cap is what makes
+      # the attempt bound mean something in time rather than only in count.
+      # Uncapped doubling reaches four days by the eighth attempt, so
+      # "8 attempts" would mean "a week" and the payment would be functionally
+      # abandoned long before it was formally given up on. Capped, eight
+      # attempts is a few hours, which is roughly how long a provider incident
+      # lasts and therefore roughly how long it is worth waiting before
+      # admitting nobody is going to answer.
+      base-backoff-ms: ${UNKNOWN_POLLER_BASE_BACKOFF_MS:60000}
+      max-backoff-ms: ${UNKNOWN_POLLER_MAX_BACKOFF_MS:3600000}
+
+      # Longer than a tick, so a slow batch does not have its lock taken out
+      # from under it - see RedisLock.lostBeforeReleaseCount, which is the
+      # number that says this is too short.
+      lock-ttl-ms: ${UNKNOWN_POLLER_LOCK_TTL_MS:120000}
+
   connector:
     # No timeout setting here, and that is the phase-1 constraint rather than an
     # omission: phase 2 has to watch this call hang before phase 3 is allowed to

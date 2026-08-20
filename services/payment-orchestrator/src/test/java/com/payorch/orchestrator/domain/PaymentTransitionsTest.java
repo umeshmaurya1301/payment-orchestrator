@@ -46,17 +46,64 @@ class PaymentTransitionsTest {
 
     /**
      * An UNKNOWN payment resolves only into what the provider says actually
-     * happened. It must never go back to AUTHORIZING: retrying an authorization
-     * whose outcome is unknown is the double charge this state exists to
-     * prevent.
+     * happened, or into an admission that nobody would say. It must never go
+     * back to AUTHORIZING: retrying an authorization whose outcome is unknown is
+     * the double charge this state exists to prevent.
+     *
+     * <p>Phase 8a added the third edge. The assertion is deliberately written as
+     * "these two real outcomes, plus giving up, and nothing that re-attempts" -
+     * an exact-set assertion would have to be rewritten every time an outcome is
+     * added, and rewriting it is exactly when somebody would quietly let
+     * AUTHORIZING back in.
      */
     @Test
     void unknownResolvesButNeverRetries() {
         assertThat(PaymentTransitions.allowedFrom(PaymentState.UNKNOWN))
-                .containsExactlyInAnyOrder(PaymentState.AUTHORIZED, PaymentState.FAILED);
+                .containsExactlyInAnyOrder(
+                        PaymentState.AUTHORIZED, PaymentState.FAILED, PaymentState.UNRESOLVED);
 
         assertThat(PaymentTransitions.isAllowed(PaymentState.UNKNOWN, PaymentState.AUTHORIZING)).isFalse();
         assertThat(PaymentTransitions.isAllowed(PaymentState.UNKNOWN, PaymentState.ROUTED)).isFalse();
+    }
+
+    /**
+     * Phase 8a. Giving up is a one-way door for the MACHINE and not for a
+     * person.
+     *
+     * <p>There is no edge back to UNKNOWN, which is what makes "the poller gave
+     * up" mean something - if anything automatic could undo it, it would not be
+     * giving up, and the phase-8 trap about polling forever would be back.
+     *
+     * <p>But the two real outcomes stay reachable, because a human who telephones
+     * the provider and finally learns what happened has to be able to record it.
+     * A genuinely terminal state would mean the one person holding the answer is
+     * the one the state machine refuses to take it from.
+     */
+    @Test
+    void givingUpIsTerminalForThePollerAndNotForAPerson() {
+        assertThat(PaymentTransitions.allowedFrom(PaymentState.UNRESOLVED))
+                .as("a person may still record what the provider eventually said")
+                .containsExactlyInAnyOrder(PaymentState.AUTHORIZED, PaymentState.FAILED);
+
+        assertThat(PaymentTransitions.isAllowed(PaymentState.UNRESOLVED, PaymentState.UNKNOWN))
+                .as("nothing automatic may put a given-up payment back in the polled population")
+                .isFalse();
+        assertThat(PaymentTransitions.isAllowed(PaymentState.UNRESOLVED, PaymentState.AUTHORIZING))
+                .as("and re-attempting is still the double charge UNKNOWN exists to prevent")
+                .isFalse();
+    }
+
+    /** Only a payment nobody could resolve may be given up on. */
+    @Test
+    void onlyAnUnknownPaymentCanBeGivenUpOn() {
+        for (PaymentState from : PaymentState.values()) {
+            if (from == PaymentState.UNKNOWN) {
+                continue;
+            }
+            assertThat(PaymentTransitions.isAllowed(from, PaymentState.UNRESOLVED))
+                    .as("%s must not be able to become UNRESOLVED", from)
+                    .isFalse();
+        }
     }
 
     /**
@@ -101,6 +148,23 @@ class PaymentTransitionsTest {
                     .as("%s must not be reversible", from)
                     .isFalse();
         }
+    }
+
+    /**
+     * Phase 8a. UNRESOLVED is NOT terminal, and the asymmetry with UNKNOWN is
+     * the design rather than an oversight.
+     *
+     * <p>Both are states a payment can sit in without being finished, and
+     * {@code isTerminal} reports both as non-terminal. What separates them is
+     * who is expected to act: UNKNOWN is the poller's problem, UNRESOLVED is a
+     * person's.
+     */
+    @Test
+    void neitherUnresolvedStateClaimsToBeFinished() {
+        assertThat(PaymentState.UNKNOWN.isTerminal()).isFalse();
+        assertThat(PaymentState.UNRESOLVED.isTerminal())
+                .as("a payment a human can still resolve has not finished")
+                .isFalse();
     }
 
     @Test
@@ -173,7 +237,8 @@ class PaymentTransitionsTest {
         // state exists to prevent, so the machine refuses it structurally
         // rather than trusting every caller to remember.
         assertThat(PaymentTransitions.allowedFrom(PaymentState.UNKNOWN))
-                .containsExactlyInAnyOrder(PaymentState.AUTHORIZED, PaymentState.FAILED)
+                .containsExactlyInAnyOrder(
+                        PaymentState.AUTHORIZED, PaymentState.FAILED, PaymentState.UNRESOLVED)
                 .doesNotContain(PaymentState.ROUTED, PaymentState.AUTHORIZING);
     }
 

@@ -166,6 +166,49 @@ public class ConnectorClient {
         });
     }
 
+    /**
+     * Asks every provider whether it has this reference. Phase 8a.
+     *
+     * <h2>Read-only, and therefore safe to call speculatively</h2>
+     *
+     * <p>Every other method here can move money and is guarded accordingly. This
+     * one cannot - the request carries a reference and nothing else - so the
+     * {@code UNKNOWN} poller may call it for a payment whose status is a
+     * complete mystery without any risk of making the mystery worse. That is the
+     * property that makes automatic resolution possible at all: the safe
+     * question can be asked without deciding anything first.
+     *
+     * <h2>Still deadline-bounded</h2>
+     *
+     * <p>Fanning out to three providers means the answer is bounded by the
+     * slowest of them, and the poller runs on a scheduler where a hung call
+     * would silently stop every subsequent tick. The connector applies its own
+     * per-provider deadline slice inside the fan-out; this is the outer bound on
+     * the whole thing.
+     */
+    public ConnectorApi.LookupResponse lookup(ConnectorApi.LookupRequest request) {
+        return deadlines.callWithin("connector.lookup", () -> {
+            try {
+                ConnectorApi.LookupResponse response = client.post()
+                        .uri("/internal/v1/lookup")
+                        .body(request)
+                        .retrieve()
+                        .body(ConnectorApi.LookupResponse.class);
+
+                if (response == null) {
+                    throw new ConnectorUnavailableException(null);
+                }
+                return response;
+            } catch (RestClientException e) {
+                // No 503 special case, unlike reverse. There is nothing to
+                // distinguish here: a lookup that did not happen is a lookup
+                // that did not happen, and the poller's answer is the same
+                // either way - leave the payment UNKNOWN and ask again later.
+                throw new ConnectorUnavailableException(e);
+            }
+        });
+    }
+
     /** No usable response. Deliberately not the same thing as a decline. */
     public static class ConnectorUnavailableException extends RuntimeException {
 

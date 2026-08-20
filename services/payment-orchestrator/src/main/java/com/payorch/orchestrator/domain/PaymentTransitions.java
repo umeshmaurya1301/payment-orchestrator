@@ -13,6 +13,7 @@ import static com.payorch.orchestrator.domain.PaymentState.REVERSED;
 import static com.payorch.orchestrator.domain.PaymentState.ROUTED;
 import static com.payorch.orchestrator.domain.PaymentState.SETTLED;
 import static com.payorch.orchestrator.domain.PaymentState.UNKNOWN;
+import static com.payorch.orchestrator.domain.PaymentState.UNRESOLVED;
 
 /**
  * The transition rules, as data.
@@ -100,7 +101,27 @@ public final class PaymentTransitions {
 
         // Resolution only. Phase 8's status poller asks the provider what
         // happened and moves the payment to whichever of these it says.
-        table.put(UNKNOWN, Set.of(AUTHORIZED, FAILED));
+        // Phase 8a adds the third edge. The poller resolves an UNKNOWN into
+        // what the provider says happened, or - having asked as often as it is
+        // allowed to - gives up and says so out loud.
+        table.put(UNKNOWN, Set.of(AUTHORIZED, FAILED, UNRESOLVED));
+
+        // UNRESOLVED keeps UNKNOWN's two real outcomes and NOT the edge back to
+        // UNKNOWN.
+        //
+        // Keeping them, because the poller giving up does not make the answer
+        // unknowable - it makes it unavailable to a machine. A human who rings
+        // the provider and finally learns what happened has to be able to record
+        // it, and a genuinely terminal state would mean the one person holding
+        // the answer is the one the state machine refuses to take it from.
+        //
+        // Not the edge back, because that is the loop the phase-8 trap warns
+        // about: "a status poller without a give-up state - payments stuck in
+        // UNKNOWN forever, polled forever". If giving up could be undone by
+        // anything automatic, it is not giving up. The poller selects UNKNOWN
+        // and never UNRESOLVED, so the only way back into the polled population
+        // is a person deciding to put it there.
+        table.put(UNRESOLVED, Set.of(AUTHORIZED, FAILED));
 
         table.put(SETTLED, Set.of());
         table.put(FAILED, Set.of());

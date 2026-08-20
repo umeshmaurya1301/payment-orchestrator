@@ -1,5 +1,7 @@
 package com.payorch.orchestrator;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -18,6 +20,7 @@ import com.payorch.orchestrator.domain.PspConfigRepository;
 import com.payorch.orchestrator.events.OutboxWriter;
 import com.payorch.orchestrator.routing.HealthWeightedRouter;
 import com.payorch.orchestrator.routing.RoutingStrategy;
+import org.springframework.data.domain.Limit;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -294,6 +297,116 @@ public class PaymentPersistence {
         outcomes.record(PaymentState.REVERSED);
         outbox.record(payment);
         return payment;
+    }
+
+    // --- phase 8a: resolving what nobody knew --------------------------
+
+    /**
+     * The batch of UNKNOWN payments due to be asked about.
+     *
+     * <p>{@code readOnly}, and the poller deliberately does not hold a
+     * transaction across the provider calls that follow. Holding one would mean
+     * a connection checked out of the pool for the length of a fan-out to three
+     * providers - which is phase 7's pool-starvation demo, self-inflicted, on a
+     * background job.
+     */
+    @Transactional(readOnly = true)
+    public List<Payment> unknownDueForPolling(int batchSize) {
+        return payments.findUnknownDueForPolling(Instant.now(), Limit.of(batchSize));
+    }
+
+    /**
+     * The provider says it authorized after all.
+     *
+     * <p>The outcome this whole state exists to make possible. The money moved,
+     * nobody knew, and now the books say so - which is the difference between a
+     * payment system that loses track of a charge and one that is briefly
+     * uncertain about it.
+     */
+    @Transactional
+    public Payment resolveUnknownToAuthorized(UUID paymentId, String pspId) {
+        Payment payment = require(paymentId);
+        payment.transitionTo(PaymentState.AUTHORIZED);
+        payment.assignPsp(pspId);
+        outcomes.record(PaymentState.AUTHORIZED);
+        outbox.record(payment);
+        return payment;
+    }
+
+    /**
+     * Every provider was asked, every one answered, and none of them has it.
+     *
+     * <p>Safe to call ONLY on that evidence. A lookup where any provider stayed
+     * silent proves nothing - see {@code ConnectorApi.LookupResponse.silent} -
+     * and failing a payment on silence would abandon a charge that may well have
+     * gone through.
+     */
+    @Transactional
+    public Payment resolveUnknownToFailed(UUID paymentId) {
+        Payment payment = require(paymentId);
+        payment.transitionTo(PaymentState.FAILED);
+        outcomes.record(PaymentState.FAILED);
+        outbox.record(payment);
+        return payment;
+    }
+
+    /**
+     * We asked as often as we are allowed to and never got an answer.
+     *
+     * <p>Not a failure and not a success - a statement that the machine is done
+     * trying. Published to the outbox like any other transition, because the
+     * ledger and any downstream report need to stop expecting this payment to
+     * resolve itself.
+     */
+    @Transactional
+    public Payment giveUpOnUnknown(UUID paymentId) {
+        Payment payment = require(paymentId);
+        payment.transitionTo(PaymentState.UNRESOLVED);
+        outcomes.record(PaymentState.UNRESOLVED);
+        outbox.record(payment);
+        return payment;
+    }
+
+    /**
+     * Records an attempt that taught us nothing, and schedules the next one.
+     *
+     * <p>Its own transaction, and committed even when the payment stays
+     * UNKNOWN, because the backoff has to survive a restart. Without it a poller
+     * that crashed would re-ask every payment immediately on the way back up -
+     * which is a thundering herd aimed at the provider that has just been
+     * unavailable.
+     */
+    @Transactional
+    public void recordPollAttempt(UUID paymentId, Instant nextAttemptAt) {
+        require(paymentId).recordPollAttempt(nextAttemptAt);
+    }
+
+    /** How many payments are sitting in this state right now. */
+    @Transactional(readOnly = true)
+    public long countInState(PaymentState state) {
+        return payments.countByState(state);
+    }
+
+    /** The age of the oldest payment in this state, or zero if there are none. */
+    @Transactional(readOnly = true)
+    public Duration oldestAgeInState(PaymentState state) {
+        Instant oldest = payments.oldestInState(state);
+        return oldest == null ? Duration.ZERO : Duration.between(oldest, Instant.now());
+    }
+
+    /**
+     * Every attempt made for this payment, oldest first. Phase 8a.
+     *
+     * <p>Unlike {@link #authorizedAttempt} this does not filter on
+     * {@code providerRef}, and for the UNKNOWN poller it must not: a payment
+     * whose outcome is unknown is precisely one where no providerRef ever came
+     * back. What survives is the reference WE sent, which is the attempt id -
+     * phase 1's decision to use the persisted attempt id as the provider's
+     * idempotency key is what makes this lookup possible at all.
+     */
+    @Transactional(readOnly = true)
+    public List<PaymentAttempt> attemptsFor(UUID paymentId) {
+        return attempts.findByPaymentIdOrderByAttemptNoAsc(paymentId);
     }
 
     /** The attempt that produced the authorization, and therefore the providerRef. */

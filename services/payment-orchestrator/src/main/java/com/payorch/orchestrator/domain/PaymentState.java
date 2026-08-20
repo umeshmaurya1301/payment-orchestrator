@@ -7,6 +7,8 @@ package com.payorch.orchestrator.domain;
  * INITIATED → ROUTED → AUTHORIZING → AUTHORIZED → CAPTURED → SETTLED
  *                           ↓                                ↓
  *                     FAILED / UNKNOWN                    REVERSED
+ *                                ↓
+ *                  AUTHORIZED / FAILED / UNRESOLVED
  * </pre>
  *
  * <p>A plain enum with an explicit transition table beside it - see
@@ -73,10 +75,50 @@ public enum PaymentState {
      * state, every report that assumed two outcomes, and every row already
      * written under the old assumption.
      *
-     * <p>A background poller in phase 8 resolves these into a terminal state by
-     * asking the provider what it did with the reference.
+     * <p>Phase 8a's poller resolves these by asking every provider what it did
+     * with the reference, and moves them to {@code AUTHORIZED} or {@code FAILED}
+     * - or, when the providers will not say, to {@link #UNRESOLVED}.
      */
-    UNKNOWN;
+    UNKNOWN,
+
+    /**
+     * We asked, repeatedly, and never got an answer. Phase 8a.
+     *
+     * <h2>Why this is not just UNKNOWN with a counter</h2>
+     *
+     * <p>Because they mean different things to whoever is on call, and the
+     * difference has to be visible to a dashboard that groups by state.
+     *
+     * <ul>
+     *   <li>{@code UNKNOWN} is "we do not know <em>yet</em>". The poller is
+     *       working on it. A growing backlog means the system is struggling,
+     *       and it is the single most important health signal a payment system
+     *       has.</li>
+     *   <li>{@code UNRESOLVED} is "we do not know, and we have stopped asking".
+     *       Nothing will change it without a person. One of these is worth
+     *       waking somebody up for; a thousand UNKNOWNs at 2am might not be.</li>
+     * </ul>
+     *
+     * <p>An attempt counter on the row would express the same fact and be
+     * invisible to every alert, report and query that reads {@code state} -
+     * which is all of them. The phase-7i lesson in a different shape: a value
+     * that only exists in a column nobody groups by is a value nobody has.
+     *
+     * <h2>Deliberately NOT terminal</h2>
+     *
+     * <p>{@link #isTerminal} is false here, and the phase guide's phrase
+     * "terminal give-up state" is answered by the POLLER giving up rather than
+     * by the table forbidding the edge.
+     *
+     * <p>The distinction matters. A human who telephones the provider and
+     * finally learns what happened must be able to record it. A truly terminal
+     * state would mean the one person who actually has the answer is the one
+     * person the state machine will not accept it from - so the payment stays
+     * wrong forever, in the name of tidiness. The outgoing edges are therefore
+     * the same as {@code UNKNOWN}'s, and what stops the poller looping is that
+     * the poller does not select this state.
+     */
+    UNRESOLVED;
 
     /** No further transition is possible from here. */
     public boolean isTerminal() {

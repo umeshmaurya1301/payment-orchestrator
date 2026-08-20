@@ -91,6 +91,28 @@ public class Payment {
     @Column(name = "version", nullable = false)
     private long version;
 
+    /**
+     * How many times the UNKNOWN poller has asked about this payment. Phase 8a.
+     *
+     * <p>The bound on giving up. See {@code UnknownResolver} for why a bound has
+     * to exist: a provider that has genuinely lost a payment will never start
+     * answering, and polling it forever is the slow-motion outage phase 8's trap
+     * list names.
+     */
+    @Column(name = "resolution_attempts", nullable = false)
+    private int resolutionAttempts;
+
+    /**
+     * When this payment may next be polled. Null means now.
+     *
+     * <p>The scheduling decision is written at the moment it is MADE rather than
+     * recomputed at query time, so "everything due now" is an indexed range
+     * predicate instead of a filter that has to examine every candidate. See
+     * {@code V14__unknown_resolution.sql}.
+     */
+    @Column(name = "next_poll_at")
+    private Instant nextPollAt;
+
     protected Payment() {
         // for JPA
     }
@@ -190,6 +212,29 @@ public class Payment {
 
     public Instant getUpdatedAt() {
         return updatedAt;
+    }
+
+    /**
+     * Records that the poller asked and did not get a usable answer. Phase 8a.
+     *
+     * <p>Increments the attempt count and schedules the next one. Deliberately
+     * NOT a state change - the payment is still UNKNOWN, because nothing was
+     * learned. Only {@link #transitionTo} moves a payment between states, and a
+     * method that quietly did both would be the second way to change state that
+     * {@link PaymentTransitions} exists to prevent.
+     */
+    public void recordPollAttempt(Instant nextAttemptAt) {
+        this.resolutionAttempts++;
+        this.nextPollAt = nextAttemptAt;
+    }
+
+    public int getResolutionAttempts() {
+        return resolutionAttempts;
+    }
+
+    /** Null means the payment is due to be polled on the next tick. */
+    public Instant getNextPollAt() {
+        return nextPollAt;
     }
 
     public long getVersion() {

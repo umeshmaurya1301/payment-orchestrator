@@ -94,6 +94,86 @@ into terminal states.
 - **Alert on `UNKNOWN` count and age.** A growing `UNKNOWN` backlog is the single
   most important payment-system health signal
 
+#### 8a, as built
+
+**Five phases of putting payments into a state nothing took them out of.** Phase
+3a created `UNKNOWN` because a connector timeout does not mean a payment failed —
+correct, and half a design ever since. Experiment 01 alone produced **2,372** of
+them. Every one is money that may have left a customer's account with nothing in
+this system prepared to say so. The state bought time; this job is what the time
+was for.
+
+**The resolution is a read-only lookup, never a retry.** Re-authorizing a payment
+whose outcome is unknown is precisely the double charge `UNKNOWN` exists to
+prevent. Instead: *"have you ever seen this reference?"*, fanned out to **every**
+provider — because phase 5's failover means the payment may not be where this
+service last thought it was. `UnknownResolverTest` asserts that `authorize`,
+`capture` and `reverse` are never called, so a future refactor that reaches for
+one fails here rather than in production.
+
+**The reference is the attempt id**, which is why any of this is possible. Phase
+1 decided to use the persisted attempt id as the provider's idempotency key; that
+decision is what leaves something to ask about when no `providerRef` ever came
+back.
+
+**Silence is not a no — the assertion that prevents an abandoned charge.** Two
+providers saying no and one saying nothing is *not* "nobody has it". Failing on
+it would abandon a charge the customer can see on their statement. So
+`definitivelyAbsent()` requires every provider asked, every one answered, and
+every one negative; anything else leaves the payment `UNKNOWN` and asks again
+later. This is the assertion that would fail first if somebody simplified it to
+a null check.
+
+**`UNRESOLVED` is a state, not a counter.** After `max-attempts` the payment
+moves to a distinct state rather than getting a flag, because every dashboard,
+alert and report groups by `state` — a value that only exists in a column nobody
+groups by is a value nobody has. `UNKNOWN` means "we do not know *yet*, the
+poller is working"; `UNRESOLVED` means "we do not know, and we have stopped
+asking". One of those is worth waking somebody for at 2am and the other may not
+be.
+
+**It is deliberately not terminal**, and the phase's phrase *"terminal give-up
+state"* is answered by the poller giving up rather than by the table forbidding
+the edge. The outgoing edges stay `AUTHORIZED` and `FAILED`; what stops the loop
+is that the poller's query never selects `UNRESOLVED`. A truly terminal state
+would mean the one person who telephoned the provider and actually has the answer
+is the one the state machine refuses to take it from — the payment stays wrong
+forever, in the name of tidiness.
+
+**The backoff cap is what makes the attempt bound mean anything.** Uncapped
+doubling from a minute reaches four days by the eighth attempt, so "8 attempts"
+would mean "a week" and the payment would be functionally abandoned long before
+it was formally given up on. Capped at an hour, eight attempts is a few hours —
+roughly how long a provider incident lasts.
+
+**Age, not count, is the alert.** A steady hundred `UNKNOWN`s that resolve within
+a minute is a busy system behaving correctly; three that have sat for an hour is a
+provider that stopped answering. The count cannot separate those.
+`payorch.payments.unknown.oldest_age_seconds` is the page-worthy series. Phase
+4e's lesson applies directly: the equivalent mistake here would be alerting on
+"the poller threw", which stays at zero while the poller cheerfully asks a dead
+provider about the same payment every hour for a week.
+
+**Two loose ends from phase 7 are now tied.** `StatusFanout` (7f) and `RedisLock`
+(7h) were both committed with no caller, and both were flagged as such rather
+than left to look finished. This is their caller. The lock is a **cost control**
+here exactly as its javadoc insists — every action the job takes is idempotent,
+and `PaymentTransitions` rejects a second instance's transition rather than
+double-counting anything.
+
+**The index column order is the query's, not a guess.**
+`idx_payment_unknown_poll (state, next_poll_at)` — equality column then range
+column, which is this phase's first implementation note applied to the query that
+motivated it. `next_poll_at` is stored rather than computed because the backoff
+depends on the attempt count, so a computed filter would have to examine every
+candidate row; writing the decision when it is *made* turns that into an indexed
+range. And an index on `state` alone would be worthless here for the reason this
+phase asks to be able to explain — it only becomes useful composed with something
+selective.
+
+**Not yet measured.** The `EXPLAIN ANALYZE` evidence for that index needs volume
+and a live MySQL, and belongs with the rest of the benchmark table.
+
 ### 6. Flyway migration discipline
 
 **Every schema change is a migration, including the index additions above.**
@@ -120,7 +200,12 @@ it costs.
 - [ ] At least one covering index demonstrated with `Using index` in `EXPLAIN`
 - [ ] At least one deliberately *bad* index measured and explained
 - [ ] Recon job produces a mismatch report across all three classes
-- [ ] `UNKNOWN` payments resolve automatically; alert fires when the backlog grows
+- [~] `UNKNOWN` payments resolve automatically; alert fires when the backlog
+      grows — 8a. The poller is built and unit-tested (20 tests, most of them
+      about the answers it must **refuse** to act on), with bounded backoff, a
+      give-up state, and age/count gauges to alert on. **The alert has not been
+      fired against a live stack**, and the `EXPLAIN` evidence for its index is
+      part of the benchmark table below
 - [ ] Every index added via a Flyway migration
 
 The "deliberately bad index" row is worth including. Showing what does *not* work
@@ -143,7 +228,23 @@ and after, not just read latency.
 will dominate your pipeline; check whether the match can happen application-side.
 
 **A status poller without a give-up state.** Payments stuck in `UNKNOWN` forever
-polled forever is a slow-motion outage.
+polled forever is a slow-motion outage. Bounded in 8a at 8 attempts — **and the
+backoff needs a cap for the bound to mean anything**, or eight uncapped doublings
+is a week.
+
+**Treating a silent provider as a negative answer.** The most dangerous line in a
+status poller. Two providers saying no and one saying nothing is not "nobody has
+it", and failing the payment on it abandons a charge that may well have gone
+through. Require every provider to have *answered* before concluding absence.
+
+**A give-up state that is truly terminal.** The person who eventually rings the
+provider and learns what happened is then unable to record it, so the payment
+stays wrong permanently. Let the poller give up; do not let the table forbid the
+truth.
+
+**Expressing "we stopped trying" as a column rather than a state.** Every alert,
+dashboard and report groups by `state`. A flag beside it is invisible to all of
+them.
 
 ## Interview payload
 

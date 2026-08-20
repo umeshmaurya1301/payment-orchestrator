@@ -92,6 +92,60 @@ public final class ConnectorApi {
     }
 
     /**
+     * Ask every provider whether it has ever seen one of our references.
+     * Phase 8a.
+     *
+     * <h2>Why the reference and not a providerRef</h2>
+     *
+     * <p>Because the case this exists for is a payment recorded {@code UNKNOWN},
+     * where no {@code providerRef} ever came back. If we held one, the question
+     * would already be answered. All that survives is the reference WE sent, and
+     * it has to be asked of every provider rather than one - phase 5's failover
+     * means the payment may not be at the provider the orchestrator last
+     * recorded.
+     *
+     * <p>Read-only by construction: no amount, no card, no idempotency key. It
+     * cannot move money however it is called, which is what makes it safe to
+     * fan out speculatively.
+     */
+    public record LookupRequest(
+            @NotBlank @Size(max = 64) String reference) {
+    }
+
+    /**
+     * @param claimedBy the provider that holds it, or null if none did
+     * @param silent    providers that failed, timed out, or were not asked
+     *                  because their breaker was open. <strong>The field that
+     *                  decides whether the answer may be acted on.</strong> An
+     *                  empty {@code claimedBy} with a non-empty {@code silent}
+     *                  is "the providers that answered do not have it", which is
+     *                  not the same statement as "nobody has it" and must never
+     *                  be treated as one
+     */
+    public record LookupResponse(
+            String reference,
+            String claimedBy,
+            Outcome outcome,
+            boolean captured,
+            boolean reversed,
+            long amountMinor,
+            java.util.List<String> answered,
+            java.util.List<String> silent) {
+
+        /**
+         * True only when every provider was asked, every one answered, and every
+         * one said no.
+         *
+         * <p>The only form in which "this payment does not exist anywhere" is
+         * safe to conclude - and therefore the only form in which failing it is
+         * safe. Silence is not a no.
+         */
+        public boolean definitivelyAbsent() {
+            return claimedBy == null && silent.isEmpty() && !answered.isEmpty();
+        }
+    }
+
+    /**
      * Only the two answers a provider can actually give.
      *
      * <p>There is deliberately no {@code UNKNOWN} member here. A response that

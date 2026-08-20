@@ -32,6 +32,23 @@ dependencies {
     // starting a call it cannot finish.
     implementation(libs.payorch.resilience.starter)
 
+    // Phase 8a. Redis, and this service has managed without it for eight
+    // phases - the rate limiters live at the edge and the egress limiter lives
+    // in the connector, so the orchestrator never needed a Redis client.
+    //
+    // It needs one now for exactly one thing: RedisLock, so that four instances
+    // of the UNKNOWN poller do not all fan out to three providers about the same
+    // backlog every thirty seconds. That is a cost control rather than a
+    // correctness control - the job is idempotent either way, and RedisLock's
+    // javadoc is explicit that it cannot be more than that.
+    //
+    // Worth noting what this changes: ResilienceAutoConfiguration's nested
+    // RateLimiterConfiguration is now ACTIVE in this service, because its
+    // @ConditionalOnClass(StringRedisTemplate) is satisfied. The limiters it
+    // contributes stay unlimited unless payorch.resilience.rate-limit.enabled
+    // says otherwise, which it does not here.
+    implementation(libs.spring.boot.starter.data.redis)
+
     // The in-process chaos layer: bean-level latency and exception assaults,
     // plus the bespoke seams. Installed always, injecting nothing until
     // /actuator/chaosbeans or /actuator/chaosseams says otherwise - being

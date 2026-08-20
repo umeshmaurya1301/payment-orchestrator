@@ -177,6 +177,21 @@ services:
       # this on turns a one-way dependency into a cycle. That is what a
       # choreographed saga is, and it is still worth being an explicit decision.
       COMPENSATION_ENABLED: ${COMPENSATION_ENABLED:-false}
+      # Phase 8a. The poller that finally takes payments out of UNKNOWN, and
+      # the Redis it coordinates through.
+      #
+      # This service has managed without a Redis client for eight phases - the
+      # rate limiters live at the edge and the egress limiter in the connector -
+      # so this is a new dependency rather than a new setting. It buys one
+      # thing: four instances of the poller do not all fan out to three
+      # providers about the same backlog every thirty seconds.
+      #
+      # Off by default. Turning it on against a stack with no reachable
+      # connector would produce a poller that fails every lookup, backs off, and
+      # eventually gives up on payments it could have resolved.
+      UNKNOWN_POLLER_ENABLED: ${UNKNOWN_POLLER_ENABLED:-false}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
       <<: *java-env
       # Points at the MySQL service name. Phase 2 repoints this at Toxiproxy's
       # listener instead, which is a compose change and no code change.

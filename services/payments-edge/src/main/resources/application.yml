@@ -41,6 +41,24 @@ spring:
     enabled: false
 
 payorch:
+  # Phase 7a. The key behind the request fingerprint.
+  #
+  # NO DEFAULT IN THE STARTER, and RequestFingerprint throws on a blank one, so
+  # a deployment that forgets this fails to start rather than quietly running
+  # without the control.
+  #
+  # The reason it is keyed at all is worth reading in RequestFingerprint: the
+  # material includes the card number, and this database stores the BIN and the
+  # last four in plain text a few columns from where the fingerprint lands. An
+  # unkeyed SHA-256 would therefore be about a million candidates to try, which
+  # is under a second of laptop time, and the "hash" would hand back the PAN.
+  #
+  # A local development value like every other secret here. Phase 9c is where
+  # secrets stop being literals; until then they are public by design and the
+  # honesty is the point.
+  idempotency:
+    fingerprint-secret: ${IDEMPOTENCY_FINGERPRINT_SECRET:dev-local-fingerprint-key-not-a-real-secret}
+
   resilience:
     deadline:
       # The edge STAMPS the budget. It does not accept one.

@@ -1,5 +1,6 @@
 package com.payorch.infra.idempotency;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -27,5 +28,24 @@ public class IdempotencyAutoConfiguration {
     @ConditionalOnMissingBean
     public IdempotencyGuard idempotencyGuard(IdempotencyStore store) {
         return new IdempotencyGuard(store);
+    }
+
+    /**
+     * Phase 7a. The keyed fingerprint.
+     *
+     * <p>No default for the secret, and the constructor throws on a blank one.
+     * That is a deliberate startup failure rather than an inconvenience: a
+     * fingerprint computed with an empty key is a plain SHA-256 of a request
+     * body containing a card number, and with the BIN and last four stored in
+     * plain text beside it that is under a million candidates to try. A control
+     * that silently degrades to no control is worse than one that refuses to
+     * start, because only one of them tells you.
+     */
+    @Bean
+    @ConditionalOnBean(IdempotencyStore.class)
+    @ConditionalOnMissingBean
+    public RequestFingerprint requestFingerprint(
+            @Value("${payorch.idempotency.fingerprint-secret:}") String secret) {
+        return new RequestFingerprint(secret);
     }
 }

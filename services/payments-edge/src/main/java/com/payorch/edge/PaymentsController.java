@@ -7,6 +7,7 @@ import com.payorch.edge.merchant.ApiKeyAuthFilter;
 import com.payorch.edge.orchestrator.OrchestratorClient;
 import com.payorch.infra.idempotency.IdempotencyGuard;
 import com.payorch.infra.idempotency.IdempotencyKeys;
+import com.payorch.infra.idempotency.RequestFingerprint;
 import com.payorch.infra.idempotency.ReplayableResponse;
 import com.payorch.infra.logging.LogEvent;
 import com.payorch.infra.logging.LogFields;
@@ -51,15 +52,18 @@ public class PaymentsController {
 
     private final TokenVault vault;
     private final IdempotencyGuard idempotency;
+    private final RequestFingerprint fingerprints;
     private final OrchestratorClient orchestrator;
     private final ObjectMapper json;
 
     public PaymentsController(TokenVault vault,
                               IdempotencyGuard idempotency,
+                              RequestFingerprint fingerprints,
                               OrchestratorClient orchestrator,
                               ObjectMapper json) {
         this.vault = vault;
         this.idempotency = idempotency;
+        this.fingerprints = fingerprints;
         this.orchestrator = orchestrator;
         this.json = json;
     }
@@ -88,10 +92,51 @@ public class PaymentsController {
         }
         UUID merchantId = authenticatedMerchant(httpRequest);
 
-        ReplayableResponse response = idempotency.execute(merchantId, idempotencyKey,
+        ReplayableResponse response = idempotency.execute(
+                merchantId, idempotencyKey, fingerprintOf(request),
                 () -> render(HttpStatus.CREATED, process(merchantId, idempotencyKey, request)));
 
         return toEntity(response);
+    }
+
+    /**
+     * What this request asked for, as one comparable value. Phase 7a.
+     *
+     * <h2>The field list is the decision</h2>
+     *
+     * <p>Everything that changes what the payment DOES is in it, and nothing
+     * else is. Amount, currency and the full card are obvious - a key reused
+     * across two of any of those is two different charges. The two judgement
+     * calls:
+     *
+     * <ul>
+     *   <li><strong>{@code merchantReference} is included.</strong> It does not
+     *       change where the money goes, so it is arguably cosmetic. It is also
+     *       the merchant's own handle on the payment, and a key reused across
+     *       two different references is a client that has lost track of which
+     *       order it is paying for - which is precisely the bug worth
+     *       surfacing.</li>
+     *   <li><strong>The CVV is NOT included.</strong> It never leaves
+     *       {@code EdgeApi.Card} - not stored, not hashed, not forwarded - and
+     *       putting it in the fingerprint material would make its digest a
+     *       stored derivative of it, which is the thing phase 1 promised not to
+     *       do. The cost is that a retry differing only in CVV replays instead
+     *       of 422ing, and that is the right trade: a changed CVV with an
+     *       identical card and amount is not a different payment.</li>
+     * </ul>
+     *
+     * <p>The order is fixed and the encoding is unambiguous - see
+     * {@link RequestFingerprint}. A concatenation would let an amount of 4200
+     * with no reference collide with an amount of 42 and a reference of "00".
+     */
+    private String fingerprintOf(EdgeApi.CreatePaymentRequest request) {
+        return fingerprints.of(
+                Long.toString(request.amountMinor()),
+                request.currency(),
+                request.card().number(),
+                Integer.toString(request.card().expiryMonth()),
+                Integer.toString(request.card().expiryYear()),
+                request.merchantReference());
     }
 
     @GetMapping("/{id}")
@@ -262,6 +307,38 @@ public class PaymentsController {
      * a bounded wait, and request-body fingerprinting so that a reused key with
      * a changed payload is rejected rather than silently replayed.
      */
+    /**
+     * The key has been used before, for something else. Phase 7a.
+     *
+     * <p><strong>422 rather than a replay, and that is the whole point of the
+     * fingerprint.</strong> Same key with a different body is a client bug -
+     * and replaying is the most dangerous possible response to it, because the
+     * caller receives a 201 for a payment they did not ask for and has no way
+     * to tell. A 422 costs them an error; a replay costs them a wrong answer
+     * they will act on.
+     *
+     * <p>422 rather than 409 because the request is well-formed and
+     * syntactically valid; what is wrong is its content, relative to state the
+     * server already holds. And rather than 400, because nothing about this
+     * request in isolation is malformed - it is only wrong in the presence of
+     * the earlier one.
+     *
+     * <p>The detail names no field values from either body. The bodies being
+     * compared contain card numbers, and a diff would be the shortest route
+     * from a PAN to whatever logs a merchant's client writes when it gets a 422.
+     */
+    @ExceptionHandler(IdempotencyGuard.FingerprintMismatchException.class)
+    public ProblemDetail handleFingerprintMismatch(
+            IdempotencyGuard.FingerprintMismatchException ex) {
+
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.UNPROCESSABLE_ENTITY);
+        problem.setTitle("Idempotency key reused");
+        problem.setDetail("This Idempotency-Key was already used for a different request. "
+                + "Use a new key, or resend the original request unchanged.");
+        problem.setProperty(LogFields.ERROR_CODE, "idempotency_key_reused");
+        return problem;
+    }
+
     @ExceptionHandler(IdempotencyGuard.InFlightException.class)
     public ProblemDetail handleInFlight(IdempotencyGuard.InFlightException ex) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);

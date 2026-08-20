@@ -35,18 +35,64 @@ where the queue forms.**
 
 Building on phase 1's constraint and replay:
 
-| Piece | Solves |
-|---|---|
-| **Request-body fingerprint** | Key reuse with a *different* payload — currently replayed as if identical, which is wrong |
-| **In-flight marker in Redis, returns 409** | Two concurrent requests with the same key; the second must not proceed |
-| **Cached response replay** | Returns the stored bytes |
-| **TTL expiry** | Keys cannot accumulate forever |
+| Piece | Solves | |
+|---|---|---|
+| **Request-body fingerprint** | Key reuse with a *different* payload — was replayed as if identical, which is wrong | done, 7a |
+| **In-flight marker in Redis, returns 409** | Two concurrent requests with the same key; the second must not proceed | |
+| **Cached response replay** | Returns the stored bytes | done, phase 1 |
+| **TTL expiry** | Keys cannot accumulate forever | |
 
 Redis is configured `noeviction` (phase 0) precisely so in-flight markers cannot
 be silently evicted under memory pressure.
 
 The fingerprint mismatch case should be a **422**, not a replay — same key,
 different body is a client bug and hiding it is worse than surfacing it.
+
+#### 7a, as built
+
+**The fingerprint is an HMAC, not a SHA-256, and that is the finding.** The
+material has to include the card number — a key reused across two different
+cards is two different charges — and a bare digest of a PAN is not a one-way
+function in any sense that matters here. A PAN is at most 19 digits, and
+`idempotency_record` sits in the same database as a `payment` table storing the
+BIN and the last four in plain text, by design, since phase 1. That leaves about
+six unknown digits, one of them a Luhn check digit: under a million candidates,
+one hash each, well under a second of laptop time to recover the card number
+from its own "hash". Keying it removes the offline attack rather than slowing it
+down, because without the secret an attacker cannot compute a candidate at all.
+`RequestFingerprint` refuses to construct with a blank secret, so a deployment
+that forgets it fails to start rather than silently running without the control.
+
+**Semantic material, not raw bytes — the opposite of `ReplayableResponse`, and
+for the opposite reason.** A response is output and byte-identical replay is the
+promise. A request is input, and two byte-different requests can be the same
+request: a client that upgrades its JSON library and emits fields in a new order
+has not changed what it is asking for. Fingerprinting raw bytes would answer 422
+to that retry, which leaves the merchant holding a key they cannot use and unable
+to determine whether the payment exists — a worse outcome than the bug being
+fixed. So the material is a fixed list of named fields, **length-prefixed**: the
+first version used a separator byte and could not distinguish `("4200", null)`
+from `("4200", "")`, which its own test caught.
+
+**The CVV is excluded.** It never leaves `EdgeApi.Card` — not stored, not hashed,
+not forwarded — and including it would make the stored fingerprint a derivative
+of it. The cost is that a retry differing only in CVV replays instead of 422ing,
+which is correct: same card, same amount, not a different payment.
+
+**The mismatch is checked before the in-flight state.** A reused key is wrong
+whether or not the first request has finished, and "try again shortly" invites
+exactly the retry that will fail the same way.
+
+**Legacy rows replay rather than 422.** Records written before 7a have no
+fingerprint and cannot be backfilled — the request bodies were never stored,
+because they contain PANs. `NULL` means "cannot be compared", and the guard
+replays with a WARN. It leaves yesterday's hole open for as long as those rows
+live, which beats a deploy that turns healthy in-flight retries into errors.
+
+**The old replay test was asserting the bug.** `replayingAKeyReturnsAByteIdenticalBody`
+sent a different amount *and* a different card under the same key and required
+the first response back. It now sends the same request twice, and the other case
+has its own test expecting a 422.
 
 ### 2. Optimistic locking
 
@@ -131,6 +177,9 @@ connections flat at `maximum-pool-size`, throughput flat, latency climbing.
 
 - [ ] 100 concurrent threads, same idempotency key → **exactly one** payment
       created, 99 replayed responses, zero duplicates
+- [x] Same key, different body → **422**, and the work does not run — 7a.
+      Unit-tested at the guard, the fingerprint and the HTTP boundary; the
+      concurrent half of this criterion is the one above and is still open
 - [ ] Deadlock reproduced on command, then eliminated — **both documented**
 - [ ] Pool-starvation graph showing that unbounded concurrency just relocates
       the bottleneck
@@ -139,6 +188,15 @@ connections flat at `maximum-pool-size`, throughput flat, latency climbing.
 - [ ] Virtual vs platform benchmark written up with numbers
 
 ## Traps
+
+**Hashing a PAN and calling it protected.** Found in 7a. The BIN and last four
+are stored in plain text beside it, which reduces a 16-digit card to about a
+million candidates — a bare SHA-256 hands the number back in under a second. Key
+the hash, or do not include the PAN.
+
+**A separator byte in a fingerprint over caller-supplied text.** `("42", "00")`
+and `("4200", "")` produce the same material, so a fingerprint built that way
+cannot detect the exact class of change it exists for. Length-prefix instead.
 
 **Testing idempotency sequentially.** 100 requests one after another all hit the
 replay path and prove nothing. They must be genuinely concurrent — that is what

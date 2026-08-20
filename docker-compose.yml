@@ -194,6 +194,15 @@ services:
       EDGE_DB_USER: payorch
       EDGE_DB_PASSWORD: payorch
       ORCHESTRATOR_BASE_URL: http://payment-orchestrator:8081
+      # Phase 7a. The key behind the request fingerprint.
+      #
+      # A local development value like every other secret here; phase 9c is
+      # where secrets stop being literals. It is keyed rather than a plain
+      # digest because the fingerprint material contains a card number, and the
+      # BIN and last four sit in plain text a few columns from where the
+      # fingerprint lands - an unkeyed hash would be under a million candidates
+      # to brute-force. See RequestFingerprint.
+      IDEMPOTENCY_FINGERPRINT_SECRET: ${IDEMPOTENCY_FINGERPRINT_SECRET:-dev-local-fingerprint-key-not-a-real-secret}
       # Overridable so an experiment can run the same build with and without an
       # effective bound - set it to an hour and the deadline is the "before".
       # One variable between the two runs is the whole point.

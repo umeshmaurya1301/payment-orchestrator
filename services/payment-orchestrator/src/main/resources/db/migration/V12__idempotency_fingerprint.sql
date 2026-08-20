@@ -1,0 +1,47 @@
+-- Phase 7a. What the request actually asked for.
+--
+-- THE BUG THIS CLOSES
+--
+-- Before this column, a repeat request was replayed on the strength of its
+-- Idempotency-Key alone. Reuse the key with a different body - a client bug, a
+-- copy-pasted curl, a retry loop that rebuilds its request from changed state -
+-- and the stored response came back as though the new request had been
+-- honoured. The merchant asks to charge INR 50,000, receives the 201 for the
+-- INR 42 payment they sent an hour ago, and both sides believe something
+-- happened that did not.
+--
+-- WHY 64 CHARACTERS AND NOT A HASH COLUMN TYPE
+--
+-- Lowercase hex of an HMAC-SHA256, so exactly 64 characters, fixed width.
+-- CHAR rather than VARCHAR because every value is the same length and the row
+-- is read on the hot path of every payment creation.
+--
+-- WHY HMAC AND NOT SHA-256, WHICH IS THE INTERESTING PART
+--
+-- The fingerprint material includes the card number, and a bare digest of a
+-- card number is not a one-way function in any sense that matters here. A PAN
+-- is at most 19 digits, and this database already stores the BIN and the last
+-- four in plain text a few columns away - by design, since phase 1. That leaves
+-- about six unknown digits, one of which is a Luhn check digit. Under a million
+-- candidates, one hash each: a laptop finishes in well under a second and the
+-- "hash" hands back the card number.
+--
+-- Keying it removes the offline attack rather than making it harder, because
+-- without the secret an attacker cannot compute a candidate's fingerprint at
+-- all. See RequestFingerprint.
+--
+-- WHY IT IS NULLABLE
+--
+-- Because rows written before this deploy have no fingerprint and never will.
+-- The alternatives were both bad: NOT NULL DEFAULT '' pretends a legacy row
+-- was fingerprinted as the empty request, and backfilling is impossible - the
+-- request bodies were never stored, deliberately, because they contain PANs.
+--
+-- NULL means "cannot be compared", and IdempotencyGuard handles that case
+-- explicitly by replaying and logging at WARN. It leaves the old hole open for
+-- exactly as long as the old rows live, which is a worse outcome than closing
+-- it and a better one than a deploy that turns every in-flight retry into a
+-- 422.
+
+ALTER TABLE idempotency_record
+    ADD COLUMN request_fingerprint CHAR(64) NULL AFTER idempotency_key;

@@ -46,6 +46,21 @@ public class IdempotencyRecord {
     @Column(name = "idempotency_key", nullable = false, updatable = false, length = 255)
     private String idempotencyKey;
 
+    /**
+     * What the claiming request asked for. Phase 7a.
+     *
+     * <p>Nullable because rows written before 7a have none and cannot be
+     * backfilled: the request bodies were never stored, deliberately, because
+     * they contain card numbers. NULL means "cannot be compared", which
+     * IdempotencyGuard handles explicitly rather than treating as a mismatch.
+     *
+     * <p>{@code updatable = false}. The fingerprint is a fact about the request
+     * that claimed the key, and a claim whose fingerprint could be rewritten is
+     * a claim that proves nothing.
+     */
+    @Column(name = "request_fingerprint", updatable = false, length = 64)
+    private String requestFingerprint;
+
     @Column(name = "response_status")
     private Integer responseStatus;
 
@@ -75,11 +90,13 @@ public class IdempotencyRecord {
     }
 
     /** A claim with no response yet: this key is taken, the work is running. */
-    public static IdempotencyRecord claim(UUID merchantId, String idempotencyKey) {
+    public static IdempotencyRecord claim(UUID merchantId, String idempotencyKey,
+                                          String requestFingerprint) {
         IdempotencyRecord record = new IdempotencyRecord();
         record.id = Uuid7.generate();
         record.merchantId = merchantId;
         record.idempotencyKey = idempotencyKey;
+        record.requestFingerprint = requestFingerprint;
         return record;
     }
 
@@ -109,6 +126,11 @@ public class IdempotencyRecord {
 
     public String getIdempotencyKey() {
         return idempotencyKey;
+    }
+
+    /** Null for a record written before phase 7a. */
+    public String getRequestFingerprint() {
+        return requestFingerprint;
     }
 
     public Integer getResponseStatus() {

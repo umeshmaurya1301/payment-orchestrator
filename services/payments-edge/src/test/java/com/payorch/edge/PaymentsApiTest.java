@@ -203,6 +203,15 @@ class PaymentsApiTest {
     /**
      * Phase 1 exit criterion 4: the replayed body is byte-identical and exactly
      * one payment exists.
+     *
+     * <p><strong>Rewritten in 7a, because the original version asserted the
+     * bug.</strong> It sent a different amount and a different card under the
+     * same key and expected the first response back - which is exactly the
+     * behaviour request fingerprinting exists to stop, written down as a
+     * requirement. The replay it was really checking is this one: the same
+     * request, sent twice, because that is the only case where returning the
+     * first answer is correct. The other case now has its own test, and it
+     * expects a 422.
      */
     @Test
     void replayingAKeyReturnsAByteIdenticalBody() throws Exception {
@@ -210,9 +219,10 @@ class PaymentsApiTest {
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsByteArray();
 
-        // A different amount and a different card, under the same key. If the
-        // guard were re-running the work, this response would differ.
-        byte[] replayed = mvc.perform(authenticated(create("key-replay", "5555555555554444", 9999)))
+        // The SAME request, resent - a merchant retrying after a timeout, which
+        // is the case idempotency keys are for. If the guard were re-running the
+        // work, the id in this body would differ.
+        byte[] replayed = mvc.perform(authenticated(create("key-replay")))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsByteArray();
 
@@ -223,6 +233,142 @@ class PaymentsApiTest {
 
         Long records = jdbc.sql("SELECT COUNT(*) FROM idempotency_record").query(Long.class).single();
         assertThat(records).isEqualTo(1);
+    }
+
+    /**
+     * Phase 7a. THE BUG THE OLD REPLAY TEST ENCODED.
+     *
+     * <p>Same key, different amount. Before fingerprinting, this returned the
+     * stored 201 for the first payment: the merchant asks to charge 9,999 minor
+     * units, receives a success for 1,000, and nothing anywhere records that the
+     * second request was never performed. A 422 costs them an error; a replay
+     * costs them a wrong answer they will act on.
+     */
+    @Test
+    void reusingAKeyForADifferentAmountIsRejected() throws Exception {
+        mvc.perform(authenticated(create("key-reuse"))).andExpect(status().isCreated());
+
+        mvc.perform(authenticated(create("key-reuse", PAN, 9999)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.errorCode").value("idempotency_key_reused"));
+
+        assertThat(orchestrator.requests)
+                .as("a rejected reuse must not reach the orchestrator")
+                .hasSize(1);
+    }
+
+    /** Same key, same amount, different card. Also a different request. */
+    @Test
+    void reusingAKeyForADifferentCardIsRejected() throws Exception {
+        mvc.perform(authenticated(create("key-card"))).andExpect(status().isCreated());
+
+        mvc.perform(authenticated(create("key-card", "5555555555554444", 1000)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.errorCode").value("idempotency_key_reused"));
+    }
+
+    /**
+     * The 422 body must not describe either request.
+     *
+     * <p>The two bodies being compared contain card numbers, and a diff would be
+     * the most useful thing a developer could read and also the shortest route
+     * from a PAN into whatever the client of the merchant logs when it gets a
+     * 422.
+     */
+    @Test
+    void theRejectionSaysNothingAboutEitherRequest() throws Exception {
+        mvc.perform(authenticated(create("key-quiet"))).andExpect(status().isCreated());
+
+        String body = mvc.perform(authenticated(create("key-quiet", "5555555555554444", 9999)))
+                .andExpect(status().isUnprocessableEntity())
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(body)
+                .doesNotContain("5555555555554444")
+                .doesNotContain(PAN)
+                .doesNotContain("9999");
+    }
+
+    /**
+     * Formatting is not content. A client that reorders its JSON fields or adds
+     * whitespace has not changed what it is asking for, and answering 422 to
+     * that retry would leave the merchant holding a key they cannot use and
+     * unable to tell whether the payment exists.
+     *
+     * <p>This is why the fingerprint is over named fields rather than over the
+     * raw body - the opposite of the choice {@code ReplayableResponse} makes for
+     * the response, and for the opposite reason.
+     */
+    @Test
+    void aReorderedButIdenticalRequestStillReplays() throws Exception {
+        byte[] first = mvc.perform(authenticated(create("key-format")))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsByteArray();
+
+        String reordered = """
+                {"currency":"INR",
+                 "card":{"expiryYear":2030,"number":"%s","cvv":"123","expiryMonth":12},
+                 "merchantReference":"order-1",   "amountMinor":1000}""".formatted(PAN);
+
+        byte[] replayed = mvc.perform(post("/v1/payments")
+                        .header("Idempotency-Key", "key-format")
+                        .header(ApiKeyAuthFilter.HEADER, API_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(reordered))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsByteArray();
+
+        assertThat(replayed).isEqualTo(first);
+    }
+
+    /**
+     * The CVV is deliberately not fingerprinted. It never leaves
+     * {@code EdgeApi.Card} - not stored, not hashed, not forwarded - and putting
+     * it in the material would make the stored fingerprint a derivative of it,
+     * which is the thing phase 1 promised not to do. The cost is this: a retry
+     * differing only in CVV replays rather than 422ing, and that is the right
+     * trade, because a changed CVV with an identical card and amount is not a
+     * different payment.
+     */
+    @Test
+    void aChangedCvvIsNotADifferentRequest() throws Exception {
+        byte[] first = mvc.perform(authenticated(create("key-cvv")))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsByteArray();
+
+        String differentCvv = """
+                {"amountMinor":1000,"currency":"INR","merchantReference":"order-1",
+                 "card":{"number":"%s","expiryMonth":12,"expiryYear":2030,"cvv":"999"}}"""
+                .formatted(PAN);
+
+        byte[] replayed = mvc.perform(post("/v1/payments")
+                        .header("Idempotency-Key", "key-cvv")
+                        .header(ApiKeyAuthFilter.HEADER, API_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(differentCvv))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsByteArray();
+
+        assertThat(replayed).isEqualTo(first);
+    }
+
+    /** The fingerprint is stored with the claim, not computed on read. */
+    @Test
+    void theClaimStoresItsFingerprint() throws Exception {
+        mvc.perform(authenticated(create("key-fp"))).andExpect(status().isCreated());
+
+        String fingerprint = jdbc.sql(
+                        "SELECT request_fingerprint FROM idempotency_record WHERE idempotency_key = ?")
+                .param("key-fp")
+                .query(String.class)
+                .single();
+
+        assertThat(fingerprint)
+                .as("64 lowercase hex characters of HMAC-SHA256")
+                .matches("[0-9a-f]{64}");
+        assertThat(fingerprint)
+                .as("a keyed fingerprint must not be a readable derivative of the card")
+                .doesNotContain(PAN.substring(0, 6));
     }
 
     @Test

@@ -22,14 +22,26 @@ public interface IdempotencyStore {
     /**
      * Inserts a record for this key, returning whether this caller won.
      *
+     * @param fingerprint what the request asked for, from
+     *                    {@link RequestFingerprint}. Stored with the claim so
+     *                    that a later request with the same key can be compared
+     *                    against it rather than trusted
      * @return {@code true} if the row was inserted by this call, {@code false}
      *         if a row already existed - which means another request got there
      *         first, whether a second ago or last week
      */
-    boolean claim(UUID merchantId, String key);
+    boolean claim(UUID merchantId, String key, String fingerprint);
 
-    /** The stored response, if the winning request has finished. */
-    Optional<ReplayableResponse> findResponse(UUID merchantId, String key);
+    /**
+     * The record for this key, if one exists.
+     *
+     * <p>Returns the fingerprint as well as the response, because the two
+     * questions a repeat request raises - "is this the same request?" and "has
+     * the first one finished?" - have to be answered from one read. Two reads
+     * would let a record complete between them, so a request could be told its
+     * fingerprint matched and then that nothing was stored.
+     */
+    Optional<Existing> find(UUID merchantId, String key);
 
     /** Attaches the rendered response to a claimed record. */
     void complete(UUID merchantId, String key, ReplayableResponse response);
@@ -44,4 +56,17 @@ public interface IdempotencyStore {
      * and that key is then permanently unusable.
      */
     void release(UUID merchantId, String key);
+
+    /**
+     * What is already stored under a key.
+     *
+     * @param fingerprint the fingerprint recorded when the key was claimed.
+     *        Empty string for a record written before phase 7a, which is a case
+     *        that has to be handled rather than assumed away - see
+     *        {@link IdempotencyGuard#execute}
+     * @param response    present once the first request finished; absent while
+     *        it is still running
+     */
+    record Existing(String fingerprint, Optional<ReplayableResponse> response) {
+    }
 }

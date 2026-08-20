@@ -399,6 +399,49 @@ CAS state transitions via `AtomicReference`; `LongAdder` for hot counters.
 `LongAdder` over `AtomicLong` under contention: it spreads updates across cells
 and only sums on read, so writers stop fighting over one cache line.
 
+#### 7g, as measured
+
+Both claims this project leans on are repeated in every article about virtual
+threads. **One of them stopped being true in JDK 24, and this document was
+carrying the obsolete version.** `LockFreePrimitivesTest` runs with the suite so
+neither has to be taken on trust again.
+
+**`synchronized` does not pin the carrier thread on JDK 25.** JEP 491 (JDK 24)
+removed it. Measured here: 200 virtual threads each blocking 100 ms on **its own**
+monitor finish in **106 ms**, against the **~900 ms** pinning would cost across 24
+carriers — and `ReentrantLock` does the same work in 107 ms. The advice "always
+use `ReentrantLock` with virtual threads" is now folklore.
+
+Getting this measurement wrong is easy, and I did it first: the obvious version
+has every thread share one lock, which measures **mutual exclusion**, not
+pinning. They are supposed to serialize — 64 threads holding one lock for 50 ms
+each taking 3.2 s is the lock working perfectly, and it looks exactly like
+catastrophic pinning. Each thread has to lock its own object, so that the only
+thing which *could* serialize them is the carrier being held.
+
+**`LongAdder` wins under contention and loses without it**, 2,000,000 increments
+per writer on 24 carriers:
+
+| writers | `AtomicLong` | `LongAdder` | ratio |
+|---:|---:|---:|---:|
+| 1 | 8 ms | 13 ms | **0.62×** — `LongAdder` loses |
+| 4 | 67 ms | 13 ms | 5.15× |
+| 24 | 507 ms | 20 ms | 25.35× |
+| 96 | 2,244 ms | 76 ms | 29.53× |
+
+The single-writer row is the half nobody quotes and the half that decides where
+to use it. A striped counter costs more per increment and more per read, so
+uncontended it is pure overhead — "replace every `AtomicLong` with a `LongAdder`"
+is not the lesson.
+
+**Which is why nothing was converted.** The split in this codebase already
+matches the numbers: every per-request counter in `infra-core` — `Retrier`,
+`SemaphoreBulkhead`, `RetryBudget`, `ChaosSeams` — is a `LongAdder`, and the
+service-level counters that move once per Kafka message or once per scheduled run
+are `AtomicLong`. The second group is not an oversight waiting to be tidied;
+converting it would make those counters slower. The deliverable for this
+sub-phase is the evidence, not a diff.
+
 ### 8. Redis distributed lock for the recon job
 
 And **be ready to explain why Redlock is contested.** Short version: it assumes
@@ -473,6 +516,10 @@ connections flat at `maximum-pool-size`, throughput flat, latency climbing.
       the bottleneck
 - [ ] Pumba SIGTERM mid-payment → in-flight requests complete or land in
       `UNKNOWN`; nothing lost
+- [x] Lock-free primitives justified by measurement rather than by reflex —
+      7g. The `LongAdder` split in this codebase already matched the numbers,
+      so nothing was converted; the deliverable is the evidence and one
+      corrected trap
 - [ ] Virtual vs platform benchmark written up with numbers
 
 ## Traps
@@ -554,9 +601,23 @@ wearing a negative answer's clothes, and acting on it is a double charge.
 "what if nobody said" are different questions. Answering the second with the
 first gave the fan-out 50 ms to hear from three providers.
 
-**Pinning carrier threads.** `synchronized` blocks around blocking I/O pin the
-carrier thread and quietly destroy virtual-thread scaling. Use `ReentrantLock`.
-This is the most likely reason a virtual-thread benchmark disappoints.
+**~~Pinning carrier threads.~~ OBSOLETE ON THIS JDK — corrected in 7g.** This
+entry read: *"`synchronized` blocks around blocking I/O pin the carrier thread and
+quietly destroy virtual-thread scaling. Use `ReentrantLock`. This is the most
+likely reason a virtual-thread benchmark disappoints."* That was correct for JDK
+21 and is **wrong for JDK 25**: JEP 491 landed in JDK 24 and a virtual thread
+blocking inside `synchronized` now releases its carrier like any other blocking
+operation. Measured in `LockFreePrimitivesTest` — 106 ms where pinning would cost
+~900 ms.
+
+Left in place rather than deleted, because the more useful trap is the
+meta one: **a trap list is a cache, and this entry was stale for two JDK
+releases.** Every piece of advice here has a version it was true for.
+
+**Measuring mutual exclusion and calling it pinning.** The natural pinning test —
+many virtual threads, one shared lock — measures the lock doing its job. They are
+*supposed* to serialize. Give each thread its own lock, or the result is
+indistinguishable from the bug being looked for.
 
 **Deadlock tests that are flaky.** That is what the `chaos-core` sleep seam is
 for — make it deterministic, not probabilistic. Confirmed in 7e: with the seam

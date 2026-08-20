@@ -36,6 +36,20 @@ public class RetryBudget {
     // three arithmetic operations, and under the contention that matters here -
     // every request touching it - a short lock outperforms a CAS that keeps
     // losing and retrying.
+    //
+    // Phase 7g: `synchronized` rather than a ReentrantLock, and on JDK 21 that
+    // would have been the wrong call. Blocking inside a synchronized block used
+    // to pin the carrier thread, which on a service that runs every request on a
+    // virtual thread is how throughput collapses for no visible reason. JEP 491
+    // (JDK 24) removed that, and LockFreePrimitivesTest measures it here rather
+    // than taking the release note's word for it: 200 virtual threads each
+    // blocking 100ms on their own monitor finish in 106ms, against the ~900ms
+    // pinning would cost.
+    //
+    // Nothing blocks inside this particular critical section anyway, so it was
+    // never at risk - but the advice "always use ReentrantLock with virtual
+    // threads" is now folklore, and it is worth saying so where somebody would
+    // otherwise change this.
     private final Object lock = new Object();
     private double tokens;
 

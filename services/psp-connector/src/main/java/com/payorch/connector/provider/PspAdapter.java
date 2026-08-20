@@ -92,6 +92,40 @@ public interface PspAdapter {
      *        it needs. A partial refund is a different operation and would need
      *        both.
      */
+    /**
+     * Asks a provider whether it has ever seen one of our references. Phase 7f.
+     *
+     * <p>Keyed on OUR reference rather than on the provider's, and that is the
+     * whole point of the operation. If we held the provider's reference we would
+     * already know the answer - the case this exists for is the payment recorded
+     * {@code UNKNOWN}, where the request may or may not have arrived and no
+     * providerRef ever came back. The only question left is "does anybody have
+     * this?", and it has to be asked of every provider, because a failover means
+     * it might not be the one we think.
+     *
+     * <p>Read-only by construction. There is no amount and no card - it cannot
+     * move money however it is called, which is what makes it safe to fan out
+     * speculatively across providers.
+     */
+    ProviderLookup lookup(LookupCommand command);
+
+    record LookupCommand(String reference) {
+    }
+
+    /**
+     * @param found false when the provider has no record. NOT an error: for a
+     *        fan-out across three providers, two "no" answers are the expected
+     *        case and the interesting one is the single "yes"
+     */
+    record ProviderLookup(String pspId, boolean found, String providerRef,
+                          String outcome, boolean captured, boolean reversed,
+                          long amountMinor) {
+
+        public static ProviderLookup notFound(String pspId) {
+            return new ProviderLookup(pspId, false, null, null, false, false, 0);
+        }
+    }
+
     record ReverseCommand(String providerRef) {
     }
 

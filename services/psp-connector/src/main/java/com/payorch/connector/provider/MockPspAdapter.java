@@ -386,6 +386,83 @@ public class MockPspAdapter implements PspAdapter {
         }
     }
 
+    /**
+     * Asks this provider whether it has our reference. Phase 7f.
+     *
+     * <h2>Through the same five gates, and the deadline slice is why</h2>
+     *
+     * <p>A lookup cannot move money, so the retry and idempotency arguments that
+     * dominate authorize and capture do not apply. The gates still earn their
+     * place, and one of them is essential: a lookup is fanned out to every
+     * provider at once, so a single provider that hangs would otherwise hold the
+     * whole fan-out for as long as it liked. The deadline slice is what bounds
+     * that, and the circuit breaker is what stops a known-dead provider being
+     * asked at all.
+     *
+     * <h2>A "no" is a result, not a failure</h2>
+     *
+     * <p>404 means this provider has never seen the reference, which for a
+     * fan-out across three providers is the expected answer from two of them.
+     * Turning it into an exception would make the normal case look like an
+     * outage, trip the breaker on providers that are working perfectly, and hide
+     * the one answer anybody wanted.
+     */
+    @Override
+    public ProviderLookup lookup(LookupCommand command) {
+        ProviderConfig config = config();
+        RestClient client = clientFor(config);
+        String operation = pspId + ".lookup";
+
+        LookupResponse response = retrier.call(operation, command.reference(),
+                config.retryMaxAttempts(),
+                () -> breakers.call(pspId, operation,
+                () -> bulkhead.call(pspId,
+                () -> egress(
+                () -> deadlines.callWithin(operation, config.deadlineSliceMs(),
+                () -> measuredLookup(client, command))))));
+
+        if (response == null) {
+            return ProviderLookup.notFound(pspId);
+        }
+        return new ProviderLookup(pspId, true, response.providerRef(),
+                response.outcome(), response.captured(), response.reversed(),
+                response.amountMinor());
+    }
+
+    /** Same shape as {@link #measured}, timed under its own operation label. */
+    private LookupResponse measuredLookup(RestClient client, LookupCommand command) throws Exception {
+        long startedAt = System.nanoTime();
+        boolean answered = false;
+        try {
+            LookupResponse response = seams.inSpan(Seams.PROVIDER_CALL,
+                    () -> sendLookup(client, command), "psp", pspId, "operation", "lookup");
+            answered = true;
+            return response;
+        } finally {
+            providerLatency.record(pspId, "lookup",
+                    (System.nanoTime() - startedAt) / 1_000_000);
+            providerOutcomes.record(pspId, "lookup", answered);
+        }
+    }
+
+    private LookupResponse sendLookup(RestClient client, LookupCommand command) {
+        try {
+            return client.get()
+                    .uri("/psp/v1/references/{reference}", command.reference())
+                    .retrieve()
+                    // A 404 is "I have never seen this", which is an ANSWER.
+                    // Left to fall through as null rather than raised, so a
+                    // provider that is working correctly and simply does not
+                    // hold this payment is not counted as a failure against its
+                    // circuit breaker.
+                    .onStatus(status -> status.value() == 404, (req, res) -> {
+                    })
+                    .body(LookupResponse.class);
+        } catch (RestClientException e) {
+            throw new ProviderUnavailableException(pspId, e);
+        }
+    }
+
     /** Same shape as {@link #measured}, timed under its own operation label. */
     private ReverseResponse measuredReverse(RestClient client, ReverseCommand command) throws Exception {
         long startedAt = System.nanoTime();
@@ -418,6 +495,18 @@ public class MockPspAdapter implements PspAdapter {
     }
 
     record ReverseRequest(String providerRef) {
+    }
+
+    /**
+     * The provider's answer to "have you seen this reference". Phase 7f.
+     *
+     * <p>Jackson-ignorable extras, because the simulator's status payload is
+     * richer than a lookup needs and a consumer that failed on an unrecognised
+     * field would turn a routine provider change into an outage.
+     */
+    @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
+    record LookupResponse(String providerRef, String reference, String outcome,
+                          long amountMinor, boolean captured, boolean reversed) {
     }
 
     record ReverseResponse(String providerRef, String outcome, String errorCode,

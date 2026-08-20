@@ -278,7 +278,18 @@ class AuthorizationFlowTest {
          * a third money-moving operation and the vault assertion still holds
          * over all of them.
          */
+        final List<String> looked = new java.util.concurrent.CopyOnWriteArrayList<>();
         final List<String> reversed = new ArrayList<>();
+
+        @Override
+        public ProviderLookup lookup(LookupCommand command) {
+            // Phase 7f. This flow never looks a reference up - the fan-out has
+            // its own test - but the method has to exist, and answering
+            // "not found" is the honest stub: this adapter records what it was
+            // asked to do rather than holding any state a lookup could consult.
+            looked.add(command.reference());
+            return ProviderLookup.notFound(pspId());
+        }
 
         @Override
         public ProviderReversal reverse(ReverseCommand command) {
@@ -295,6 +306,7 @@ class AuthorizationFlowTest {
         void reset() {
             captured.clear();
             reversed.clear();
+            looked.clear();
             received.clear();
             failWithUnavailable = false;
             decline = false;

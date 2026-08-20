@@ -4,6 +4,44 @@ plugins {
 
 description = "All resilience. Provider adapters and per-provider configuration."
 
+// Phase 7f. --enable-preview, for StructuredTaskScope.
+//
+// WHAT THIS COSTS, BECAUSE IT IS NOT FREE
+//
+// StructuredTaskScope is still a preview API in JDK 25 (JEP 505, its fifth
+// preview), and preview means two things that matter in production:
+//
+//   1. THE API CAN CHANGE. It already has, twice - the ShutdownOnSuccess and
+//      ShutdownOnFailure subclasses that most tutorials show were replaced by
+//      StructuredTaskScope.open(Joiner...). Code written against the old shape
+//      does not compile against this JDK at all.
+//
+//   2. A CLASS FILE COMPILED WITH PREVIEW IS PINNED TO ONE JDK VERSION. javac
+//      marks it with minor version 65535, and the JVM refuses to load it unless
+//      --enable-preview is passed AND the major version matches exactly. So
+//      bumping the base image from 25 to 26 does not produce a deprecation
+//      warning or a compile error - it produces a service that will not start,
+//      at deploy time, in a container. docker/Dockerfile pins
+//      eclipse-temurin:25-jre-alpine and this toolchain pins 25; they have to
+//      move together.
+//
+// Scoped to THIS module rather than applied in the root build, so the blast
+// radius is one service and the other five keep producing ordinary class files.
+// The phase guide's own instruction is "the API is still evolving across JDK
+// versions; pin what you use" - this is the pin, written where somebody
+// changing the JDK will trip over it.
+tasks.withType<JavaCompile>().configureEach {
+    options.compilerArgs.add("--enable-preview")
+}
+
+tasks.withType<Test>().configureEach {
+    jvmArgs("--enable-preview")
+}
+
+tasks.withType<JavaExec>().configureEach {
+    jvmArgs("--enable-preview")
+}
+
 dependencies {
     implementation(libs.spring.boot.starter.web)
     implementation(libs.spring.boot.starter.actuator)

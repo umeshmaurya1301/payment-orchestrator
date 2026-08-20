@@ -332,6 +332,66 @@ Parallel fan-out for status checks across three providers. Both shapes:
 
 Note the API is still evolving across JDK versions; pin what you use.
 
+#### 7f, as built
+
+**The API has already changed twice, and the tutorials are wrong.**
+`ShutdownOnSuccess` and `ShutdownOnFailure` — the two classes every article about
+structured concurrency still shows — **do not exist in JDK 25**. The entry point
+is `StructuredTaskScope.open(Joiner…)`, with `anySuccessfulResultOrThrow()` and
+`allUntil(…)` in place of the subclasses. Code written from a 2023 blog post does
+not compile.
+
+**What `--enable-preview` costs, which is more at deploy time than at compile
+time.** A class file compiled with it is stamped minor version 65535, and the JVM
+refuses to load it unless the flag is passed at runtime *and* the major version
+matches the running JDK **exactly**. So the flag appears in three places —
+`psp-connector/build.gradle.kts`, the test JVM args, and `JAVA_OPTS` in
+docker-compose — and the Gradle toolchain and `eclipse-temurin:25-jre-alpine`
+have to move together. Bumping the base image to 26 produces no compile error and
+no warning: it produces a service that will not start, in a container, at deploy
+time. Scoped to one module so the other five keep emitting ordinary class files.
+
+**Both shapes, because they answer different questions — and one of them can
+give you a double charge.** `firstToClaim` takes the first provider that says yes
+and cancels the rest. It must **never** be used to conclude that *nobody* has a
+payment: an empty result means "no provider said yes before the deadline", which
+is not "no provider holds this". `askEveryone` is the one that can answer that,
+because it reports which providers stayed silent — and `nobodyHasIt()` is true
+only when every provider was asked and every one of them said no. Silence is not
+a no, and re-authorizing on the strength of it would charge someone who has
+already been charged.
+
+**A "no" must not win the race.** `anySuccessfulResultOrThrow` races on
+*returning*, and the provider that has never seen the reference returns fastest
+of all — it does no work. Letting it win would cancel the provider that actually
+holds the payment. So not-found is expressed as a failed subtask. The test that
+catches this puts the payment on the *slowest* provider.
+
+**All-or-nothing is the wrong joiner here.** One provider being down is the
+normal state of a three-provider system — it is what phases 3 and 5 exist to
+survive. Cancelling the fan-out on the first failure throws away two good answers
+to report one bad one, and a reconciliation that refuses to run whenever any
+provider is unhealthy is a reconciliation that never runs.
+
+**The reason it is `StructuredTaskScope` and not an `ExecutorService`:** the
+deadline travels with the fork. `Deadlines` is a `ScopedValue`, visible to the
+binding thread and to threads forked inside a structured scope — *and to nothing
+else*. Hand the same work to a shared executor and `Deadlines.current()` comes
+back empty on the far side, so every provider call runs unbounded. Asserted from
+inside a forked subtask, because that is the only place the claim can be checked.
+
+**Two bugs of my own, both caught by the tests.** The fan-out fell back to its
+50 ms *floor* when no deadline was bound, so every provider timed out and it
+reported that nobody held a payment somebody did — a floor and a fallback are
+different questions that happen to want a number. And a convenience constructor
+overload made Spring fail the whole context with *"No default constructor
+found"*, naming neither constructor.
+
+**Not yet wired to an endpoint.** `StatusFanout` is a component with no caller:
+its consumer is phase 8's reconciliation, which is what needs to ask "does
+anybody have this `UNKNOWN` payment". Said plainly rather than quietly, because
+"looks configured, does nothing" is the failure this project keeps finding.
+
 ### 7. Lock-free primitives
 
 CAS state transitions via `AtomicReference`; `LongAdder` for hot counters.
@@ -404,6 +464,11 @@ connections flat at `maximum-pool-size`, throughput flat, latency climbing.
       STATUS` capture the criterion also asks for is missing**: these run
       against H2, which detects the cycle and breaks it but is not InnoDB, and
       the compose stack was unavailable. Not written from memory
+- [x] Parallel fan-out across three providers, in both shapes, with the
+      request deadline propagating into every forked subtask — 7f. Twelve
+      tests, asserting timing and cancellation rather than protocol: a
+      fan-out that quietly ran sequentially would pass every functional
+      assertion anybody would think to write
 - [ ] Pool-starvation graph showing that unbounded concurrency just relocates
       the bottleneck
 - [ ] Pumba SIGTERM mid-payment → in-flight requests complete or land in
@@ -472,6 +537,22 @@ retry is what turns it into the double charge.
 database believes, not what the customer is charged: both writers had already
 called the provider by the time either was refused. The provider's own
 idempotency is the other half, and neither is sufficient alone.
+
+**Reading a `StructuredTaskScope` tutorial written before JDK 24.**
+`ShutdownOnSuccess` and `ShutdownOnFailure` are gone. Check the API against the
+JDK you are actually on, and pin it — a preview class file is welded to one JDK
+version and fails at *deploy* time, not compile time.
+
+**Racing on "who returns first" when one answer is cheap.** A provider that does
+not hold the reference answers instantly, so a naive first-success fan-out is won
+by the wrong provider every single time and cancels the one that had the answer.
+
+**Concluding "nobody has it" from a first-success fan-out.** That is a timeout
+wearing a negative answer's clothes, and acting on it is a double charge.
+
+**Confusing a floor with a fallback.** "How little is it worth starting with" and
+"what if nobody said" are different questions. Answering the second with the
+first gave the fan-out 50 ms to hear from three providers.
 
 **Pinning carrier threads.** `synchronized` blocks around blocking I/O pin the
 carrier thread and quietly destroy virtual-thread scaling. Use `ReentrantLock`.

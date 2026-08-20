@@ -41,7 +41,7 @@ Building on phase 1's constraint and replay:
 | **Bounded wait, then replay** | Two concurrent requests with the same key; the second waits for the first and replays its answer | done, 7b |
 | **In-flight marker in Redis** | Keeps a hundred waiters from polling the row the winner is writing to. An optimisation, not a correctness fix | |
 | **Cached response replay** | Returns the stored bytes | done, phase 1 |
-| **TTL expiry** | Keys cannot accumulate forever | |
+| **TTL expiry** | A key burned by a dead process becomes usable again; records do not accumulate forever | done, 7c |
 
 Redis is configured `noeviction` (phase 0) precisely so in-flight markers cannot
 be silently evicted under memory pressure.
@@ -146,6 +146,59 @@ first request is slower than this one's remaining budget, or this request arrive
 with almost none of its budget left, or the winner failed and released its claim
 while this one waited.
 
+#### 7c, as built
+
+**A dead process burned its key forever.** The claim row is written before the
+work and updated after it; a SIGKILL, an OOM or an evicted pod in between leaves
+it claimed and unanswered, and nothing ever cleaned it up. `IdempotencyGuard`
+releases on a thrown exception, which covers the ordinary failure and cannot
+cover the process not being there — which is precisely the case an idempotency
+key exists for, because the caller does not know what happened and wants to
+retry safely.
+
+**The claim TTL has a floor, and the floor is not a tuning choice.** Taking over
+a claim is deciding the first request is dead. Decide that while it is merely
+slow and both run: the provider is called twice. So the window must outlast the
+longest a legitimate request could still be running — which is *knowable* here
+rather than guessable, because phase 3a put a hard ceiling on it
+(`DEADLINE_MAX_BUDGET_MS`, 60 s, clamped even for a caller who asks for more).
+The default is fifteen minutes, fifteen times the ceiling, because the costs are
+asymmetric: too long and a key is unusable for a while after a crash; too short
+and somebody is charged twice.
+
+**The takeover is one conditional `UPDATE`, and the row count is the decision.**
+Read-then-write would let two requests both see the same expired claim and both
+proceed — putting the double charge back at the recovery path after the unique
+constraint had removed it from the normal one. Its predicates are the safety
+argument: never a completed record, never a row with no claim window (a
+pre-7c row has no opinion about when its owner would be dead, and taking a claim
+on no opinion is how a live request gets duplicated), and only past the window.
+The window resets on takeover, or the second taker inherits an expired one and a
+third takes it straight off them.
+
+**Two TTLs, two different questions.** `claim_expires_at` is when an *unanswered*
+claim may be taken over. `expires_at` is when a *completed* record stops being
+replayable, set at completion rather than at claim — dating retention from when
+the work started would shorten the window by however long it took. Twenty-four
+hours, after which the key is simply new again: a merchant reusing a key a day
+later is not retrying, they are issuing a fresh request.
+
+**The sweeper is scheduled, unlike phase 6j's balance repair, and the contrast
+is the point.** A repair that runs by itself hides the bug that made it
+necessary. Expiry is not a symptom of anything — a record reaching its retention
+window is the design working — so there is nothing for an operator to learn from
+pressing a button every day.
+
+**Bounded batches, because the first run is the dangerous one.** An unbounded
+`DELETE` holds row locks on the table every payment writes to, and the debut run
+has the whole accumulated backlog. A cleanup job whose first execution stalls the
+payment path is the kind that gets switched off permanently after one incident.
+
+**`@EnableScheduling` had never been on this service.** Without it the sweeper's
+annotation would have been inert — the same shape as `@RetryableTopic` before
+`@EnableKafkaRetryTopic` in the ledger — and the only symptom would have been a
+table that never stopped growing.
+
 ### 2. Optimistic locking
 
 `@Version` on the payment row. Suits payment state transitions: conflicts are
@@ -239,6 +292,10 @@ connections flat at `maximum-pool-size`, throughput flat, latency climbing.
       actually asks for
 - [x] Same key, different body → **422**, and the work does not run — 7a.
       Unit-tested at the guard, the fingerprint and the HTTP boundary
+- [x] A key burned by a process that died mid-request becomes usable again,
+      and completed records do not accumulate forever — 7c. Thirteen tests,
+      most of them about the takeovers that must **not** happen, which is the
+      half that fails silently
 - [ ] Deadlock reproduced on command, then eliminated — **both documented**
 - [ ] Pool-starvation graph showing that unbounded concurrency just relocates
       the bottleneck
@@ -274,6 +331,21 @@ writing the response.
 every 10 ms is ten thousand queries a second aimed at the row the winner is
 trying to write to. Back off, or the wait makes the thing it is waiting for
 slower.
+
+**Expiring a claim faster than a request can finish.** The most tempting number
+to shorten, and the one that reintroduces the double charge. The floor is the
+request deadline ceiling, not a guess about how long things usually take.
+
+**Read-then-write in the takeover path.** The unique constraint prevents the
+duplicate on the normal path; a takeover implemented as SELECT-then-UPDATE puts
+it straight back on the recovery path, where it is harder to see and rarer to
+hit.
+
+**A self-invoked `@Transactional` method.** Phase 6d's bug, nearly repeated: the
+sweeper's batch method is called from its own scheduled method, so the annotation
+would have been silently inert and each batch would have run without a
+transaction. It uses a `TransactionTemplate` instead — a transaction from an
+object, which cannot quietly not be there.
 
 **Assuming the unique constraint is enough.** It prevents the duplicate row; it
 does not stop two threads both calling the provider before either commits. That

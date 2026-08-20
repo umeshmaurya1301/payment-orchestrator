@@ -16,8 +16,19 @@ import io.micrometer.observation.ObservationRegistry;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.Ordered;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
+/**
+ * <p>{@code @EnableScheduling} arrived in phase 7c, for
+ * {@code IdempotencySweeper}. Worth noting rather than assuming: this service
+ * had no scheduled work at all until then, so nothing in it would have run - the
+ * annotation on the sweeper would have been inert, in the same quiet way
+ * {@code @RetryableTopic} was inert in the ledger before
+ * {@code @EnableKafkaRetryTopic}, and the only symptom would have been a table
+ * that never stopped growing.
+ */
 @Configuration
+@EnableScheduling
 public class EdgeConfiguration {
 
     @Bean

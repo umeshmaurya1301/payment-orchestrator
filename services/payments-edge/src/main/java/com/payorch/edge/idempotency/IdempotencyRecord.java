@@ -1,5 +1,6 @@
 package com.payorch.edge.idempotency;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -82,8 +83,33 @@ public class IdempotencyRecord {
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
+    /**
+     * When an unanswered claim may be taken over. Phase 7c.
+     *
+     * <p>Updatable, unlike the fingerprint, because taking over a claim moves
+     * it: the new owner gets a fresh window, or the second taker would inherit
+     * an already-expired one and a third could take it from them.
+     *
+     * <p>Null only on rows written before 7c, which are grandfathered as
+     * never-expiring rather than retroactively declared dead - see
+     * {@code IdempotencyRecordRepository.takeOverExpiredClaim}.
+     */
+    @Column(name = "claim_expires_at")
+    private Instant claimExpiresAt;
+
     @Column(name = "completed_at")
     private Instant completedAt;
+
+    /**
+     * When the record stops being replayable and may be swept. Phase 7c.
+     *
+     * <p>Set at completion rather than at claim, because the window is about how
+     * long an ANSWER stays available. A claim that is still running has not
+     * produced one yet, and dating its retention from the moment it started
+     * would shorten the window by however long the work took.
+     */
+    @Column(name = "expires_at")
+    private Instant expiresAt;
 
     protected IdempotencyRecord() {
         // for JPA
@@ -91,20 +117,27 @@ public class IdempotencyRecord {
 
     /** A claim with no response yet: this key is taken, the work is running. */
     public static IdempotencyRecord claim(UUID merchantId, String idempotencyKey,
-                                          String requestFingerprint) {
+                                          String requestFingerprint, Duration claimTtl) {
         IdempotencyRecord record = new IdempotencyRecord();
         record.id = Uuid7.generate();
         record.merchantId = merchantId;
         record.idempotencyKey = idempotencyKey;
         record.requestFingerprint = requestFingerprint;
+        record.claimExpiresAt = Instant.now().plus(claimTtl);
         return record;
     }
 
-    public void complete(int status, String contentType, byte[] body) {
+    public void complete(int status, String contentType, byte[] body, Duration retention) {
         this.responseStatus = status;
         this.responseContentType = contentType;
         this.responseBody = body;
         this.completedAt = Instant.now();
+        this.expiresAt = this.completedAt.plus(retention);
+        // Cleared, not left behind. A completed record is never taken over -
+        // the repository predicate says so - but leaving a stale claim window on
+        // it makes the row read as though it could be, and the next person to
+        // touch this code has to re-derive that it cannot.
+        this.claimExpiresAt = null;
     }
 
     public boolean isComplete() {
@@ -151,5 +184,15 @@ public class IdempotencyRecord {
 
     public Instant getCompletedAt() {
         return completedAt;
+    }
+
+    /** Null once complete, and on rows written before phase 7c. */
+    public Instant getClaimExpiresAt() {
+        return claimExpiresAt;
+    }
+
+    /** Null until complete, and on rows written before phase 7c. */
+    public Instant getExpiresAt() {
+        return expiresAt;
     }
 }

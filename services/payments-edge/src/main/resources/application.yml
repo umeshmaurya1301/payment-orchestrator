@@ -78,6 +78,35 @@ payorch:
     # blamed on the network rather than on a missing bean.
     fallback-wait-ms: ${IDEMPOTENCY_FALLBACK_WAIT_MS:250}
 
+    # Phase 7c. Two TTLs, answering two different questions.
+    #
+    # claim-ttl-ms: how long before an UNANSWERED claim may be taken over by a
+    # new request. This one has a floor that is not a preference. Taking over a
+    # claim means deciding the first request is dead; decide that while it is
+    # merely slow and both run, and the provider is called twice. Phase 3a put a
+    # hard ceiling on how long a request can take - max-budget-ms below, 60s,
+    # clamped even for a caller who asks for more - so the floor is knowable.
+    # Fifteen minutes is fifteen times it, because the costs are asymmetric: too
+    # long and a key is unusable for a while after a crash, too short and
+    # somebody is charged twice.
+    claim-ttl-ms: ${IDEMPOTENCY_CLAIM_TTL_MS:900000}
+
+    # retention-ms: how long a COMPLETED record stays replayable. Twenty-four
+    # hours, the conventional window and far longer than any retry loop. After
+    # it the key is simply new again - a merchant reusing a key a day later is
+    # not retrying, they are issuing a fresh request.
+    retention-ms: ${IDEMPOTENCY_RETENTION_MS:86400000}
+
+    # The sweeper. Bounded batches, because an unbounded DELETE holds row locks
+    # on the table every payment writes to, and the first run after this ships
+    # has the whole backlog to get through.
+    sweep-interval-ms: ${IDEMPOTENCY_SWEEP_INTERVAL_MS:300000}
+    sweep-initial-delay-ms: ${IDEMPOTENCY_SWEEP_INITIAL_DELAY_MS:60000}
+    sweep-batch-size: ${IDEMPOTENCY_SWEEP_BATCH_SIZE:500}
+    # A cap per run, so a large backlog is cleared over several runs rather than
+    # in one long pass.
+    sweep-max-batches: ${IDEMPOTENCY_SWEEP_MAX_BATCHES:20}
+
   resilience:
     deadline:
       # The edge STAMPS the budget. It does not accept one.

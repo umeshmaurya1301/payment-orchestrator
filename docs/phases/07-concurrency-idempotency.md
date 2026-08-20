@@ -450,6 +450,64 @@ node can believe it still holds a lock that has expired. For a recon job the
 correct framing is that the lock is an *optimisation to avoid duplicate work*,
 not a *correctness guarantee* — correctness comes from the job being idempotent.
 
+#### 7h, as built
+
+**The failure is between Redis and the holder, not between the Redis nodes** —
+which is why adding nodes does not fix it. Worker A acquires with a 60 s TTL,
+stalls for 70 s (a stop-the-world pause, a descheduled container, a hypervisor
+migration, a disk that stopped answering — all ordinary), the TTL expires, Redis
+correctly drops the key, worker B acquires, and A wakes up still inside its
+critical section with no way to find out. Redis cannot reach into A and stop it.
+The only thing that would actually fix this is a **fencing token** the protected
+*resource* checks — and a reconciliation job's resource is a payment provider's
+API, which will not participate.
+
+So `RedisLock` is documented as a **cost control, not a safety control**. Every
+job behind it has to be correct when it fails, because it will.
+
+**No watchdog, deliberately.** A background thread extending the TTL is the usual
+next feature. It reduces the window and makes the lock *look* like a mutex, which
+is worse than the window it closes — and it cannot renew during the stall that
+causes the problem, because the stall stops the watchdog too. It converts a
+visible failure into a rare one, and rare failures in payment systems are the
+expensive kind.
+
+**Release is a compare-and-delete script, not a `DEL`.** A plain `DEL` from a
+holder whose TTL already expired deletes *somebody else's* lock — one stall
+produces two concurrent holders, and the second one is created by the first
+trying to be tidy. The compare and the delete must be one operation, which is
+what makes it a Lua script; `GET` then `DEL` from the application has the same
+window one statement narrower.
+
+**A release that finds a different token is the observable symptom** of the whole
+problem, so it is counted (`lostBeforeReleaseCount`) and logged at WARN. It is
+the number that says the TTL is too short.
+
+**It fails CLOSED, unlike the rate limiter, and the asymmetry is the point.**
+`RedisTokenBucketRateLimiter` fails open — refusing all traffic during a Redis
+outage turns a degradation into an outage. A lock that failed open would let
+*every* instance run the job at once, which is precisely what it exists to
+prevent, arriving exactly when the infrastructure is already unwell. Skipping a
+tick costs one interval; running it four times over costs four times the provider
+load during an incident. That is safe only because these jobs are periodic — a
+property of the **caller**, not of the lock, and a caller whose work cannot be
+deferred should not use a lock that can decline.
+
+**The bean is `@ConditionalOnBean(StringRedisTemplate)`, not `getIfAvailable`.**
+A service that wires this into a job and is then deployed without Redis should
+fail to *start*. The rate limiter degrades to unlimited because that is better
+than refusing traffic; a job that expected coordination and silently got none is
+not degraded, it is wrong, and the symptom would be duplicate provider load
+nobody attributes to a missing bean.
+
+It is declared inside the nested `RateLimiterConfiguration` for the trap already
+recorded there: a bean method with a `StringRedisTemplate` parameter breaks the
+whole autoconfiguration in a service without Redis on its classpath, condition or
+no condition.
+
+**No caller yet.** The reconciliation job it exists for is phase 8. Stated
+plainly, like `StatusFanout` in 7f.
+
 ### 9. Graceful shutdown / in-flight drain
 
 Pumba SIGTERMs the orchestrator mid-payment. In-flight requests complete or land
@@ -514,6 +572,11 @@ connections flat at `maximum-pool-size`, throughput flat, latency climbing.
       assertion anybody would think to write
 - [ ] Pool-starvation graph showing that unbounded concurrency just relocates
       the bottleneck
+- [x] A scheduled job can be prevented from running on four instances at once,
+      with the guarantee it does **not** provide written down where somebody
+      would otherwise assume it — 7h. Thirteen tests, most of them about the
+      failure paths: an unreachable store, an overrun TTL, a failed release,
+      and work that throws
 - [ ] Pumba SIGTERM mid-payment → in-flight requests complete or land in
       `UNKNOWN`; nothing lost
 - [x] Lock-free primitives justified by measurement rather than by reflex —
@@ -613,6 +676,17 @@ operation. Measured in `LockFreePrimitivesTest` — 106 ms where pinning would c
 Left in place rather than deleted, because the more useful trap is the
 meta one: **a trap list is a cache, and this entry was stale for two JDK
 releases.** Every piece of advice here has a version it was true for.
+
+**Treating a TTL lock as a mutex.** It is not one, and no number of Redis nodes
+makes it one — the failure is between Redis and the holder. Write the job to be
+correct when the lock fails, or do not take the lock.
+
+**Adding a watchdog to make it feel safer.** It cannot renew during the stall
+that causes the problem, and it makes the lock look like a guarantee. Rare
+failures are the expensive kind.
+
+**Releasing a distributed lock with `DEL`.** If your TTL already expired you are
+deleting somebody else's lock. Compare the token and delete in one operation.
 
 **Measuring mutual exclusion and calling it pinning.** The natural pinning test —
 many virtual threads, one shared lock — measures the lock doing its job. They are

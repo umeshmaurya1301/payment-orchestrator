@@ -228,6 +228,34 @@ public class ResilienceAutoConfiguration {
     public static class RateLimiterConfiguration {
 
         /**
+         * Phase 7h. The lock scheduled jobs take so that four instances do not
+         * all do the same work at 03:00.
+         *
+         * <p>Declared in this nested class for the reason spelled out above: a
+         * bean method with a {@code StringRedisTemplate} parameter breaks the
+         * whole autoconfiguration in a service without Redis, condition or no
+         * condition.
+         *
+         * <p>{@code @ConditionalOnBean} rather than {@code getIfAvailable}, so a
+         * service that wires this into a job and is then deployed without Redis
+         * fails to START. That is the right failure: the rate limiter degrades
+         * to unlimited because refusing all traffic would be worse than allowing
+         * it, but a job that expected coordination and silently got none is not
+         * degraded, it is wrong - and the symptom would be duplicate provider
+         * load nobody attributes to a missing bean.
+         *
+         * <p>Read {@code RedisLock}'s javadoc before using it. It is an
+         * optimisation, not a mutex, and every job behind it has to be correct
+         * when it fails.
+         */
+        @Bean
+        @ConditionalOnMissingBean
+        @org.springframework.boot.autoconfigure.condition.ConditionalOnBean(StringRedisTemplate.class)
+        public com.payorch.infra.resilience.lock.RedisLock redisLock(StringRedisTemplate redis) {
+            return new com.payorch.infra.resilience.lock.RedisLock(redis, "payorch:lock");
+        }
+
+        /**
          * The three limiter layers, keyed by the name their metrics carry.
          *
          * <p>Built by one factory rather than as three independent beans so that the

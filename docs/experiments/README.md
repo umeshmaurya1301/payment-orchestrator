@@ -87,6 +87,7 @@ the **bean**. They are not interchangeable.
 | `tools/obs/async-alert-drill.sh` | Makes the lag and DLQ alerts fire and resolve three ways: a slow consumer, a frozen one, and unhandled dead letters. Refuses to start unless both rules are already quiet |
 | `tools/loadtest/graceful-drain.sh` | SIGTERMs the orchestrator mid-payment at two grace periods one flag apart, and slows the providers first so there is something in flight to lose |
 | `tools/loadtest/innodb-deadlock.sh` | Forces two transactions to take the same two rows in opposite order and captures InnoDB's own account of the deadlock - the artefact H2 cannot produce |
+| `tools/loadtest/idempotency-burst.sh` | Fires N same-key requests that arrive together and asserts on the DATABASE - one payment - rather than on the response bodies, which a broken system would also make identical |
 | `tools/loadtest/saga-reversal.sh` | Dead-letters a capture the ledger cannot record and checks the compensation reverses it, survives a DLQ replay, and does NOT fire when the books were already correct |
 | `tools/loadtest/capture-ledger.sh` | Authorizes, captures, and checks the clearing account against an exact expected total - which is what caught a two-day silent balance corruption |
 

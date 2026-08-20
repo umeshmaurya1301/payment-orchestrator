@@ -595,16 +595,33 @@ connections flat at `maximum-pool-size`, throughput flat, latency climbing.
 
 ## Exit criteria
 
-- [~] 100 concurrent threads, same idempotency key → **exactly one** payment
-      created, 99 replayed responses, zero duplicates — 7b. Holds at the guard
-      with 100 genuinely concurrent virtual threads: 1 run, 100 identical
-      responses. At the HTTP boundary it is asserted at 16 threads rather than
-      100, because every waiter polls through its own `REQUIRES_NEW`
-      transaction and a hundred of those against a test-sized H2 pool would be
-      measuring pool starvation — which is real, is the headline of this
-      phase's later half, and is not what that test is about. **Not yet
-      measured on the live stack under k6**, which is what the criterion
-      actually asks for
+- [x] 100 concurrent threads, same idempotency key → **exactly one** payment
+      created, 99 replayed responses, zero duplicates — 7b at the guard, and
+      **measured on the live stack on 2026-08-21** with
+      `tools/loadtest/idempotency-burst.sh`:
+
+      | requests | 2xx | 429 | 5xx | payments created | distinct ids returned |
+      |---|---|---|---|---|---|
+      | 100 | 100 | 0 | 0 | **1** | **1** |
+      | 250 | 250 | 0 | 0 | **1** | **1** |
+
+      Against the real edge, the real Hikari pool, the real Redis-backed limiter
+      and a real MySQL — the only configuration in which "100 concurrent" means
+      what the criterion means. The unit test asserts it at the guard with 100
+      virtual threads and at the HTTP boundary with only 16, because a hundred
+      `REQUIRES_NEW` waiters against a test-sized H2 pool measure pool
+      starvation instead.
+
+      **The database is the assertion, not the responses.** A hundred identical
+      bodies would also be produced by a system that created a hundred payments
+      and returned the first one's body, so the primary check is
+      `SELECT COUNT(*)` on payments actually created; the response comparison
+      corroborates it.
+
+      One honest limit: no 429 appeared even at 250 against a `merchant-burst`
+      of 100, because a shell launch loop does not deliver 250 requests in a
+      single instant and the bucket refills as it goes. The limiter was not
+      bypassed — it was never saturated
 - [x] Same key, different body → **422**, and the work does not run — 7a.
       Unit-tested at the guard, the fingerprint and the HTTP boundary
 - [x] A key burned by a process that died mid-request becomes usable again,

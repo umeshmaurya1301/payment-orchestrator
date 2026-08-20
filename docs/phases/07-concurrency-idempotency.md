@@ -667,8 +667,24 @@ connections flat at `maximum-pool-size`, throughput flat, latency climbing.
       tests, asserting timing and cancellation rather than protocol: a
       fan-out that quietly ran sequentially would pass every functional
       assertion anybody would think to write
-- [ ] Pool-starvation graph showing that unbounded concurrency just relocates
-      the bottleneck
+- [x] Pool-starvation graph showing that unbounded concurrency just relocates
+      the bottleneck — [experiment 18](../experiments/18-pool-starvation.md),
+      `tools/loadtest/pool-starvation.sh`, **run on 2026-08-21**. Toxiproxy adds
+      800ms to every MySQL round trip; 45s per arm, 60 concurrent per wave:
+
+      | | healthy | +800ms |
+      |---|---|---|
+      | payments in 45s | **1,860** | **113** |
+      | peak `hikaricp_connections_pending` | **0** | **74** |
+      | peak `hikaricp_connections_active` | 3 / 20 | **20 / 20** pinned |
+      | `jvm_threads_live_threads` | 75 | **69–71** |
+
+      Idle connections go to zero and stay there; active pins at exactly 20 and
+      never moves again. **The thread count is the metric that shows nothing** —
+      it goes slightly *down*, because the JVM counts platform threads and the
+      requests piling up are virtual. The pile-up is visible only in
+      `pending`, so migrating to virtual threads moved the evidence as well as
+      the queue
 - [x] A scheduled job can be prevented from running on four instances at once,
       with the guarantee it does **not** provide written down where somebody
       would otherwise assume it — 7h. Thirteen tests, most of them about the

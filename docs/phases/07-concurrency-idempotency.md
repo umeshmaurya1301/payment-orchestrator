@@ -38,7 +38,8 @@ Building on phase 1's constraint and replay:
 | Piece | Solves | |
 |---|---|---|
 | **Request-body fingerprint** | Key reuse with a *different* payload — was replayed as if identical, which is wrong | done, 7a |
-| **In-flight marker in Redis, returns 409** | Two concurrent requests with the same key; the second must not proceed | |
+| **Bounded wait, then replay** | Two concurrent requests with the same key; the second waits for the first and replays its answer | done, 7b |
+| **In-flight marker in Redis** | Keeps a hundred waiters from polling the row the winner is writing to. An optimisation, not a correctness fix | |
 | **Cached response replay** | Returns the stored bytes | done, phase 1 |
 | **TTL expiry** | Keys cannot accumulate forever | |
 
@@ -93,6 +94,57 @@ live, which beats a deploy that turns healthy in-flight retries into errors.
 sent a different amount *and* a different card under the same key and required
 the first response back. It now sends the same request twice, and the other case
 has its own test expecting a 422.
+
+#### 7b, as built
+
+**A 409 cannot satisfy the exit criterion, and is not much use to a caller
+either.** One hundred threads sharing a key are supposed to produce one payment
+and *ninety-nine replayed responses*; before this they produced one payment and
+ninety-nine errors. A 409 tells the caller nothing they can act on — the payment
+may or may not be about to exist — and every one of those callers retries into
+the request that has not finished yet. So a duplicate now waits for the winner
+and replays its answer.
+
+**The wait budget comes from the deadline, not from a constant.** Phase 3a put a
+budget on every inbound request, and a fixed wait would be the one unbounded
+thing left in a system built around not having any: a duplicate holding on for
+250 ms while its caller had 40 ms left writes its reply to a connection nobody is
+reading. A reserve is held back from the remaining budget so a waiter that
+succeeds at the last possible moment still has time to serialize and write the
+response — otherwise the slowest successful waits time out having done all the
+work.
+
+`WaitBudget` is an interface rather than a number because
+`Deadlines` lives in `resilience-starter`, and an idempotency library that could
+not be used without the resilience one would be two libraries pretending to be
+separable. The service that has both wires them together; the standalone default
+is a short fixed fallback, which is worse and says so.
+
+**Below a minimum, it declines without waiting** — the same reasoning as the
+deadline executor's minimum slice. A request with 5 ms left would pay the latency
+of one poll and still get the 409, so it keeps what little it had.
+
+**Polling, not notification.** A condition variable or a Redis pub/sub channel is
+correct within one process and wrong across several: the waiters for a key are
+spread over however many instances are running, and the winner has no idea who
+they are. Polling a shared store is the only mechanism that works for the
+duplicate that landed on another node, which is the normal case. The interval
+doubles to a ceiling, because a hundred waiters at a flat 10 ms would put ten
+thousand queries a second on the row the winner is trying to write — the waiters
+slowing down the request they are waiting for. That is also the argument for the
+Redis marker next: not correctness, which the durable store already has, but load
+applied at the worst possible moment.
+
+**The wait introduces a race, and the fingerprint is re-checked on every poll.**
+A claim can be released and re-taken while a duplicate waits on it — the winner
+fails, releases, and an unrelated request takes the same key with a different
+body. Replaying that response would hand the waiter an answer to somebody else's
+question.
+
+**A 409 now means something.** It is one of three things rather than a shrug: the
+first request is slower than this one's remaining budget, or this request arrived
+with almost none of its budget left, or the winner failed and released its claim
+while this one waited.
 
 ### 2. Optimistic locking
 
@@ -175,11 +227,18 @@ connections flat at `maximum-pool-size`, throughput flat, latency climbing.
 
 ## Exit criteria
 
-- [ ] 100 concurrent threads, same idempotency key → **exactly one** payment
-      created, 99 replayed responses, zero duplicates
+- [~] 100 concurrent threads, same idempotency key → **exactly one** payment
+      created, 99 replayed responses, zero duplicates — 7b. Holds at the guard
+      with 100 genuinely concurrent virtual threads: 1 run, 100 identical
+      responses. At the HTTP boundary it is asserted at 16 threads rather than
+      100, because every waiter polls through its own `REQUIRES_NEW`
+      transaction and a hundred of those against a test-sized H2 pool would be
+      measuring pool starvation — which is real, is the headline of this
+      phase's later half, and is not what that test is about. **Not yet
+      measured on the live stack under k6**, which is what the criterion
+      actually asks for
 - [x] Same key, different body → **422**, and the work does not run — 7a.
-      Unit-tested at the guard, the fingerprint and the HTTP boundary; the
-      concurrent half of this criterion is the one above and is still open
+      Unit-tested at the guard, the fingerprint and the HTTP boundary
 - [ ] Deadlock reproduced on command, then eliminated — **both documented**
 - [ ] Pool-starvation graph showing that unbounded concurrency just relocates
       the bottleneck
@@ -200,7 +259,21 @@ cannot detect the exact class of change it exists for. Length-prefix instead.
 
 **Testing idempotency sequentially.** 100 requests one after another all hit the
 replay path and prove nothing. They must be genuinely concurrent — that is what
-exercises the in-flight marker and the unique constraint race.
+exercises the in-flight marker and the unique constraint race. Met in 7b by
+holding every thread on a `CountDownLatch` and making the winner's work slow
+enough that the other 99 are certainly inside the wait rather than arriving after
+it finished.
+
+**A fixed wait, in a system that already knows how long it has.** Found while
+building 7b. A duplicate that waits 250 ms for a caller with 40 ms of budget left
+is writing to a connection nobody is reading — and it is the only unbounded thing
+left after phase 3a. Take the wait from the deadline, and keep a reserve back for
+writing the response.
+
+**Waiters that slow down the winner.** A hundred duplicates polling a shared row
+every 10 ms is ten thousand queries a second aimed at the row the winner is
+trying to write to. Back off, or the wait makes the thing it is waiting for
+slower.
 
 **Assuming the unique constraint is enough.** It prevents the duplicate row; it
 does not stop two threads both calling the provider before either commits. That

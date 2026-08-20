@@ -26,8 +26,30 @@ public class IdempotencyAutoConfiguration {
     @Bean
     @ConditionalOnBean(IdempotencyStore.class)
     @ConditionalOnMissingBean
-    public IdempotencyGuard idempotencyGuard(IdempotencyStore store) {
-        return new IdempotencyGuard(store);
+    public IdempotencyGuard idempotencyGuard(IdempotencyStore store, WaitBudget waits) {
+        return new IdempotencyGuard(store, waits);
+    }
+
+    /**
+     * Phase 7b. The fallback budget, used only when the service has not supplied
+     * a better one.
+     *
+     * <p>{@code @ConditionalOnMissingBean}, and payments-edge overrides it with
+     * one derived from the request deadline. A fixed budget is the wrong answer
+     * in a system where every request already carries how long it has left; it
+     * is here so the library works standalone, not because it is good.
+     *
+     * <p>250ms rather than something generous, deliberately. A fallback that
+     * waited as long as a real request would is a fallback that hides its own
+     * absence - the symptom becomes a slow reply, and slow replies get blamed on
+     * the network rather than on a missing bean.
+     */
+    @Bean
+    @ConditionalOnBean(IdempotencyStore.class)
+    @ConditionalOnMissingBean
+    public WaitBudget idempotencyWaitBudget(
+            @Value("${payorch.idempotency.fallback-wait-ms:250}") long fallbackMs) {
+        return WaitBudget.fixed(fallbackMs);
     }
 
     /**

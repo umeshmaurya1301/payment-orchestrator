@@ -6,6 +6,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import com.payorch.edge.merchant.ApiKeyAuthFilter;
 import com.payorch.edge.orchestrator.OrchestratorClient;
@@ -24,6 +29,7 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -350,6 +356,71 @@ class PaymentsApiTest {
                 .andReturn().getResponse().getContentAsByteArray();
 
         assertThat(replayed).isEqualTo(first);
+    }
+
+    /**
+     * Phase 7b. THE EXIT CRITERION, at the HTTP boundary.
+     *
+     * <p>Concurrent requests sharing a key produce exactly one payment and one
+     * response, replayed to everybody. Before 7b the losers received 409s: a
+     * status that tells the caller nothing they can act on, because the payment
+     * may or may not be about to exist, and that every one of them will retry
+     * into the request that has not finished yet.
+     *
+     * <p><strong>Genuinely concurrent, which is the whole point.</strong> Phase
+     * 7's trap list names the alternative: a loop of sequential requests all
+     * take the replay path and prove nothing, because the window that matters is
+     * the one where the winner has claimed and not yet completed.
+     *
+     * <p>Sixteen rather than the criterion's hundred, and the reason is the H2
+     * connection pool rather than a lack of ambition: every waiter polls through
+     * a REQUIRES_NEW transaction, so a hundred of them against a test-sized pool
+     * would be measuring pool starvation - which is a real phenomenon, is the
+     * headline of phase 7's later half, and is not what this test is about. The
+     * hundred-thread version lives in {@code IdempotencyGuardTest}, where there
+     * is no pool in the way.
+     */
+    @Test
+    void concurrentRequestsWithOneKeyProduceOnePaymentAndReplaysForTheRest() throws Exception {
+        int threads = 16;
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<MockHttpServletResponse>> results = new ArrayList<>();
+
+        try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (int i = 0; i < threads; i++) {
+                results.add(pool.submit(() -> {
+                    start.await();
+                    return mvc.perform(authenticated(create("key-concurrent")))
+                            .andReturn().getResponse();
+                }));
+            }
+            start.countDown();
+
+            List<MockHttpServletResponse> responses = new ArrayList<>();
+            for (Future<MockHttpServletResponse> result : results) {
+                responses.add(result.get(30, TimeUnit.SECONDS));
+            }
+
+            assertThat(responses)
+                    .as("every caller must get the created payment, not a 409")
+                    .allSatisfy(r -> assertThat(r.getStatus()).isEqualTo(201));
+
+            byte[] first = responses.get(0).getContentAsByteArray();
+            assertThat(responses)
+                    .as("and it must be the same payment, byte for byte")
+                    .allSatisfy(r -> assertThat(r.getContentAsByteArray()).isEqualTo(first));
+        }
+
+        assertThat(orchestrator.requests)
+                .as("exactly one payment may have been created downstream")
+                .hasSize(1);
+
+        Long records = jdbc.sql(
+                        "SELECT COUNT(*) FROM idempotency_record WHERE idempotency_key = ?")
+                .param("key-concurrent")
+                .query(Long.class)
+                .single();
+        assertThat(records).isEqualTo(1);
     }
 
     /** The fingerprint is stored with the claim, not computed on read. */

@@ -2,6 +2,7 @@ package com.payorch.infra.idempotency;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Supplier;
 
@@ -37,20 +38,63 @@ import org.slf4j.LoggerFactory;
  * answer than "try again shortly" - which invites exactly the retry that will
  * fail the same way.
  *
+ * <h2>Phase 7b: a duplicate waits rather than being turned away</h2>
+ *
+ * <p>Until now a genuinely concurrent duplicate got a 409 immediately, and the
+ * phase-7 exit criterion is not satisfiable that way: one hundred threads
+ * sharing a key are supposed to produce <strong>one payment and ninety-nine
+ * replayed responses</strong>, not one payment and ninety-nine errors. A 409
+ * tells the caller nothing they can act on - the payment may or may not be
+ * about to exist - and every one of those callers will retry, which is more
+ * load arriving at exactly the moment the first request has not finished.
+ *
+ * <p>So a duplicate waits for the winner and then replays its answer. The wait
+ * is bounded by {@link WaitBudget}, which in a real request is whatever is left
+ * of the deadline phase 3a attached to it: a duplicate must never outlive the
+ * caller who is waiting for it, and a request with 40ms left does not wait at
+ * all.
+ *
  * <p><strong>What this deliberately does not do yet.</strong> No Redis in-flight
- * marker, so a genuinely concurrent duplicate gets {@link InFlightException}
- * immediately rather than after a bounded wait. No TTL, so records live forever
- * and a process that dies mid-request burns its key. Both are later parts of
- * phase 7.
+ * marker, so every waiter polls the database. No TTL, so a process that dies
+ * mid-request burns its key until somebody deletes the row. Both are later parts
+ * of phase 7.
  */
 public class IdempotencyGuard {
 
     private static final Logger log = LoggerFactory.getLogger(IdempotencyGuard.class);
 
-    private final IdempotencyStore store;
+    /**
+     * The shortest wait worth starting.
+     *
+     * <p>Below this there is no point: the first poll has not come back before
+     * the budget is gone, so the caller pays the latency and still gets the 409.
+     * The same reasoning as {@code DeadlineExecutor}'s minimum slice, and the
+     * same conclusion - decline early rather than start something that cannot
+     * finish.
+     */
+    private static final long MIN_WAIT_MS = 25;
 
-    public IdempotencyGuard(IdempotencyStore store) {
+    /** First poll interval. Doubles up to {@link #MAX_POLL_MS}. */
+    private static final long FIRST_POLL_MS = 10;
+
+    /**
+     * The polling ceiling.
+     *
+     * <p>Backing off matters more than it looks. Every waiter polls the durable
+     * store, so a hundred duplicates at a flat 10ms would put ten thousand
+     * queries a second on the same row of the same table the winner is trying to
+     * write to - the waiters would be slowing down the request they are waiting
+     * for. Doubling turns a hundred waiters over two seconds into roughly eight
+     * queries each rather than two hundred.
+     */
+    private static final long MAX_POLL_MS = 160;
+
+    private final IdempotencyStore store;
+    private final WaitBudget waits;
+
+    public IdempotencyGuard(IdempotencyStore store, WaitBudget waits) {
         this.store = store;
+        this.waits = waits;
     }
 
     /**
@@ -77,7 +121,10 @@ public class IdempotencyGuard {
 
             requireSameRequest(merchantId, key, fingerprint, existing);
 
-            return existing.response().orElseThrow(() -> new InFlightException(key));
+            return existing.response()
+                    // Still running. Wait for it rather than turning the caller
+                    // away with an answer they cannot act on.
+                    .orElseGet(() -> awaitWinner(merchantId, key, fingerprint));
         }
 
         ReplayableResponse response;
@@ -94,6 +141,76 @@ public class IdempotencyGuard {
 
         store.complete(merchantId, key, response);
         return response;
+    }
+
+    /**
+     * Waits for the request that won the claim to store its response.
+     *
+     * <h2>Polling, and why that is the right shape here</h2>
+     *
+     * <p>The obvious alternative is to have the winner notify the waiters - a
+     * condition variable, a Redis pub/sub channel. Both are correct within one
+     * process and neither is, across several: the waiters for a key are spread
+     * over however many instances of this service are running, and the winner
+     * has no idea who they are. Polling a shared store is the only mechanism
+     * that works for a duplicate that landed on a different node, which is the
+     * normal case rather than the exotic one.
+     *
+     * <p>The cost is queries, which is why the interval doubles - see
+     * {@link #MAX_POLL_MS}. It is also why phase 7's next step puts a Redis
+     * marker in front of this: not for correctness, which the durable store
+     * already has, but because a hundred waiters polling the row the winner is
+     * writing to is load applied at the worst possible moment.
+     *
+     * <h2>The fingerprint is re-checked on every read</h2>
+     *
+     * <p>Not paranoia. The claim can be released and re-taken while this waits -
+     * the winner fails, releases, and an unrelated request grabs the same key
+     * with a different body. Replaying that response would hand this caller an
+     * answer to somebody else's question.
+     *
+     * @throws InFlightException if the budget runs out first
+     */
+    private ReplayableResponse awaitWinner(UUID merchantId, String key, String fingerprint) {
+        long budgetMs = Math.max(0, waits.remainingMs());
+        if (budgetMs < MIN_WAIT_MS) {
+            // Not enough time to be useful. Decline now, while the caller still
+            // has some of their budget left to do something else with it.
+            throw new InFlightException(key);
+        }
+
+        long deadlineNanos = System.nanoTime() + budgetMs * 1_000_000L;
+        long pollMs = FIRST_POLL_MS;
+
+        while (System.nanoTime() < deadlineNanos) {
+            try {
+                Thread.sleep(pollMs);
+            } catch (InterruptedException e) {
+                // Restore the flag rather than swallowing it. Every service here
+                // runs on virtual threads and drains on shutdown; a wait that
+                // eats its own interrupt is one that will not stop.
+                Thread.currentThread().interrupt();
+                throw new InFlightException(key);
+            }
+
+            Optional<IdempotencyStore.Existing> existing = store.find(merchantId, key);
+            if (existing.isEmpty()) {
+                // The winner failed and released the claim. Nothing is running
+                // and nothing is stored, so waiting longer cannot help - and the
+                // caller retrying is exactly the right next move.
+                throw new InFlightException(key);
+            }
+
+            requireSameRequest(merchantId, key, fingerprint, existing.get());
+
+            if (existing.get().response().isPresent()) {
+                return existing.get().response().get();
+            }
+
+            pollMs = Math.min(pollMs * 2, MAX_POLL_MS);
+        }
+
+        throw new InFlightException(key);
     }
 
     /**

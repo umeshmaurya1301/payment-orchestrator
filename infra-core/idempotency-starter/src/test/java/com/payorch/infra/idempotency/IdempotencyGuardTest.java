@@ -1,10 +1,17 @@
 package com.payorch.infra.idempotency;
 
 import java.nio.charset.StandardCharsets;
-import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
@@ -24,7 +31,17 @@ class IdempotencyGuardTest {
     private static final String FP = "fingerprint-of-the-original-request";
 
     private final InMemoryStore store = new InMemoryStore();
-    private final IdempotencyGuard guard = new IdempotencyGuard(store);
+
+    /**
+     * Zero budget for most of these, so a duplicate that finds work in flight
+     * fails immediately instead of sleeping.
+     *
+     * <p>Not a shortcut. A test that waited would be measuring the clock, and
+     * the ones below are about which BRANCH is taken - the waiting itself has
+     * its own tests, where the timing is the subject rather than a tax.
+     */
+    private final IdempotencyGuard guard =
+            new IdempotencyGuard(store, WaitBudget.fixed(0));
 
     @Test
     void runsTheWorkOnceAndReplaysAfterwards() {
@@ -71,7 +88,7 @@ class IdempotencyGuardTest {
     }
 
     @Test
-    void aClaimHeldWithoutAResponseIsReportedAsInFlight() {
+    void aClaimHeldWithoutAResponseIsReportedAsInFlightWhenThereIsNoTimeToWait() {
         store.claim(MERCHANT, "key-1", FP);
 
         assertThatThrownBy(() -> guard.execute(MERCHANT, "key-1", FP, () -> response("{}")))
@@ -186,6 +203,176 @@ class IdempotencyGuardTest {
                 .isInstanceOf(IdempotencyGuard.InFlightException.class);
     }
 
+    // --- phase 7b: a duplicate waits rather than being turned away ---------
+
+    /**
+     * THE EXIT CRITERION, at the guard.
+     *
+     * <p>One hundred threads, one key: exactly one runs the work and
+     * ninety-nine receive that same response. Before 7b this produced one
+     * payment and ninety-nine 409s, which does not satisfy the criterion and is
+     * not much use to a caller either - a 409 says the payment may or may not be
+     * about to exist, and every one of those callers retries into the request
+     * that has not finished yet.
+     *
+     * <p>Genuinely concurrent, not a loop. Phase 7's own trap list names this:
+     * a hundred sequential requests all take the replay path and prove nothing,
+     * because the interesting window is the one where the winner has claimed and
+     * not yet completed.
+     */
+    @Test
+    void oneHundredConcurrentRequestsProduceOneRunAndNinetyNineReplays() throws Exception {
+        IdempotencyGuard waiting = new IdempotencyGuard(store, WaitBudget.fixed(5_000));
+
+        int threads = 100;
+        AtomicInteger runs = new AtomicInteger();
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<ReplayableResponse>> results = new ArrayList<>();
+
+        try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (int i = 0; i < threads; i++) {
+                results.add(pool.submit(() -> {
+                    start.await();
+                    return waiting.execute(MERCHANT, "hot-key", FP, () -> {
+                        runs.incrementAndGet();
+                        // Long enough that the other 99 are certainly inside the
+                        // wait rather than arriving after the work is done -
+                        // which is the difference between testing the wait and
+                        // testing the replay path that already existed.
+                        sleep(150);
+                        return response("{\"id\":\"the-one\"}");
+                    });
+                }));
+            }
+            start.countDown();
+
+            List<byte[]> bodies = new ArrayList<>();
+            for (Future<ReplayableResponse> result : results) {
+                bodies.add(result.get(30, TimeUnit.SECONDS).body());
+            }
+
+            assertThat(runs)
+                    .as("exactly one request may do the work")
+                    .hasValue(1);
+            assertThat(bodies).hasSize(threads);
+            assertThat(bodies)
+                    .as("every response must be the winner's, byte for byte")
+                    .allSatisfy(body -> assertThat(new String(body, StandardCharsets.UTF_8))
+                            .isEqualTo("{\"id\":\"the-one\"}"));
+        }
+    }
+
+    /** A duplicate whose budget runs out before the winner finishes still gets a 409. */
+    @Test
+    void aWaitThatOutlastsItsBudgetIsStillAConflict() {
+        IdempotencyGuard waiting = new IdempotencyGuard(store, WaitBudget.fixed(120));
+        store.claim(MERCHANT, "key-1", FP);
+
+        long startedAt = System.nanoTime();
+        assertThatThrownBy(() -> waiting.execute(MERCHANT, "key-1", FP, () -> response("{}")))
+                .isInstanceOf(IdempotencyGuard.InFlightException.class);
+
+        long waitedMs = (System.nanoTime() - startedAt) / 1_000_000L;
+        assertThat(waitedMs)
+                .as("it must actually have waited, and must not have waited much beyond its budget")
+                .isBetween(100L, 2_000L);
+    }
+
+    /**
+     * A budget under the minimum declines immediately rather than sleeping once
+     * and failing anyway - the same reasoning as the deadline executor's minimum
+     * slice. The caller keeps what little time they had left.
+     */
+    @Test
+    void aBudgetTooSmallToBeUsefulDeclinesWithoutWaiting() {
+        IdempotencyGuard waiting = new IdempotencyGuard(store, WaitBudget.fixed(5));
+        store.claim(MERCHANT, "key-1", FP);
+
+        long startedAt = System.nanoTime();
+        assertThatThrownBy(() -> waiting.execute(MERCHANT, "key-1", FP, () -> response("{}")))
+                .isInstanceOf(IdempotencyGuard.InFlightException.class);
+
+        assertThat((System.nanoTime() - startedAt) / 1_000_000L)
+                .as("below the minimum it must not sleep at all")
+                .isLessThan(25L);
+    }
+
+    /** A negative budget - a request already past its deadline - is not a long wait. */
+    @Test
+    void anExpiredDeadlineDoesNotWrapIntoAnEnormousWait() {
+        IdempotencyGuard waiting = new IdempotencyGuard(store, WaitBudget.fixed(-5_000));
+        store.claim(MERCHANT, "key-1", FP);
+
+        long startedAt = System.nanoTime();
+        assertThatThrownBy(() -> waiting.execute(MERCHANT, "key-1", FP, () -> response("{}")))
+                .isInstanceOf(IdempotencyGuard.InFlightException.class);
+
+        assertThat((System.nanoTime() - startedAt) / 1_000_000L).isLessThan(25L);
+    }
+
+    /**
+     * The winner failed and released the claim while this one was waiting.
+     * Nothing is running and nothing is stored, so waiting longer cannot help -
+     * and the caller retrying is the right next move rather than a slow failure.
+     */
+    @Test
+    void aWaiterWhoseWinnerFailsIsToldPromptlyRatherThanWaitingOut() throws Exception {
+        IdempotencyGuard waiting = new IdempotencyGuard(store, WaitBudget.fixed(10_000));
+        store.claim(MERCHANT, "key-1", FP);
+
+        try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            pool.submit(() -> {
+                sleep(100);
+                store.release(MERCHANT, "key-1");
+            });
+
+            long startedAt = System.nanoTime();
+            assertThatThrownBy(() -> waiting.execute(MERCHANT, "key-1", FP, () -> response("{}")))
+                    .isInstanceOf(IdempotencyGuard.InFlightException.class);
+
+            assertThat((System.nanoTime() - startedAt) / 1_000_000L)
+                    .as("it must not sit out the whole ten seconds")
+                    .isLessThan(5_000L);
+        }
+    }
+
+    /**
+     * THE RACE THE WAIT INTRODUCES.
+     *
+     * <p>A claim can be released and re-taken while a duplicate is waiting on
+     * it: the winner fails, releases, and an unrelated request grabs the same
+     * key with a different body. Replaying that response would hand this caller
+     * an answer to somebody else's question, so the fingerprint is re-checked on
+     * every poll rather than only on entry.
+     */
+    @Test
+    void aClaimRetakenByADifferentRequestMidWaitIsAMismatchAndNotAReplay() throws Exception {
+        IdempotencyGuard waiting = new IdempotencyGuard(store, WaitBudget.fixed(10_000));
+        store.claim(MERCHANT, "key-1", "fingerprint-a");
+
+        try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            pool.submit(() -> {
+                sleep(100);
+                store.release(MERCHANT, "key-1");
+                store.claim(MERCHANT, "key-1", "fingerprint-b");
+                store.complete(MERCHANT, "key-1", response("{\"someone\":\"else\"}"));
+            });
+
+            assertThatThrownBy(() -> waiting.execute(MERCHANT, "key-1", "fingerprint-a",
+                    () -> response("{}")))
+                    .isInstanceOf(IdempotencyGuard.FingerprintMismatchException.class);
+        }
+    }
+
+    private static void sleep(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
+        }
+    }
+
     private static ReplayableResponse response(String json) {
         return new ReplayableResponse(201, "application/json", json.getBytes(StandardCharsets.UTF_8));
     }
@@ -199,7 +386,13 @@ class IdempotencyGuardTest {
         private record Row(String fingerprint, Optional<ReplayableResponse> response) {
         }
 
-        private final Map<Id, Row> records = new HashMap<>();
+        // Concurrent, because oneHundredConcurrentRequestsProduceOneRunAndNinetyNineReplays
+        // hammers it from a hundred virtual threads. putIfAbsent on a
+        // ConcurrentHashMap is atomic, which is what makes it a fair stand-in
+        // for the unique constraint it is imitating - a HashMap here would let
+        // two callers both win the claim and the test would be measuring a
+        // broken double rather than the guard.
+        private final Map<Id, Row> records = new ConcurrentHashMap<>();
 
         /** Simulates the winner releasing its claim between the insert and the read. */
         private boolean vanishOnFind;

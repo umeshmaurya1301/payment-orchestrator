@@ -59,6 +59,25 @@ payorch:
   idempotency:
     fingerprint-secret: ${IDEMPOTENCY_FINGERPRINT_SECRET:dev-local-fingerprint-key-not-a-real-secret}
 
+    # Phase 7b. How long a duplicate may wait for the request that beat it.
+    #
+    # NEITHER OF THESE IS THE WAIT. The wait is whatever is left of the deadline
+    # phase 3a stamped on the request - see EdgeConfiguration.idempotencyWaitBudget.
+    # A fixed wait would be the one unbounded thing in a system built around not
+    # having any: a duplicate holding on for 250ms while its caller had 40ms left
+    # writes its reply to a connection nobody is reading.
+    #
+    # wait-reserve-ms is held back from that remaining budget so a waiter that
+    # succeeds at the last possible moment still has time to serialize and write
+    # the response. Without it, the slowest successful waits would time out
+    # having done all of the work.
+    wait-reserve-ms: ${IDEMPOTENCY_WAIT_RESERVE_MS:200}
+    # Used only outside a request scope, where there is no deadline to consult.
+    # Short on purpose: a fallback that waited as long as a real request would is
+    # one that hides its own absence, and the symptom - a slow reply - gets
+    # blamed on the network rather than on a missing bean.
+    fallback-wait-ms: ${IDEMPOTENCY_FALLBACK_WAIT_MS:250}
+
   resilience:
     deadline:
       # The edge STAMPS the budget. It does not accept one.

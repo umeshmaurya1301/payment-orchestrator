@@ -300,12 +300,27 @@ public class PaymentsController {
     }
 
     /**
-     * A duplicate arriving while the first request is still running.
+     * A duplicate that waited for the first request and gave up.
      *
-     * <p>409 with no body to replay, because there is nothing to replay yet.
-     * Phase 7 replaces this with a considered answer: a Redis in-flight marker,
-     * a bounded wait, and request-body fingerprinting so that a reused key with
-     * a changed payload is rejected rather than silently replayed.
+     * <p><strong>Much rarer since 7b, and much more informative because of
+     * it.</strong> A duplicate no longer bounces off a claim it could have
+     * waited out - it waits for whatever is left of its deadline and replays the
+     * winner's answer. Reaching this handler now means one of three things, and
+     * all three are worth knowing:
+     *
+     * <ul>
+     *   <li>the first request is genuinely slower than this one's remaining
+     *       budget, so the caller is being told to retry with a fresh budget
+     *       rather than being made to wait past their own deadline;</li>
+     *   <li>this request arrived with almost none of its budget left, and
+     *       declining immediately leaves the caller what little they had;</li>
+     *   <li>the first request failed and released its claim while this one was
+     *       waiting - nothing is running and nothing is stored, so retrying is
+     *       exactly the right next move.</li>
+     * </ul>
+     *
+     * <p>Still 409 and still no body, because there is genuinely nothing to
+     * replay. What changed is that it is now an answer rather than a shrug.
      */
     /**
      * The key has been used before, for something else. Phase 7a.

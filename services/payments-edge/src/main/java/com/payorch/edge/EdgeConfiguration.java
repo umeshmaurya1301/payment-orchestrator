@@ -3,6 +3,8 @@ package com.payorch.edge;
 import com.payorch.edge.merchant.ApiKeyAuthFilter;
 import com.payorch.infra.resilience.deadline.DeadlineExecutor;
 import com.payorch.infra.resilience.deadline.DeadlinePropagation;
+import com.payorch.infra.resilience.deadline.Deadlines;
+import com.payorch.infra.idempotency.WaitBudget;
 import com.payorch.edge.merchant.MerchantRepository;
 import com.payorch.edge.orchestrator.OrchestratorClient;
 import com.payorch.infra.resilience.ratelimit.EndpointCosts;
@@ -24,6 +26,38 @@ public class EdgeConfiguration {
                                                  DeadlineExecutor deadlines,
                                                  ObservationRegistry observations) {
         return new OrchestratorClient(baseUrl, propagation, deadlines, observations);
+    }
+
+    /**
+     * Phase 7b. How long a duplicate may wait for the request that beat it.
+     *
+     * <p>This is the bean that joins two starters the libraries themselves keep
+     * apart, and it is the whole reason {@code WaitBudget} is an interface. The
+     * answer is not a constant: it is whatever is left of the deadline phase 3a
+     * stamped on this request. A duplicate that waited a fixed 250ms while its
+     * caller had 40ms left would be writing a reply to a connection nobody is
+     * reading - the one unbounded thing in a system built around not having any.
+     *
+     * <p><strong>The reserve is the part worth explaining.</strong> Handing over
+     * the entire remaining budget would mean a waiter that succeeds at the last
+     * possible millisecond has nothing left to serialize and write the response
+     * with, so it would time out having done all the work. Keeping some back
+     * turns "waited too long and failed" into "did not wait that long, and
+     * answered".
+     *
+     * <p>Falls back to a fixed budget outside a request scope, for the reason
+     * {@code Deadlines.currentOrDefault} exists: unbounded is the failure mode
+     * being removed, so code reached without a deadline should still be bounded
+     * by something.
+     */
+    @Bean
+    public WaitBudget idempotencyWaitBudget(
+            @Value("${payorch.idempotency.fallback-wait-ms:250}") long fallbackMs,
+            @Value("${payorch.idempotency.wait-reserve-ms:200}") long reserveMs) {
+
+        return () -> Deadlines.current()
+                .map(deadline -> deadline.remainingMs() - reserveMs)
+                .orElse(fallbackMs);
     }
 
     @Bean

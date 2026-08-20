@@ -712,7 +712,25 @@ connections flat at `maximum-pool-size`, throughput flat, latency climbing.
       7g. The `LongAdder` split in this codebase already matched the numbers,
       so nothing was converted; the deliverable is the evidence and one
       corrected trap
-- [ ] Virtual vs platform benchmark written up with numbers
+- [x] Virtual vs platform benchmark written up with numbers —
+      [experiment 19](../experiments/19-virtual-vs-platform.md),
+      `tools/loadtest/virtual-vs-platform.sh`, **run on 2026-08-21**. 400
+      concurrent via k6, 1.5s provider, gates widened, 45s per arm:
+
+      | | virtual | platform |
+      |---|---|---|
+      | payments created | 2,141 | 2,289 |
+      | `jvm_threads_live` | **80** | **276** |
+
+      **Throughput is the same either way** — 6% apart, inside run-to-run noise,
+      and the sign changed between runs. **The same work costs 3.5x fewer OS
+      threads.** Threads are never the constraint here: three attempts to build
+      a thread-bound workload each hit a different bound first — the bulkhead
+      (117 rejected), then the load generator itself (both arms completing
+      *exactly* 1200 = 400 x 3 waves), then something at ~68 in flight that is
+      still unidentified. So the honest case for virtual threads in this system
+      is **memory, not speed**, and the throughput argument needs a system whose
+      bottleneck is threads — which this one is not, by construction
 
 ## Traps
 

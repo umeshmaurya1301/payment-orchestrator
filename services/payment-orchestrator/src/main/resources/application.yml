@@ -17,7 +17,10 @@ spring:
       # and phase 7 depends on having felt that from the start: virtual threads
       # do not fix a bounded resource, they move where the queue forms. The
       # Hikari pool below is exactly such a bounded resource.
-      enabled: true
+      # Parameterised in phase 7 so the virtual-vs-platform benchmark can be a
+      # RESTART rather than a rebuild. The default is unchanged and stays true:
+      # this project has run virtual threads since phase 0 deliberately.
+      enabled: ${VIRTUAL_THREADS:true}
   mvc:
     problemdetails:
       enabled: true

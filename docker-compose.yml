@@ -207,6 +207,9 @@ services:
       # this on turns a one-way dependency into a cycle. That is what a
       # choreographed saga is, and it is still worth being an explicit decision.
       COMPENSATION_ENABLED: ${COMPENSATION_ENABLED:-false}
+      # Phase 7's virtual-vs-platform benchmark flips this on both services
+      # that sit on the request path. Default true - unchanged since phase 0.
+      VIRTUAL_THREADS: ${VIRTUAL_THREADS:-true}
       # Phase 8a. The poller that finally takes payments out of UNKNOWN, and
       # the Redis it coordinates through.
       #
@@ -284,6 +287,9 @@ services:
       # a latency toxic that did not affect tokenization would be modelling a
       # database that does not exist.
       VAULT_DB_URL: jdbc:mysql://toxiproxy:23306/payorch_vault
+      # Phase 7's virtual-vs-platform benchmark flips this on both services
+      # that sit on the request path. Default true - unchanged since phase 0.
+      VIRTUAL_THREADS: ${VIRTUAL_THREADS:-true}
       VAULT_DB_USER: vault_writer
       VAULT_DB_PASSWORD: vault_writer_pw
       # Phase 9d. Key material, separate database, separate credential.

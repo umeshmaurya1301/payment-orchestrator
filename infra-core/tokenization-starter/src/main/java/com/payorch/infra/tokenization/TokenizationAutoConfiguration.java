@@ -51,21 +51,73 @@ public class TokenizationAutoConfiguration {
         return new VaultConnection(new HikariDataSource(config));
     }
 
+    /**
+     * Phase 1's direct-key cipher, now the LEGACY READER and nothing else.
+     *
+     * <p>No longer required, and that is the change: a deployment created after
+     * phase 9b has no rows encrypted this way, so {@code payorch.vault.key} may
+     * be absent. Returning null rather than throwing lets that deployment start
+     * - and {@link TokenVault} produces an actionable message if a legacy row
+     * does turn up without a key to read it.
+     */
     @Bean
     @ConditionalOnMissingBean
     public PanCipher panCipher(VaultProperties properties) {
         if (properties.key() == null || properties.key().isBlank()) {
-            throw new IllegalStateException(
-                    "payorch.vault.key is required whenever payorch.vault.datasource.url is set. "
-                            + "Generate one with: openssl rand -base64 32");
+            return null;
         }
         return new PanCipher(properties.key());
     }
 
+    /**
+     * The KEK ring. Phase 9b.
+     *
+     * <p>Falls back to the phase-1 static key as a single version named
+     * {@code v1} when no ring is configured. That is a deliberate migration
+     * affordance rather than a shortcut: an existing deployment gains envelope
+     * encryption for every NEW record without touching its configuration, and
+     * gains a rotation story the moment somebody adds a second version.
+     *
+     * <p>Note what it does not do - it does not re-encrypt anything. Old rows
+     * stay directly encrypted and are read by the legacy path; new rows are
+     * enveloped under {@code v1}. The two coexist, distinguished by
+     * {@code kek_version}.
+     */
     @Bean
     @ConditionalOnMissingBean
-    public TokenVault tokenVault(VaultConnection connection, PanCipher panCipher) {
-        return new TokenVault(connection.jdbc(), panCipher);
+    public KeyRing keyRing(VaultProperties properties) {
+        if (!properties.keys().isEmpty()) {
+            String current = properties.currentKey();
+            if (current == null || current.isBlank()) {
+                throw new IllegalStateException(
+                        "payorch.vault.current-key must name one of the configured "
+                                + "payorch.vault.keys versions: " + properties.keys().keySet());
+            }
+            return new KeyRing(properties.keys(), current);
+        }
+
+        if (properties.key() == null || properties.key().isBlank()) {
+            throw new IllegalStateException(
+                    "the token vault needs a key. Configure payorch.vault.keys with at least "
+                            + "one version and payorch.vault.current-key to name it. "
+                            + "Generate a key with: openssl rand -base64 32");
+        }
+        return new KeyRing(java.util.Map.of("v1", properties.key()), "v1");
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public EnvelopeCipher envelopeCipher(KeyRing keyRing) {
+        return new EnvelopeCipher(keyRing);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public TokenVault tokenVault(VaultConnection connection,
+                                 org.springframework.beans.factory.ObjectProvider<PanCipher> legacy,
+                                 EnvelopeCipher envelopeCipher) {
+        // ObjectProvider because panCipher may legitimately be absent now.
+        return new TokenVault(connection.jdbc(), legacy.getIfAvailable(), envelopeCipher);
     }
 
     /**

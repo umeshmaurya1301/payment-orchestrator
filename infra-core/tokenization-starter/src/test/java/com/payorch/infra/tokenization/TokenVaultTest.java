@@ -18,6 +18,11 @@ class TokenVaultTest {
                 token        VARCHAR(48)   NOT NULL PRIMARY KEY,
                 pan_iv       VARBINARY(12) NOT NULL,
                 pan_cipher   VARBINARY(64) NOT NULL,
+                -- Phase 9b. The envelope. Nullable, because a row without a
+                -- kek_version is a pre-9b record read through the legacy cipher.
+                wrapped_dek  VARBINARY(64) NULL,
+                dek_iv       VARBINARY(12) NULL,
+                kek_version  VARCHAR(32)   NULL,
                 bin          CHAR(6)       NOT NULL,
                 last4        CHAR(4)       NOT NULL,
                 expiry_month TINYINT       NOT NULL,
@@ -35,8 +40,13 @@ class TokenVaultTest {
         connection = new VaultConnection(new HikariDataSource(config));
         connection.jdbc().sql(SCHEMA).update();
 
+        String key = Base64.getEncoder().encodeToString(new byte[32]);
+        // Both ciphers, because this vault has to read both formats: envelope
+        // for anything it writes, and the phase-1 direct-key form for rows that
+        // predate 9b.
         vault = new TokenVault(connection.jdbc(),
-                new PanCipher(Base64.getEncoder().encodeToString(new byte[32])));
+                new PanCipher(key),
+                new EnvelopeCipher(new KeyRing(java.util.Map.of("v1", key), "v1")));
     }
 
     @AfterEach

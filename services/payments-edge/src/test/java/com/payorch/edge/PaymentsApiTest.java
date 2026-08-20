@@ -84,6 +84,11 @@ class PaymentsApiTest {
                     token        VARCHAR(48)   NOT NULL PRIMARY KEY,
                     pan_iv       VARBINARY(12) NOT NULL,
                     pan_cipher   VARBINARY(64) NOT NULL,
+                    -- Phase 9b. The envelope. Nullable, because a row without a
+                    -- kek_version is a pre-9b record read through the legacy cipher.
+                    wrapped_dek  VARBINARY(64) NULL,
+                    dek_iv       VARBINARY(12) NULL,
+                    kek_version  VARCHAR(32)   NULL,
                     bin          CHAR(6)       NOT NULL,
                     last4        CHAR(4)       NOT NULL,
                     expiry_month TINYINT       NOT NULL,

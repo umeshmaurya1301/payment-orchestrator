@@ -41,22 +41,44 @@ public class TokenVault {
     private static final String PREFIX = "tok_";
 
     private static final String INSERT = """
-            INSERT INTO token_vault (token, pan_iv, pan_cipher, bin, last4, expiry_month, expiry_year)
-            VALUES (:token, :iv, :cipher, :bin, :last4, :expiryMonth, :expiryYear)
+            INSERT INTO token_vault
+                (token, pan_iv, pan_cipher, wrapped_dek, dek_iv, kek_version,
+                 bin, last4, expiry_month, expiry_year)
+            VALUES (:token, :iv, :cipher, :wrappedDek, :dekIv, :kekVersion,
+                    :bin, :last4, :expiryMonth, :expiryYear)
             """;
 
     private static final String SELECT = """
-            SELECT pan_iv, pan_cipher, expiry_month, expiry_year
+            SELECT pan_iv, pan_cipher, wrapped_dek, dek_iv, kek_version,
+                   expiry_month, expiry_year
             FROM token_vault WHERE token = :token
             """;
 
     private final JdbcClient jdbc;
-    private final PanCipher cipher;
+
+    /**
+     * Phase 1's direct-key cipher, kept for ONE reason: reading rows written
+     * before phase 9b.
+     *
+     * <p>Those rows were encrypted under a single static key with no DEK, and
+     * converting them means decrypting and re-encrypting every one - the
+     * expensive migration envelope encryption exists to avoid, which it cannot
+     * avoid for the migration INTO itself. So they are read where they lie, and
+     * the population only shrinks.
+     *
+     * <p>Nothing writes through this any more. If it is ever null the vault
+     * simply cannot read legacy rows, which is the correct behaviour for a
+     * deployment that has none.
+     */
+    private final PanCipher legacyCipher;
+
+    private final EnvelopeCipher envelope;
     private final SecureRandom random = new SecureRandom();
 
-    public TokenVault(JdbcClient jdbc, PanCipher cipher) {
+    public TokenVault(JdbcClient jdbc, PanCipher legacyCipher, EnvelopeCipher envelope) {
         this.jdbc = jdbc;
-        this.cipher = cipher;
+        this.legacyCipher = legacyCipher;
+        this.envelope = envelope;
     }
 
     /**
@@ -71,11 +93,14 @@ public class TokenVault {
         String normalised = Pan.normalise(rawPan);
         String token = newToken();
 
-        PanCipher.Encrypted encrypted = cipher.encrypt(normalised, token);
+        EnvelopeCipher.Sealed sealed = envelope.encrypt(normalised, token);
         jdbc.sql(INSERT)
                 .param("token", token)
-                .param("iv", encrypted.iv())
-                .param("cipher", encrypted.ciphertext())
+                .param("iv", sealed.iv())
+                .param("cipher", sealed.ciphertext())
+                .param("wrappedDek", sealed.wrappedKey().ciphertext())
+                .param("dekIv", sealed.wrappedKey().iv())
+                .param("kekVersion", sealed.wrappedKey().kekVersion())
                 .param("bin", fragments.bin())
                 .param("last4", fragments.last4())
                 .param("expiryMonth", expiryMonth)
@@ -101,14 +126,44 @@ public class TokenVault {
         Optional<DetokenizedCard> row = jdbc.sql(SELECT)
                 .param("token", token)
                 .query((rs, n) -> new DetokenizedCard(
-                        cipher.decrypt(
-                                new PanCipher.Encrypted(rs.getBytes("pan_iv"), rs.getBytes("pan_cipher")),
-                                token),
+                        readPan(rs, token),
                         rs.getInt("expiry_month"),
                         rs.getInt("expiry_year")))
                 .optional();
 
         return row.orElseThrow(() -> new UnknownTokenException(token));
+    }
+
+    /**
+     * Reads a PAN in whichever form its row was written.
+     *
+     * <p>{@code kek_version} is the discriminator, and it is the column that
+     * exists rather than a flag that was added: a row with a KEK version has a
+     * wrapped DEK by construction, and a row without one predates the scheme. No
+     * separate "format" column, which would be a second source of truth about
+     * the same fact.
+     */
+    private String readPan(java.sql.ResultSet rs, String token) throws java.sql.SQLException {
+        String kekVersion = rs.getString("kek_version");
+        byte[] panIv = rs.getBytes("pan_iv");
+        byte[] panCipher = rs.getBytes("pan_cipher");
+
+        if (kekVersion == null) {
+            // A row from before phase 9b: encrypted directly under the static
+            // key, no DEK to unwrap.
+            if (legacyCipher == null) {
+                throw new IllegalStateException(
+                        "token " + token + " predates envelope encryption and no legacy key "
+                                + "is configured to read it");
+            }
+            return legacyCipher.decrypt(new PanCipher.Encrypted(panIv, panCipher), token);
+        }
+
+        return envelope.decrypt(
+                new EnvelopeCipher.Sealed(panIv, panCipher,
+                        new KeyRing.WrappedKey(kekVersion, rs.getBytes("dek_iv"),
+                                rs.getBytes("wrapped_dek"))),
+                token);
     }
 
     /**

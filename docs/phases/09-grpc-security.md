@@ -87,10 +87,80 @@ Your existing `Infra-Core` repo's `infra-cryptography` module already has
 AES-GCM, AES-CBC-HMAC, RSA, Argon2 and an `HmacService` — a substantial head
 start worth lifting rather than rewriting.
 
+#### 9b, as built (envelope + rotation; Vault container still outstanding)
+
+**What envelope encryption buys is not secrecy.** `PanCipher` was already
+AES-256-GCM with a per-row nonce and the token as AAD; nothing here makes the
+ciphertext harder to break. What it makes possible is **rotating the key without
+rewriting the data** — and that difference is structural rather than
+cryptographic. With one key applied directly, rotation *is* a full re-encryption:
+a long, stateful, resumable job holding plaintext PANs in memory and touching the
+most sensitive table in the system. Which is why, in practice, systems built that
+way do not rotate until an incident forces them to.
+
+**The claim is asserted, not asserted-in-prose.**
+`VaultRotationTest.aKekRotationRewritesNoCardCiphertextAndLosesNoCard` rotates a
+populated vault and compares every stored `pan_iv || pan_cipher` before and
+after: **byte-identical**. If any card had been rewritten, the rotation would
+have decrypted it and the whole argument would be hollow.
+
+**`rewrap` takes a wrapped key and returns a wrapped key.** It has no parameter
+through which a PAN could reach it, so "rotation never decrypts a card" is
+enforced by the signature rather than promised by a comment. The rotation job
+never selects `pan_cipher` at all.
+
+**Per-record DEKs, not one for the table.** A table-wide DEK would also make
+rotation cheap and would hand back what the scheme buys: one compromised key
+exposing every card. Per-record keys bound the blast radius to one card — and
+they are what makes 9c's crypto-shredding work, since destroying one record's key
+destroys one record's data. The cost is 44 bytes per row; that is the entire
+trade.
+
+**Rotation has no cutover.** Each record names the KEK version that wrapped it,
+so the ring gains a version and the re-wrap job catches up over hours with no
+window in which the vault is partly unreadable.
+`theVaultStaysReadableWhileTheRotationIsOnlyPartlyDone` rotates one row at a time
+and re-reads every card after each. That property is what makes a key rotation
+*boring*, which is the highest praise available for one.
+
+**The append-only grant collided with rotation, and column-level grants resolved
+it.** `01-vault.sql` said, correctly, that there is no `UPDATE` for anyone —
+"no code path can quietly rewrite the card behind an existing token". Rotation
+needs `UPDATE`. Granting it on the table gives away the property that was the
+point; moving DEKs to a second table adds a join to the detokenization path to
+work around a permissions problem. Instead `vault_rotator` holds
+`UPDATE (wrapped_dek, dek_iv, kek_version)` and nothing else: **structurally
+incapable of altering a card**, whatever it is asked to do.
+
+**The one migration this scheme cannot make cheap is the migration into it.**
+Pre-9b rows were encrypted directly under the static key and have no DEK to
+re-wrap. `kek_version IS NULL` marks them, `PanCipher` is retained solely to read
+them, and `VaultRotation` *counts* them rather than skipping them silently —
+because the obvious predicate `WHERE kek_version <> :current` is UNKNOWN for a
+NULL in SQL's three-valued logic, so every legacy row would be quietly excluded
+by a job reporting success.
+
+**What is NOT done, stated rather than implied.** The KEK is **local key material
+in configuration**, not held in Vault or a KMS. A real deployment performs the
+unwrap *inside* the key store so the KEK never enters this process — which is the
+property that makes a memory dump of the service uninteresting. That needs the
+Vault container and is outstanding. What is *not* deferred is the design: the
+schema, the per-record DEKs, the version-naming and the rotation are the
+expensive things to retrofit, and they are real. Swapping wrap/unwrap for a Vault
+call is a change to two methods; changing a schema that assumed one static key is
+a change to every row.
+
 ### Exit criteria
 
-- [ ] Vault-backed envelope encryption on the token vault
-- [ ] **A demonstrated KEK rotation** — old records still readable, no bulk rewrite
+- [~] Vault-backed envelope encryption on the token vault — 9b. Envelope
+      encryption is built, wired and tested; the KEK is **local key material,
+      not Vault-held**, and the Vault container is outstanding. Said plainly
+      because the phase's own trap list asks for it
+- [x] **A demonstrated KEK rotation** — old records still readable, no bulk
+      rewrite. 9b. `VaultRotationTest` rotates a populated vault and asserts
+      every card ciphertext is byte-identical afterwards, that the vault reads
+      correctly at every point of a partial rotation, and that a retired key
+      version makes exactly the rows still naming it unreadable
 - [ ] mTLS between all internal services
 - [ ] API keys hashed at rest, rotation demonstrated
 
@@ -100,7 +170,23 @@ start worth lifting rather than rewriting.
 are running and why.
 
 **Storing the DEK next to the ciphertext unencrypted.** The DEK must be stored
-*wrapped*. Easy to get right, easy to get subtly wrong.
+*wrapped*. Easy to get right, easy to get subtly wrong — the subtly wrong version
+is a refactor that stores the key it just generated instead of the wrapped one,
+and every other test still passes. `theStoredKeyIsWrappedAndNotTheKeyItself`
+tries to decrypt using the stored bytes directly and requires it to fail.
+
+**`WHERE kek_version <> :current` misses every legacy row.** SQL three-valued
+logic makes that predicate UNKNOWN for a NULL, so a rotation job written that way
+reports success over rows it never looked at. Found in 9b; the fix is
+`IS NULL OR <>`, and counting the ones that can never move.
+
+**Assuming an append-only grant and key rotation can coexist.** They cannot at
+table granularity. Column-level `GRANT UPDATE (…)` is the resolution, and it is a
+stronger control than the table-level one it replaces.
+
+**Comparing `byte[]` values inside a `Map` with `isEqualTo`.** Reference
+equality — the assertion fails whether or not the bytes changed, and says nothing
+about the thing under test. Cost one debugging round in 9b's headline test.
 
 **Nonce reuse with AES-GCM.** Catastrophic — it leaks the XOR of plaintexts.
 Generate per-encryption, never reuse a nonce under the same key.

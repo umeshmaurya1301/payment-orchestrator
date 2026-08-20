@@ -11,15 +11,29 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * {@code SELECT, INSERT}; {@code psp-connector} supplies one with {@code SELECT}
  * only. Nothing else in the system has any grant on the vault schema.
  *
- * @param key              base64 of 32 raw bytes, the AES-256 key
+ * @param key              base64 of 32 raw bytes. Phase 1's single static key,
+ *                         retained ONLY to read rows written before phase 9b -
+ *                         nothing encrypts through it any more. Optional: a
+ *                         deployment with no legacy rows does not need it
+ * @param keys             the KEK ring, {@code version -> base64 key}. Several
+ *                         versions may be present at once, which is what makes
+ *                         rotation gradual rather than a cutover
+ * @param currentKey       the ring version new records are wrapped under
  * @param verifyOnStartup  whether to prove the vault table is reachable during
  *                         startup rather than on the first payment
  * @param datasource       the vault connection
  */
 @ConfigurationProperties(prefix = "payorch.vault")
-public record VaultProperties(String key, Boolean verifyOnStartup, Datasource datasource) {
+public record VaultProperties(String key,
+                              java.util.Map<String, String> keys,
+                              String currentKey,
+                              Boolean verifyOnStartup,
+                              Datasource datasource) {
 
     public VaultProperties {
+        if (keys == null) {
+            keys = java.util.Map.of();
+        }
         // Boxed, and defaulted here rather than declared as a primitive.
         // Constructor binding gives an absent primitive boolean the value
         // false, so a primitive would make "not configured" mean "skip the

@@ -17,6 +17,36 @@ name: payorch
 # data, so a mismatched key fails the tag check and every detokenization throws.
 # A local development value in a committed file, deliberately - phase 9c is where
 # secrets stop being literals and the static key becomes envelope encryption.
+# The KEK. Phase 9b turned this from "the key the PAN is encrypted under" into
+# "the key the PAN's own key is wrapped under", which is what makes it
+# rotatable.
+#
+# HOW TO ROTATE IT, since the whole point is that this is now cheap:
+#
+#   1. Add a second version to the ring on BOTH services that hold vault
+#      credentials, keeping the old one:
+#
+#        VAULT_KEYS_V1: <the value below>
+#        VAULT_KEYS_V2: $(openssl rand -base64 32)
+#        VAULT_CURRENT_KEY: v2
+#
+#      New records are wrapped under v2 immediately. Old ones stay readable,
+#      because v1 is still on the ring - there is no cutover.
+#
+#   2. Run the re-wrap. It moves 48 bytes per row and never decrypts a card.
+#
+#   3. Check VaultRotation.remaining() reports nothing left on v1, THEN remove
+#      it. Removing it earlier makes those cards permanently unreadable, which
+#      is a failure here and is deliberately the mechanism of phase 9c's
+#      crypto-shredding.
+#
+# A single value with no version, as below, is treated as version "v1" - so an
+# existing deployment gains envelope encryption for every new record without
+# any configuration change at all, and gains a rotation story the moment
+# somebody adds a second version.
+#
+# A local development key, like every other secret here. It is committed on
+# purpose and it is not a real one.
 x-vault-key: &vault-key "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
 
 x-java-service: &java-service

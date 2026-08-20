@@ -161,6 +161,33 @@ drain_outbox() {
     echo " STILL PENDING: $(outbox_pending)"
 }
 
+# Waits for the ledger to RECORD the reversal, which is not the same moment the
+# provider performs it.
+#
+# The first run of this script asserted immediately after disarming the seam and
+# reported six failures against a saga that was working perfectly. The reversal
+# events are published while the seam is still armed, so they fail their first
+# attempt and go onto the ladder like everything else - and they are then serving
+# a 5s, 1m or 10m timer that was set BEFORE the cause was fixed. Experiment 15
+# wrote that lesson down ("fixing the cause quickly does not mean recovering
+# quickly") and this script did not apply it.
+#
+# Measured on the run that found it: tombstones and both reversal legs were
+# present and correct minutes later, with the books balanced and no drift. The
+# only thing wrong was when the question was asked.
+wait_for_reversal_posted() {
+    local want="$1" budget="${2:-900}" elapsed=0
+    echo -n "   waiting for the ledger to record the reversals"
+    while [[ "$elapsed" -lt "$budget" ]]; do
+        [[ "$(( $(ledger_field compensation.reversedCaptures) - ${TOMB0:-0} ))" -ge "$want" ]]             && { echo " done (${elapsed}s)"; return 0; }
+        echo -n "."
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
+    echo " TIMED OUT at $(( $(ledger_field compensation.reversedCaptures) - ${TOMB0:-0} ))/${want}"
+    return 1
+}
+
 # Waits for the ladder to give up and the saga to answer. Both, in one loop,
 # because the interesting failure is the ladder finishing and nothing happening.
 wait_for_compensation() {
@@ -172,7 +199,7 @@ wait_for_compensation() {
         d="$(offsets $DLQ)"
         c="$(ledger_field compensation.requested)"
         f="$(ledger_field compensation.failed)"
-        r="$(pq "SELECT COUNT(*) FROM payment WHERE state = 'REVERSED';")"
+        r="$(( $(pq "SELECT COUNT(*) FROM payment WHERE state = 'REVERSED';") - ${REV0:-0} ))"
         printf "   %-8s %8s %8s %8s %8s\n" "${elapsed}s" "$d" "$c" "$f" "$r"
         [[ "${r:-0}" -ge "$want" ]] && { echo "   (settled)"; return 0; }
         sleep 30
@@ -259,6 +286,21 @@ chk "no pre-existing drift" "${D0}" "0"
 # quietly disabled the second time somebody uses it.
 CDLQ0="$(offsets $COMP_DLQ)"
 
+# The REVERSED count is global, not scoped to this run's payments, so it has to
+# be a delta or the second run of this script short-circuits at t=0 against
+# reversals the FIRST run performed. Same class as CDLQ0 above; missed because
+# the script had only ever been run on an empty database.
+REV0="$(pq "SELECT COUNT(*) FROM payment WHERE state = 'REVERSED';")"
+export REV0
+
+# reversedCaptures counts rows in reversed_capture, so it SURVIVES a restart of
+# the ledger - unlike requested/failed/skipped, which are per-process. Restarting
+# the service for a clean baseline therefore zeroes three of the four compensation
+# counters and not the fourth, which is a trap worth naming rather than working
+# around silently.
+TOMB0="$(ledger_field compensation.reversedCaptures)"
+export TOMB0
+
 # --------------------------------------------------------------- arm A ------
 
 declare -a IDS=()
@@ -301,6 +343,9 @@ if [[ "$ARM" == "both" || "$ARM" == "compensate" || "$ARM" == "replay" ]]; then
     wait_for_compensation "$N" 900
     disarm_seam
 
+    # THE LADDER IS STILL HOLDING THE REVERSAL EVENTS. See the helper.
+    wait_for_reversal_posted "$N" 900
+
     reversed=0
     for id in "${IDS[@]}"; do
         [[ "$(state_of "${id}")" == "REVERSED" ]] && reversed=$((reversed+1))
@@ -311,7 +356,7 @@ if [[ "$ARM" == "both" || "$ARM" == "compensate" || "$ARM" == "replay" ]]; then
     chk "compensations requested" "$(ledger_field compensation.requested)" "${N}"
     chk "compensations that could not be published" "$(ledger_field compensation.failed)" "0"
     chk "compensations correctly skipped" "$(ledger_field compensation.skipped)" "0"
-    chk "tombstones written" "$(ledger_field compensation.reversedCaptures)" "${N}"
+    chk "tombstones written" "$(( $(ledger_field compensation.reversedCaptures) - TOMB0 ))" "${N}"
     # Anything here is a compensation the PROVIDER refused - an unresolved
     # disagreement about real money, sitting where a person will find it. Zero
     # is the only passing value, and it is a different zero from the one above:

@@ -243,16 +243,21 @@ Alerts on **consumer lag** and **DLQ depth**.
       resolved 210 s after the backlog cleared; arm 2 fired on no-data at
       t+390 s; arm 3 fired at t+180 s and resolved at t+510 s
 
-- [ ] The saga compensates a capture the ledger could not record —
-      `tools/loadtest/saga-reversal.sh`, three arms.
-      **Written, not yet run**: the implementation is complete and unit-tested
-      (343 tests, 0 failures) but the stack was unavailable when it was built, so
-      there are no measured numbers and none have been invented. See
-      [experiment 16](../experiments/16-compensating-reversal.md) for the
-      hypotheses and what each arm asserts. Arm B is the one worth reading — it
-      replays the DLQ *after* the reversal, which is a person using the phase-6f
-      feature correctly and would silently corrupt two accounts without a
-      tombstone
+- [x] The saga compensates a capture the ledger could not record —
+      `tools/loadtest/saga-reversal.sh`, three arms, all passing.
+      **Run on 2026-08-20.** At p=1.0 all 8 captures succeed at the provider and
+      every capture event walks 5s + 1m + 10m into the DLQ — visible as a DLQ
+      flat at 46 for ten minutes and then **+8 at 630s**, with 8 compensations
+      and 8 payments `REVERSED` in the same sample. The ledger records
+      `MERCHANT_REVERSAL -33,600` against `CLEARING_REVERSAL +33,600`, four legs
+      per payment netting to zero, 8 tombstones, imbalance 0, drift 0. Replaying
+      the DLQ afterwards — the operator helping — changes **nothing**: no new
+      legs, no second compensation, payment still `REVERSED`. And arm C proves
+      the guard: a capture whose ledger write SUCCEEDED and whose webhook
+      dead-lettered is **skipped**, not reversed, because taking money back to
+      fix somebody else's HTTP 502 is the compensation causing the incident.
+      Three runs were needed; the two that failed are written up in experiment 16
+      and neither was the saga
 
 "Ledger converges to correct balances" is the criterion that actually tests the
 saga and the retry tiers together.

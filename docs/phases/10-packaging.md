@@ -166,7 +166,14 @@ Every number should be traceable to a page in `docs/experiments/`.
 
 ## Exit criteria
 
-- [ ] README opens with the architecture diagram and the traffic-shift graph
+- [x] README opens with the architecture diagram and the traffic-shift graph —
+      the graph has been there since phase 5; the diagram was added in 9d, as a
+      mermaid flowchart rather than an image so it survives a diff and cannot
+      drift from the compose file unnoticed. It marks the two boundaries that
+      are the actual design: the **dashed edges are the only paths a card number
+      travels** (three places, two databases with disjoint credentials), and the
+      **double line is the atomicity boundary** where the state change and the
+      owed event are one transaction
 - [~] Every experiment has a page with all five sections, including "what
       surprised you". Audited in 10b: **five pages (04–08) have no such
       section**, though each contains the material. Not written on the

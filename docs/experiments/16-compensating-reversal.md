@@ -2,15 +2,12 @@
 
 **Phase 6k.** `tools/loadtest/saga-reversal.sh`
 
-> **Status: NOT YET RUN.**
+> **Status: run on 2026-08-20. All three arms pass.** Numbers below are measured.
 >
-> The implementation is complete and unit-tested (343 tests, 0 failures). The
-> experiment below is written — hypotheses, arms and assertions — and has not
-> been executed against a live stack, because Docker was unavailable in the
-> session that built it. There are no measured numbers in this document and
-> none will be added until the script has actually run. Every other write-up in
-> this directory reports what happened; this one reports what is expected to,
-> and the difference is marked rather than blurred.
+> It took three attempts, and the first two failed for reasons that had nothing
+> to do with the saga. Both are recorded in *What surprised me* rather than
+> tidied away, because one of them is a defect in this experiment repeating a
+> lesson a previous experiment had already written down.
 
 ---
 
@@ -110,6 +107,166 @@ card-network gets debited for a capture that no longer exists, permanently, with
 
 Only the tombstone can see this. Arm B is the difference between a compensation
 and a compensation that survives somebody trying to help.
+
+
+## Actual result
+
+### A. The compensation fires, and the ladder is exactly as long as it says
+
+```
+   t             DLQ     comp   failed reversed
+   -------- -------- -------- -------- --------
+   0s             46        0        0        0
+   ...       (flat for ten minutes)
+   600s           46        0        0        0
+   630s           54        8        0        8
+   (settled)
+   waiting for the ledger to record the reversals ...... done (60s)
+
+   ok   every payment reached REVERSED                       8
+   ok   compensations requested                              8
+   ok   compensations that could not be published            0
+   ok   compensations correctly skipped                      0
+   ok   tombstones written                                   8
+   ok   compensations the provider refused                   0
+   ok     the capture pair was never posted                  0
+   ok     the reversal debited the merchant                  1
+   ok     the reversal credited clearing                     1
+   ok     four legs in total                                 4
+   ok     the payment nets to zero across all accounts       0
+   ok   the books still balance                              0
+   ok   no account has drifted                               0
+```
+
+The DLQ sits flat at 46 for ten minutes and then takes all eight at once. That is
+the ladder being real: 5s + 1m + 10m = 665s, and the arrival lands at 630s on a
+30-second sample. Nothing about the wait is faked, which is the whole reason this
+experiment takes half an hour.
+
+The ledger's own view, straight from the database afterwards:
+
+```
+MERCHANT_REVERSAL    8    -33,600
+CLEARING_REVERSAL    8    +33,600
+imbalance                       0
+```
+
+Eight payments of 4,200 minor units each, out and back. Every account returns to
+zero for those payments, which is the correct end state for money that left the
+cardholder and came back — the books should end up saying nothing happened.
+
+### B. The operator helps, and nothing happens
+
+```
+   replayed 8 records from the DLQ
+   ok   the replay posted no new legs                        4
+   ok   the payment still nets to zero                       0
+   ok   still no capture pair                                0
+   ok   the payment is still REVERSED                        REVERSED
+   ok   no account has drifted                               0
+   ok   the replay requested no new compensations            8
+```
+
+This is the arm that justifies the tombstone. The replayed capture events have
+**never been posted**, so `existsByEventId` is false and the unique constraint
+would happily accept both legs. Every idempotency defence the ledger has says go
+ahead. Only the tombstone refuses, and `the replay posted no new legs 4` is it
+working — four legs before, four after.
+
+The last line is the subtle one: `the replay requested no new compensations 8`
+means the counter did not move. A replayed capture that was ignored must not
+raise a *second* compensation, or an operator being helpful would reverse an
+already-reversed payment.
+
+
+### C. The failure the compensation could have caused
+
+```
+   ok   the capture pair WAS posted                          1
+   ok   the guard skipped it                                 1
+   ok   no compensation was requested                        0
+   ok   the payment is still CAPTURED                        CAPTURED
+```
+
+This arm is the one that makes arm A mean something. A capture can reach the DLQ
+with its ledger entries **already posted** — the write succeeds and the webhook
+then fails four times because a merchant's endpoint is down. The books are
+complete; the merchant simply has not been told.
+
+Reversing on that basis would take back money the ledger says is owed, in order
+to fix somebody else's HTTP 502 — the compensation causing the incident it exists
+to prevent. `state == CAPTURED && !ledger.hasEntryFor(eventId)` is what
+distinguishes the two, and the run confirms both halves fire independently:
+`skipped` incremented, `requested` did not.
+
+Without this arm, arm A's green result says only *"the machinery fires"*, not
+*"it fires when it should"*.
+
+## What surprised me
+
+**Two of the three runs failed, and neither failure was the saga.** That is the
+whole story of this page.
+
+**Run 1 — the providers were three separate images.** Every compensation was
+refused, and the script said so: `compensations the provider refused: 8`. No
+provider had seen one. `mock-psp-a/b/c` build to their own images
+(`payorch-mock-psp-a`, `-b`, `-c`), not the simulator's, so rebuilding
+`mock-psp-simulator` left the three that routing actually uses on pre-6k code
+with no `/psp/v1/reverse`. Every reversal 404'd, the connector turned that into
+502 `provider_unavailable`, and the orchestrator's `ConnectorUnavailableException`
+dead-lettered all eight compensations.
+
+The diagnostic detail worth keeping: **nothing logged.** The exception was thrown
+by `connector.reverse(...)` before reaching the branch that logs "the provider
+refused to reverse a capture", so `PaymentService` never said a word and the
+orchestrator's log was clean. The only evidence anywhere was the exception FQCN
+in the headers of `payment.compensation.dlq`. A counter named "the provider
+refused" counted eight refusals from a provider that was never contacted.
+
+**Run 2 — the experiment repeated a lesson experiment 15 had already written
+down.** Arm A disarms the chaos seam and asserts on the next line. But the
+`payment.reversed` events are published *while the seam is still armed*, so they
+fail their first attempt and go onto the ladder like everything else — and are
+then serving a 5s, 1m or 10m timer that was set **before** the cause was fixed.
+Experiment 15 states this exactly: *"fixing the cause quickly does not mean
+recovering quickly — the record is serving a timer that was set before you fixed
+anything."* The author of that sentence wrote this script and did not apply it.
+
+Six assertions failed against a saga that was working perfectly. Checking the
+database directly showed all eight tombstones, both reversal legs, balanced books
+and zero drift — the only thing wrong was **when the question was asked**. The
+fix is a `wait_for_reversal_posted` helper, and the run above reports what that
+wait actually cost: **60 seconds**, the 1-minute tier.
+
+**I called it a product defect before it was one.** After the first check came
+back empty I concluded the ledger never posted reversals, and said so. The check
+was simply too early. The evidence arrived four minutes later and said the
+opposite. Worth recording because the failure mode is specific to this kind of
+system: on a 5s/1m/10m ladder, "I looked and it wasn't there" is not evidence of
+absence, and the instinct to escalate from *timing* to *defect* after one look is
+exactly wrong.
+
+**Re-running an experiment is a different test from running it.** Two of the
+three script bugs only appear on a second run against a non-empty database:
+`wait_for_compensation` counted **global** `REVERSED` payments rather than this
+run's, so it short-circuited at t=0 against the previous run's eight; and
+`reversedCaptures` reads the `reversed_capture` table, so it **survives** the
+ledger restart that zeroes the other three compensation counters. Restarting for
+a clean baseline zeroes three of four. Every experiment here that has only ever
+been run once may carry the same class of bug.
+
+**The 6h guardrail fired, and it was right.** Enabling webhooks for arm C made
+the ledger refuse to start: `payorch.webhooks.sign is on and
+payorch.webhooks.secret is empty`. That is phase 6h's deliberate fatal-on-startup
+rather than a silent downgrade to unsigned, meeting its first real operator —
+me — and behaving exactly as its javadoc argued it should.
+
+
+**Arm C needed the stack broken in a specific way, and the script says so rather
+than skipping quietly.** It refuses to run without `WEBHOOKS_ENABLED=true` and a
+stopped sink, printing the two commands that produce that state. A guard arm that
+silently no-ops is worse than one that does not exist, because the run still
+reports PASS.
 
 ## The window this does **not** close
 

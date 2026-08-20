@@ -6,13 +6,80 @@ Built in phases, where each resilience component is added **only after the
 failure it prevents has been observed and measured**. Every phase from 3 onward
 produces a before/after graph in [`docs/experiments/`](docs/experiments/).
 
-> **Status: phases 0–4 complete, phase 5 all but one criterion, phase 6
-> implementation complete (6a–6k) with every exit criterion met except the
-> saga's, which is built and unit-tested but not yet measured.** Fifteen
-> experiments with a measured before and after, plus one written and not yet
-> run, in [`docs/experiments/`](docs/experiments/), and eight decision records
-> in [`docs/adr/`](docs/adr/) — two of which conclude against the component they
-> document.
+> **Status: phases 0–4 complete, phase 5 all but one criterion, phase 6 complete
+> — every exit criterion met and measured.** Sixteen experiments with a measured
+> before and after in [`docs/experiments/`](docs/experiments/), and eight
+> decision records in [`docs/adr/`](docs/adr/) — two of which conclude against
+> the component they document.
+
+## The system
+
+```mermaid
+flowchart LR
+  M(["merchant"])
+
+  subgraph sync["synchronous path — a merchant is waiting"]
+    direction LR
+    E["payments-edge<br/>:8080"]
+    O["payment-orchestrator<br/>:8081"]
+    R["psp-router<br/>:8082"]
+    C["psp-connector<br/>:8083"]
+  end
+
+  subgraph psp["providers — somebody else's system"]
+    P["mock-psp<br/>a / b / c"]
+  end
+
+  subgraph async["async spine — nobody is waiting"]
+    direction LR
+    K[["payment.events"]]
+    L["ledger-notifier<br/>:8084"]
+    LAD[["retry 5s → 1m → 10m<br/>→ dlq → compensation"]]
+  end
+
+  VAULT[("payorch_vault<br/>vault_writer / vault_reader")]
+  KEK[("payorch_kek<br/>kek_user")]
+  ODB[("payorch<br/>payments + outbox")]
+  LDB[("payorch_ledger<br/>balances")]
+  MG[("mongo<br/>journal")]
+  W(["merchant webhook<br/>HMAC signed"])
+
+  M -->|"API key + idempotency key"| E
+  E -->|"token — never a PAN"| O
+  O <-->|"which provider?"| R
+  O -->|"authorize / capture"| C
+  C --> P
+
+  E -.->|"tokenize"| VAULT
+  C -.->|"detokenize"| VAULT
+  E -.-> KEK
+  C -.-> KEK
+
+  O ==>|"outbox row, same transaction<br/>as the state change"| ODB
+  ODB ==>|"polling relay · Debezium CDC"| K
+  K --> L
+  L --> LAD
+  LAD -.->|"reverse the capture"| O
+  L --> LDB
+  L --> MG
+  L -->|"at-least-once"| W
+
+  classDef card stroke-dasharray:4 3
+  class VAULT,KEK card
+```
+
+**The dashed edges are the only paths a card number travels.** It exists in
+exactly three places — `payments-edge` at intake, `payorch_vault` at rest, and
+`psp-connector` for the duration of one provider call — and the two databases
+carry disjoint credentials, so no single account yields both the ciphertext and
+the key that opens it. Everything to the right of the edge holds a token.
+
+**The double line is the atomicity boundary.** The payment's state change and
+the fact that an event is owed are one transaction against one database; the
+relay turns the second into a consequence of the first rather than a sibling of
+it. [Experiment 10](docs/experiments/10-outbox.md) measures what the naive
+version costs: 20 of 60 payments lost their events, permanently, in a 30-second
+broker outage.
 
 ## The graph
 

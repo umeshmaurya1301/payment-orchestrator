@@ -616,13 +616,35 @@ connections flat at `maximum-pool-size`, throughput flat, latency climbing.
       inside the provider call by a barrier: one 200, one 409, one `CAPTURED`,
       exactly one `payment.captured` outbox row — and **two** provider calls,
       which is the part worth knowing
-- [~] Deadlock reproduced on command, then eliminated — **both documented**.
+- [x] Deadlock reproduced on command, then eliminated — **both documented**.
       7e. `LedgerDeadlockTest` reproduces it deterministically with the
       sleep-in-held-lock seam and shows a consistent lock order removing it,
-      with both implementations kept runnable. **The `SHOW ENGINE INNODB
-      STATUS` capture the criterion also asks for is missing**: these run
-      against H2, which detects the cycle and breaks it but is not InnoDB, and
-      the compose stack was unavailable. Not written from memory
+      with both implementations kept runnable. The `SHOW ENGINE INNODB STATUS`
+      capture the criterion also asks for is now real —
+      `tools/loadtest/innodb-deadlock.sh`, **run on 2026-08-21** against the
+      live MySQL, because H2 detects the cycle but is not InnoDB and writing
+      the artefact from memory would be inventing evidence:
+
+      ```
+      LATEST DETECTED DEADLOCK
+      *** (1) TRANSACTION:
+      TRANSACTION 1145277, ACTIVE 3 sec starting index read
+      RECORD LOCKS ... index PRIMARY of table `payorch_ledger`.`ledger_account`
+                       lock_mode X locks rec but not gap waiting
+      *** (2) TRANSACTION:
+      TRANSACTION 1145278, ACTIVE 3 sec starting index read
+      RECORD LOCKS ... index PRIMARY of table `payorch_ledger`.`ledger_account`
+                       lock_mode X locks rec but not gap waiting
+      ```
+
+      Two transactions, the same two rows, opposite order, `ERROR 1213` to
+      exactly one of them. The script forces the bad order **by hand rather than
+      through the application**, because `LedgerPosting.legsFor` returns its
+      legs in a fixed order per state — `merchant, clearing` for both AUTHORIZED
+      and REVERSED — so no two concurrent postings can hold each other's next
+      lock. It also asserts `ledger_entry` is unchanged: the contending updates
+      add zero, which still takes the exclusive row lock without moving money to
+      prove a point about locking
 - [x] Parallel fan-out across three providers, in both shapes, with the
       request deadline propagating into every forked subtask — 7f. Twelve
       tests, asserting timing and cancellation rather than protocol: a

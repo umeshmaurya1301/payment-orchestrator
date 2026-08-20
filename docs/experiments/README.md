@@ -85,6 +85,9 @@ the **bean**. They are not interchangeable.
 | `tools/loadtest/trace-propagation.sh` | Sends a payment with a trace id it CHOSE, then asks logs, ClickHouse and the ledger where that id appears. Also fails one delivery on purpose, to check the retry topic stays in the same trace |
 | `tools/loadtest/webhook-security.sh` | Forges, tampers with and replays webhooks against a merchant endpoint written in another language, across four receiver configurations |
 | `tools/obs/async-alert-drill.sh` | Makes the lag and DLQ alerts fire and resolve three ways: a slow consumer, a frozen one, and unhandled dead letters. Refuses to start unless both rules are already quiet |
+| `tools/loadtest/graceful-drain.sh` | SIGTERMs the orchestrator mid-payment at two grace periods one flag apart, and slows the providers first so there is something in flight to lose |
+| `tools/loadtest/innodb-deadlock.sh` | Forces two transactions to take the same two rows in opposite order and captures InnoDB's own account of the deadlock - the artefact H2 cannot produce |
+| `tools/loadtest/saga-reversal.sh` | Dead-letters a capture the ledger cannot record and checks the compensation reverses it, survives a DLQ replay, and does NOT fire when the books were already correct |
 | `tools/loadtest/capture-ledger.sh` | Authorizes, captures, and checks the clearing account against an exact expected total - which is what caught a two-day silent balance corruption |
 
 Bean-level chaos and the bespoke seams are actuator endpoints contributed by

@@ -73,9 +73,25 @@ env_of() {
 # stop_grace_period as Docker actually holds it, in seconds. Compose writes it
 # to the container label; reading the label rather than the compose file is the
 # point, because the running container is what will receive the signal.
+# .Config.StopTimeout, in SECONDS, not the compose label.
+#
+# The first version of this read
+# .Config.Labels["com.docker.compose.stop_grace_period"], which this version of
+# Compose does not emit - so it came back empty on a stack whose
+# stop_grace_period was correctly set to 45s, and the preflight refused to run
+# saying "this is the phase-7i bug". A check written to catch a missing grace
+# period reported it missing on every correctly configured stack: a false
+# negative in the one direction that matters, because it would have hidden a
+# real regression behind a failure everybody had learned to expect.
+#
+# StopTimeout is what `docker stop` actually honours, so it is also the only
+# value worth asserting on.
 grace_of() {
-    docker inspect "$1" --format '{{index .Config.Labels "com.docker.compose.stop_grace_period"}}' \
-        2>/dev/null | tr -d '\r'
+    local t
+    t="$(docker inspect "$1" --format '{{.Config.StopTimeout}}' 2>/dev/null | tr -d '')"
+    # Go renders an unset *int as "<no value>"; Docker's own default is then 10s.
+    [[ -z "$t" || "$t" == "<no value>" || "$t" == "0" ]] && return 0
+    echo "${t}s"
 }
 
 chk() {
@@ -133,14 +149,48 @@ wait_healthy() {
     FAIL=$((FAIL+1))
 }
 
+# THE PROVIDER HAS TO BE SLOW, OR THIS EXPERIMENT MEASURES NOTHING.
+#
+# The first run of this drill passed both arms with zero stranded payments, and
+# it was worthless. Against a provider answering in ~200ms the whole burst
+# completes inside ten seconds, so at the moment Docker sends SIGKILL there is
+# nothing in flight to lose. Arm B reported "exit 137 - drain was cut off" and
+# "0 stranded" in the same breath: the mechanism fired and there was no cargo.
+#
+# An arm whose job is to reproduce harm, and which cannot fail, is the same
+# problem as an alert that never fires. So the provider is slowed to 18s - well
+# inside the 30s deadline budget, so these are legitimate in-flight requests and
+# not timeouts - which guarantees requests are still running when the axe falls.
+#
+# Measured with it, same load, one flag apart:
+#   -t 45   stop took 27s, exit 143, AUTHORIZED=52,                 0 stranded
+#   -t 10   stop took 11s, exit 137, AUTHORIZED=40 AUTHORIZING=12, 12 stranded
+SLOW_PROVIDER_MS="${SLOW_PROVIDER_MS:-18000}"
+
+set_provider_latency() {
+    local ms="$1"
+    for port in 8085 8086 8087 8088; do
+        curl -s -o /dev/null --max-time 5 -X POST "http://localhost:${port}/_chaos"             -H 'Content-Type: application/json'             -d "{\"latencyMs\":${ms},\"errorRate\":0,\"hangRate\":0,\"duplicateRate\":0}"             2>/dev/null || true
+    done
+}
+
+# Always, even on a failed or interrupted run. A drill that leaves every
+# provider 18 seconds slow would silently ruin the next experiment somebody runs.
+reset_provider_latency() { set_provider_latency 0; }
+trap reset_provider_latency EXIT
+
+
 # One arm: load, signal mid-flight, wait for the restart, count what is stuck.
 run_arm() {
-    local label="$1" timeout="$2" tag="$3"
+    local label="$1" timeout="$2" tag="$3" expect="${4:-none}"
 
     echo
     echo "=============================================================="
     echo " ${label} - docker stop -t ${timeout}"
     echo "=============================================================="
+
+    set_provider_latency "${SLOW_PROVIDER_MS}"
+    echo "   providers slowed to ${SLOW_PROVIDER_MS}ms so requests are genuinely in flight"
 
     send_burst "$tag" &
     local burst=$!
@@ -176,7 +226,27 @@ run_arm() {
 
     note "payments created" "${created}"
     note "final states" "$(states "$tag")"
-    chk "payments stranded in a non-terminal state" "${stuck}" "0"
+    # THE TWO ARMS ASSERT OPPOSITE THINGS, and that is the point.
+    #
+    # Arm A must strand nothing: the fix works. Arm B must strand SOMETHING:
+    # the thing being fixed was real. A version of this drill that demanded
+    # zero from both would report PASS on the run where the provider was fast
+    # enough that arm B had nothing in flight to lose - which is exactly what
+    # the first run of this script did.
+    if [[ "$expect" == "harm" ]]; then
+        if [[ "${stuck:-0}" -gt 0 ]]; then
+            printf "   ok   %-52s %s
+" "stranded, as the pre-7i config must" "${stuck}"
+        else
+            printf "   XX   %-52s %s
+" "arm B stranded nothing - it proved nothing" "${stuck}"
+            echo "        Nothing was in flight when SIGKILL landed. Raise"
+            echo "        SLOW_PROVIDER_MS, or this arm is decorative."
+            FAIL=$((FAIL+1))
+        fi
+    else
+        chk "payments stranded in a non-terminal state" "${stuck}" "0"
+    fi
 }
 
 # ------------------------------------------------------------ preflight -----
@@ -231,14 +301,14 @@ fi
 # ---------------------------------------------------------------- arms ------
 
 [[ "$ARM" == "both" || "$ARM" == "drained" ]] && \
-    run_arm "ARM A - THE CONFIGURED GRACE PERIOD" "$grace_s" "drain-ok"
+    run_arm "ARM A - THE CONFIGURED GRACE PERIOD" "$grace_s" "drain-ok" none
 
 if [[ "$ARM" == "both" || "$ARM" == "cutoff" ]]; then
     echo
     echo "   Arm B reproduces the pre-7i behaviour with a flag rather than a"
     echo "   config edit: -t 10 is Docker's default, which is what this project"
     echo "   was running under while six services claimed a graceful shutdown."
-    run_arm "ARM B - THE OLD TEN-SECOND CUTOFF" 10 "drain-cutoff"
+    run_arm "ARM B - THE OLD TEN-SECOND CUTOFF" 10 "drain-cutoff" harm
 fi
 
 # ---------------------------------------------------------------- verdict ---

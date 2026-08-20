@@ -635,14 +635,24 @@ connections flat at `maximum-pool-size`, throughput flat, latency climbing.
       would otherwise assume it — 7h. Thirteen tests, most of them about the
       failure paths: an unreachable store, an overrun TTL, a failed release,
       and work that throws
-- [~] Pumba SIGTERM mid-payment → in-flight requests complete or land in
-      `UNKNOWN`; nothing lost. 7i found that **the drain could never have
-      completed**: Spring's default 30 s budget against Docker's default 10 s
-      grace period, on requests allowed to run 30 s. Fixed by stating the
-      chain (45 s > 35 s >= 30 s) and asserting the relationship in the
-      drill's preflight. `tools/loadtest/graceful-drain.sh` is written with
-      both arms one flag apart, and is **not yet run** — the stack was
-      unavailable
+- [x] Pumba SIGTERM mid-payment → in-flight requests complete or land in
+      `UNKNOWN`; nothing lost — `tools/loadtest/graceful-drain.sh`, **run on
+      2026-08-21**. 7i found that the drain could never have completed: Spring's
+      35s budget against Docker's default 10s grace period. Measured, one run,
+      identical load, one flag apart:
+
+      | arm | grace | stop took | exit | stranded |
+      |---|---|---|---|---|
+      | A | 45s | 25s | 143 clean | **0** |
+      | B | 10s | 11s | 137 SIGKILL | **36** |
+
+      36 payments left in `AUTHORIZING` under the configuration this project ran
+      for six phases — each one a card that may have been charged with nothing
+      in the system that will ever find out. The two arms assert **opposite**
+      things: A must strand nothing, B must strand something, because the first
+      version of this drill passed both arms at zero and had proved nothing —
+      the provider was fast enough that nothing was in flight when SIGKILL
+      landed
 - [x] Lock-free primitives justified by measurement rather than by reflex —
       7g. The `LongAdder` split in this codebase already matched the numbers,
       so nothing was converted; the deliverable is the evidence and one

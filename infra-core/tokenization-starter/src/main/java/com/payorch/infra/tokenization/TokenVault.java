@@ -42,14 +42,14 @@ public class TokenVault {
 
     private static final String INSERT = """
             INSERT INTO token_vault
-                (token, pan_iv, pan_cipher, wrapped_dek, dek_iv, kek_version,
+                (token, pan_iv, pan_cipher, wrapped_dek, dek_iv, key_scope, kek_version,
                  bin, last4, expiry_month, expiry_year)
-            VALUES (:token, :iv, :cipher, :wrappedDek, :dekIv, :kekVersion,
+            VALUES (:token, :iv, :cipher, :wrappedDek, :dekIv, :keyScope, :kekVersion,
                     :bin, :last4, :expiryMonth, :expiryYear)
             """;
 
     private static final String SELECT = """
-            SELECT pan_iv, pan_cipher, wrapped_dek, dek_iv, kek_version,
+            SELECT pan_iv, pan_cipher, wrapped_dek, dek_iv, key_scope, kek_version,
                    expiry_month, expiry_year
             FROM token_vault WHERE token = :token
             """;
@@ -88,18 +88,29 @@ public class TokenVault {
      * @throws IllegalArgumentException if the card number is not plausible.
      *         Never includes the input in its message.
      */
-    public TokenizedCard tokenize(String rawPan, int expiryMonth, int expiryYear) {
+    /**
+     * @param keyScope the erasure boundary - the merchant. Phase 9c. Every card
+     *        tokenized under a scope becomes permanently unreadable the moment
+     *        that scope's key material is destroyed, in every copy of this table
+     *        that exists anywhere, without any of those copies being touched.
+     *        Passing {@link KeyRing#SHARED_SCOPE} opts a record OUT of
+     *        individual erasure, which is occasionally right and is never the
+     *        default anybody should reach for absent-mindedly.
+     */
+    public TokenizedCard tokenize(String rawPan, int expiryMonth, int expiryYear,
+                                  String keyScope) {
         Pan fragments = Pan.of(rawPan);
         String normalised = Pan.normalise(rawPan);
         String token = newToken();
 
-        EnvelopeCipher.Sealed sealed = envelope.encrypt(normalised, token);
+        EnvelopeCipher.Sealed sealed = envelope.encrypt(normalised, token, keyScope);
         jdbc.sql(INSERT)
                 .param("token", token)
                 .param("iv", sealed.iv())
                 .param("cipher", sealed.ciphertext())
                 .param("wrappedDek", sealed.wrappedKey().ciphertext())
                 .param("dekIv", sealed.wrappedKey().iv())
+                .param("keyScope", sealed.wrappedKey().keyScope())
                 .param("kekVersion", sealed.wrappedKey().kekVersion())
                 .param("bin", fragments.bin())
                 .param("last4", fragments.last4())
@@ -159,10 +170,16 @@ public class TokenVault {
             return legacyCipher.decrypt(new PanCipher.Encrypted(panIv, panCipher), token);
         }
 
+        // key_scope is NULL for rows written by phase 9b, before scoping
+        // existed. They belong to the shared scope by definition - there was
+        // only one key - and reading them that way is what lets 9b deployments
+        // adopt 9c without a rewrite.
+        String keyScope = rs.getString("key_scope");
         return envelope.decrypt(
                 new EnvelopeCipher.Sealed(panIv, panCipher,
-                        new KeyRing.WrappedKey(kekVersion, rs.getBytes("dek_iv"),
-                                rs.getBytes("wrapped_dek"))),
+                        new KeyRing.WrappedKey(
+                                keyScope == null ? KeyRing.SHARED_SCOPE : keyScope,
+                                kekVersion, rs.getBytes("dek_iv"), rs.getBytes("wrapped_dek"))),
                 token);
     }
 

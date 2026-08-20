@@ -218,12 +218,66 @@ Generate per-encryption, never reuse a nonce under the same key.
    This is called crypto-shredding, and being able to explain why it beats
    copy-chasing is the strongest data-protection point in the project.
 
+   #### 9c, as built (crypto-shredding; audit log still outstanding)
+
+   **"Delete the token→PAN mapping" is not sufficient, and finding out why is
+   the interesting part.** A `DELETE` removes the row from the live table and
+   from nothing else. Restore last night's backup and the mapping is back — so
+   an erasure satisfied by a delete is satisfied only until somebody restores.
+   The phase's own trap list says as much: *"erasure that misses backups… only
+   if the KEK/DEK material is also erased from backups."*
+
+   So the thing destroyed has to be something that was never in the backup of
+   the data. That is the **key**, held in a different system with a different
+   backup lifecycle — which turns `KekStore` into an interface with one real
+   requirement: *key material must not share a backup domain with the ciphertext
+   it protects.*
+
+   **Scope is the erasure boundary, and it cannot be chosen later.** Phase 9b
+   gave every record its own DEK wrapped under one global KEK — which makes
+   rotation cheap and erasure impossible, because there is no key whose
+   destruction removes one merchant. Whatever unit the business must erase has
+   to be the unit the key hierarchy names, *from the first record*: cards wrapped
+   under a shared key cannot be separated afterwards without decrypting and
+   re-encrypting them, which is the expensive migration all of 9b was arranged to
+   avoid. The scope is therefore chosen at the edge, in the one place that knows
+   whose card it is.
+
+   **A derived key cannot be shredded**, which rules out the tempting
+   alternative. `HKDF(master, merchantId)` needs no store and is stateless — and
+   anybody holding the master can re-derive a "destroyed" key at any time, so
+   erasure is unachievable by construction. A key that can be recomputed cannot
+   be forgotten. Per-merchant keys must be independently generated and stored.
+
+   **The scope is bound into the wrap AAD.** Without it, somebody with write
+   access could relabel an erased merchant's row into a live merchant's scope
+   and resurrect a card that had been erased — turning a completed erasure
+   request back into a breach with one `UPDATE`.
+
+   **Verified, including against a restore.**
+   `erasingOneMerchantMakesTheirCardsUnrecoverableAndTouchesNoRow` erases one
+   merchant and asserts their cards are unreadable, the other merchant is
+   untouched, and **not one row was deleted or modified**.
+   `restoringTheTableDoesNotUndoAnErasure` takes a copy of the table, erases,
+   drops every row, restores the copy, and requires the card to still be
+   meaningless. That is the assertion that separates crypto-shredding from
+   `DELETE`: the row comes back, the key does not.
+
+   **What is outstanding**: the PII access audit log, RBAC on detokenization
+   beyond the existing credential grants, and Mongo TTL on raw payloads. And the
+   `KekStore` shipped here holds keys **in memory** — correct for demonstrating
+   erasure, useless for holding anything, since every merchant-scoped key dies
+   on restart. Vault is the production implementation and is outstanding along
+   with 9b's container.
+
 4. **TTL enforcement** on raw payloads in Mongo (indexes from phase 8).
 
 ### Exit criteria
 
-- [ ] An erasure request renders one merchant's historical card data
-      unrecoverable, **verified**
+- [x] An erasure request renders one merchant's historical card data
+      unrecoverable, **verified** — 9c. Per-merchant key scoping; erasure
+      destroys the scope's key material and touches no row. Verified against a
+      simulated backup restore, which is what distinguishes it from a `DELETE`
 - [ ] Audit log shows every detokenization event during a load run
 - [ ] Only `psp-connector` can detokenize; another service attempting it fails
 - [ ] TTL demonstrably expires raw payloads
@@ -235,7 +289,24 @@ ideally a separate store with separate credentials.
 
 **Erasure that misses backups.** This is exactly why crypto-shredding is the
 right design — but only if the KEK/DEK material is *also* erased from backups.
-Be precise about what the guarantee is.
+Be precise about what the guarantee is. Answered in 9c by putting the guarantee
+in `KekStore`'s contract: an implementation storing KEKs in the same database as
+the ciphertext provides no erasure at all, and the test that proves the design
+works is the one that restores a backup.
+
+**Deriving per-tenant keys from a master key.** Stateless, elegant, and
+unshreddable — the master can always re-derive what you "destroyed". If the
+erasure boundary is the tenant, the tenant's key has to be independently
+generated and stored.
+
+**Choosing the erasure boundary late.** Records already wrapped under a shared
+key cannot be separated without decrypting and re-encrypting every one of them.
+The scope has to be right from the first record, which means it is a design
+decision rather than a configuration one.
+
+**Not binding the scope into the wrap.** Otherwise an erased record can be
+relabelled into a live scope and read again, and a completed erasure becomes a
+breach with one `UPDATE`.
 
 **Audit logging the PAN itself.** The audit log records *that* a detokenization
 happened, never its result.

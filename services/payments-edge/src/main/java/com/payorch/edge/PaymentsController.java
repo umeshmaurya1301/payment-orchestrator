@@ -207,7 +207,7 @@ public class PaymentsController {
     private EdgeApi.PaymentResponse process(UUID merchantId,
                                             String idempotencyKey,
                                             EdgeApi.CreatePaymentRequest request) {
-        TokenizedCard card = tokenize(request.card());
+        TokenizedCard card = tokenize(request.card(), merchantId);
 
         // The first log line about this payment, and it already carries no card
         // number - only the token and the two displayable fragments. Named
@@ -255,9 +255,21 @@ public class PaymentsController {
         return toEdgeResponse(created);
     }
 
-    private TokenizedCard tokenize(EdgeApi.Card card) {
+    /**
+     * @param merchantId the key scope. Phase 9c.
+     *
+     * <p>The merchant is the erasure boundary because that is who a
+     * right-to-erasure request arrives for, and the scope has to be chosen at
+     * the moment the card is first encrypted - records wrapped under a shared
+     * key cannot be separated afterwards without decrypting and re-encrypting
+     * them. So this parameter is not plumbing: it is the decision that makes
+     * erasure possible at all, made in the one place that knows whose card this
+     * is.
+     */
+    private TokenizedCard tokenize(EdgeApi.Card card, UUID merchantId) {
         try {
-            return vault.tokenize(card.number(), card.expiryMonth(), card.expiryYear());
+            return vault.tokenize(card.number(), card.expiryMonth(), card.expiryYear(),
+                    merchantId.toString());
         } catch (IllegalArgumentException e) {
             // The message from Pan.of is written not to contain the input, which
             // is what makes it safe to hand back to the caller.

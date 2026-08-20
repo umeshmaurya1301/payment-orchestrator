@@ -88,6 +88,7 @@ class PaymentsApiTest {
                     -- kek_version is a pre-9b record read through the legacy cipher.
                     wrapped_dek  VARBINARY(64) NULL,
                     dek_iv       VARBINARY(12) NULL,
+                    key_scope    VARCHAR(64)   NULL,
                     kek_version  VARCHAR(32)   NULL,
                     bin          CHAR(6)       NOT NULL,
                     last4        CHAR(4)       NOT NULL,

@@ -13,6 +13,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class TokenVaultTest {
 
+    /**
+     * One merchant's erasure boundary. Phase 9c made this a required argument:
+     * a card has to be encrypted under a scope from the moment it is first
+     * stored, because records wrapped under a shared key cannot be separated
+     * afterwards without decrypting and re-encrypting them.
+     */
+    private static final String SCOPE = "merchant-under-test";
+
     private static final String SCHEMA = """
             CREATE TABLE token_vault (
                 token        VARCHAR(48)   NOT NULL PRIMARY KEY,
@@ -22,6 +30,7 @@ class TokenVaultTest {
                 -- kek_version is a pre-9b record read through the legacy cipher.
                 wrapped_dek  VARBINARY(64) NULL,
                 dek_iv       VARBINARY(12) NULL,
+                key_scope    VARCHAR(64)   NULL,
                 kek_version  VARCHAR(32)   NULL,
                 bin          CHAR(6)       NOT NULL,
                 last4        CHAR(4)       NOT NULL,
@@ -46,7 +55,7 @@ class TokenVaultTest {
         // predate 9b.
         vault = new TokenVault(connection.jdbc(),
                 new PanCipher(key),
-                new EnvelopeCipher(new KeyRing(java.util.Map.of("v1", key), "v1")));
+                new EnvelopeCipher(new KeyRing(new InMemoryKekStore(java.util.Map.of("v1", key), "v1"))));
     }
 
     @AfterEach
@@ -56,7 +65,7 @@ class TokenVaultTest {
 
     @Test
     void tokenizeThenDetokenizeReturnsTheOriginalCard() {
-        TokenizedCard card = vault.tokenize("4242 4242 4242 4242", 12, 2030);
+        TokenizedCard card = vault.tokenize("4242 4242 4242 4242", 12, 2030, SCOPE);
 
         assertThat(card.token()).startsWith("tok_");
         assertThat(card.bin()).isEqualTo("424242");
@@ -76,7 +85,7 @@ class TokenVaultTest {
      */
     @Test
     void detokenizedCardDoesNotPrintItself() {
-        TokenizedCard card = vault.tokenize("4242424242424242", 12, 2030);
+        TokenizedCard card = vault.tokenize("4242424242424242", 12, 2030, SCOPE);
 
         assertThat(vault.detokenize(card.token()).toString()).doesNotContain("4242");
     }
@@ -87,7 +96,7 @@ class TokenVaultTest {
      */
     @Test
     void storedRowHoldsNoReadableCardNumber() {
-        TokenizedCard card = vault.tokenize("4242424242424242", 12, 2030);
+        TokenizedCard card = vault.tokenize("4242424242424242", 12, 2030, SCOPE);
 
         String stored = connection.jdbc()
                 .sql("SELECT CAST(pan_cipher AS VARCHAR) FROM token_vault WHERE token = :t")
@@ -100,8 +109,8 @@ class TokenVaultTest {
 
     @Test
     void everyTokenizationProducesADistinctToken() {
-        TokenizedCard first = vault.tokenize("4242424242424242", 12, 2030);
-        TokenizedCard second = vault.tokenize("4242424242424242", 12, 2030);
+        TokenizedCard first = vault.tokenize("4242424242424242", 12, 2030, SCOPE);
+        TokenizedCard second = vault.tokenize("4242424242424242", 12, 2030, SCOPE);
 
         assertThat(first.token()).isNotEqualTo(second.token());
         assertThat(vault.detokenize(first.token()).pan()).isEqualTo("4242424242424242");
@@ -116,7 +125,7 @@ class TokenVaultTest {
 
     @Test
     void refusesToTokenizeSomethingThatIsNotACard() {
-        assertThatThrownBy(() -> vault.tokenize("1234", 12, 2030))
+        assertThatThrownBy(() -> vault.tokenize("1234", 12, 2030, SCOPE))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 

@@ -4,9 +4,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.Arrays;
-import java.util.Base64;
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.Set;
 
 import javax.crypto.Cipher;
@@ -14,43 +11,42 @@ import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
 /**
- * The key-encryption keys, by version. Phase 9b.
+ * Wraps and unwraps data-encryption keys, under a KEK chosen by scope and
+ * version. Phase 9b, scoped in 9c.
  *
- * <h2>What a key ring is for</h2>
+ * <h2>Version: why a single key cannot be rotated</h2>
  *
- * <p>A single key cannot be rotated. Not "is awkward to rotate" - cannot: the
- * moment a new key exists, every value encrypted under the old one is
- * unreadable, so rotation and a full rewrite of the data become the same
- * operation. That is why phase 1's {@link PanCipher} took one static key and why
- * it was always going to be replaced here.
+ * <p>Not "is awkward to rotate" - cannot. The moment a new key exists, every
+ * value encrypted under the old one is unreadable, so rotation and a full
+ * rewrite of the data become the same operation. Several versions live at once;
+ * exactly one is current per scope and used for new wrapping, and the rest are
+ * kept only to unwrap what they wrapped. Every wrapped value names its version,
+ * so decryption never guesses and rotation never has to be atomic.
  *
- * <p>A ring holds several versions at once. Exactly one is <em>current</em> and
- * used for new wrapping; the rest are retired and used only for unwrapping what
- * they wrapped. Every wrapped value carries the version that produced it, so
- * decryption never has to guess and rotation never has to be atomic.
+ * <h2>Scope: why a single key cannot be erased</h2>
  *
- * <p>This is the shape HashiCorp Vault's transit engine exposes, deliberately.
- * The interesting property is not where the bytes live - it is that the
- * ciphertext names its key version, and that is true whether the KEK sits in
- * Vault, in a KMS, or in this class.
+ * <p>The same argument one level up, and it is phase 9c's. If every merchant's
+ * cards are wrapped under one KEK, there is no key whose destruction erases one
+ * merchant - destroying it erases all of them. The unit the business must be
+ * able to erase has to be the unit the key hierarchy names.
  *
- * <h2>What this implementation is and is not</h2>
+ * <p>So a scope is an <strong>erasure boundary</strong>, and here it is the
+ * merchant, because that is who a right-to-erasure request arrives for.
+ * {@link #SHARED_SCOPE} is the default and is deliberately not erasable in
+ * isolation - erasure should be a decision, and a scheme whose default is
+ * "shreddable" invites somebody to shred more than they meant to.
  *
- * <p><strong>The keys are in configuration.</strong> A real deployment holds the
- * KEK in Vault or a cloud KMS, where the unwrap operation happens inside the key
- * store and the KEK never reaches this process at all - which is the property
- * that makes a memory dump of this service uninteresting. That is 9b's Vault
- * container, and it needs one.
+ * <h2>Where the keys are</h2>
  *
- * <p>What is <em>not</em> deferred is the design: per-record DEKs, wrapped
- * values that name their key version, and rotation that never touches the
- * encrypted records. Those are the parts that are expensive to retrofit, and
- * they are real here. Swapping the wrap/unwrap implementation for a Vault call
- * is a change to two methods; changing a schema that assumed one static key is a
- * change to every row.
+ * <p>Behind {@link KekStore}, whose contract carries the requirement that makes
+ * any of this work: key material must not live in the same backup domain as the
+ * ciphertext it protects. Deleting a row does not remove it from last night's
+ * backup; destroying the key makes every copy of the ciphertext permanently
+ * undecryptable without anybody having to find those copies.
  *
- * <p>Said plainly because phase 9's own trap list asks for it: this is
- * <strong>local key material, not a hardware-backed or externally-held KEK</strong>.
+ * <p>The implementation shipped here holds keys in memory
+ * ({@link InMemoryKekStore}), which is honest for development and useless for
+ * anything else. Vault is outstanding.
  */
 public final class KeyRing {
 
@@ -59,62 +55,40 @@ public final class KeyRing {
     private static final String TRANSFORMATION = "AES/GCM/NoPadding";
 
     /**
-     * The AAD every wrap is bound to.
-     *
-     * <p>Domain separation. A wrapped DEK and an encrypted PAN are both
-     * AES-GCM ciphertexts under this scheme, and without a distinguishing AAD
-     * there is nothing structural stopping one being fed to the other's
-     * decryption path. Cheap, and it removes a class of confusion attack
-     * entirely.
+     * The scope used unless one is chosen. Seeded from configuration and not
+     * erasable in isolation.
      */
-    private static final byte[] WRAP_AAD = "payorch:dek-wrap".getBytes(StandardCharsets.UTF_8);
-
-    private final Map<String, SecretKeySpec> byVersion;
-    private final String currentVersion;
-    private final SecureRandom random = new SecureRandom();
+    public static final String SHARED_SCOPE = "shared";
 
     /**
-     * @param keysByVersion base64 32-byte keys, keyed by version label. Insertion
-     *                      order is irrelevant; {@code currentVersion} decides
-     *                      which one wraps
-     * @param currentVersion the version new DEKs are wrapped under
+     * The AAD every wrap is bound to.
+     *
+     * <p>Domain separation, plus the scope. A wrapped DEK and an encrypted PAN
+     * are both AES-GCM ciphertexts under this scheme, and without a
+     * distinguishing AAD there is nothing structural stopping one being fed to
+     * the other's decryption path. Binding the scope in as well means a wrapped
+     * DEK cannot be relabelled into another merchant's scope and still unwrap -
+     * so a row edited to point at a scope that has not been erased does not
+     * resurrect a card that was.
      */
-    public KeyRing(Map<String, String> keysByVersion, String currentVersion) {
-        if (keysByVersion == null || keysByVersion.isEmpty()) {
-            throw new IllegalStateException("a key ring needs at least one KEK version");
-        }
-        if (!keysByVersion.containsKey(currentVersion)) {
-            // A ring whose current version is missing would encrypt nothing and
-            // fail on the first payment. Failing here names the actual problem.
-            throw new IllegalStateException(
-                    "the current KEK version '" + currentVersion + "' is not on the key ring; "
-                            + "available: " + keysByVersion.keySet());
-        }
+    private static final String WRAP_AAD_PREFIX = "payorch:dek-wrap:";
 
-        Map<String, SecretKeySpec> parsed = new LinkedHashMap<>();
-        keysByVersion.forEach((version, base64) -> parsed.put(version, parse(version, base64)));
-        this.byVersion = Map.copyOf(parsed);
-        this.currentVersion = currentVersion;
+    private final KekStore keys;
+    private final SecureRandom random = new SecureRandom();
+
+    public KeyRing(KekStore keys) {
+        this.keys = keys;
     }
 
-    private static SecretKeySpec parse(String version, String base64Key) {
-        byte[] raw;
-        try {
-            raw = Base64.getDecoder().decode(base64Key);
-        } catch (IllegalArgumentException e) {
-            throw new IllegalStateException("KEK version '" + version + "' is not valid base64", e);
-        }
-        if (raw.length != 32) {
-            throw new IllegalStateException("KEK version '" + version
-                    + "' must decode to 32 bytes for AES-256, got " + raw.length);
-        }
-        SecretKeySpec key = new SecretKeySpec(raw, "AES");
-        Arrays.fill(raw, (byte) 0);
-        return key;
-    }
-
-    /** A data-encryption key, wrapped, and the version of the KEK that wrapped it. */
-    public record WrappedKey(String kekVersion, byte[] iv, byte[] ciphertext) {
+    /**
+     * A data-encryption key, wrapped, naming the scope and version of the KEK
+     * that wrapped it.
+     *
+     * <p>Both are needed to unwrap and both are stored beside the ciphertext.
+     * Neither is secret: knowing that a record belongs to a merchant and was
+     * wrapped under that merchant's third key reveals nothing without the key.
+     */
+    public record WrappedKey(String keyScope, String kekVersion, byte[] iv, byte[] ciphertext) {
     }
 
     /** Fresh 32 bytes for one record. Never reused, never stored unwrapped. */
@@ -125,85 +99,121 @@ public final class KeyRing {
     }
 
     /**
-     * Wraps a DEK under the <em>current</em> KEK.
+     * Wraps a DEK under the current KEK for a scope, creating that scope's first
+     * key if it has none.
      *
-     * <p>Always the current one - there is no overload taking a version. Wrapping
-     * under an old KEK would be a way to quietly undo a rotation one record at a
-     * time, and no legitimate caller wants it.
+     * <p>Created on first use rather than at merchant onboarding, deliberately: a
+     * merchant who has never taken a payment has nothing to protect and nothing
+     * to erase, and provisioning keys for them is key material that exists for
+     * no reason.
+     *
+     * <p>There is no overload taking a version. Wrapping under an old KEK would
+     * be a way to quietly undo a rotation one record at a time, and no
+     * legitimate caller wants it.
      */
-    public WrappedKey wrap(byte[] dataKey) {
+    public WrappedKey wrap(String scope, byte[] dataKey) {
+        String version = keys.currentVersion(scope)
+                .orElseGet(() -> keys.createCurrentVersion(scope));
+        byte[] kek = keys.find(scope, version)
+                .orElseThrow(() -> new UnknownKeyException(scope, version));
+
         byte[] iv = new byte[IV_LENGTH];
         random.nextBytes(iv);
         try {
             Cipher cipher = Cipher.getInstance(TRANSFORMATION);
-            cipher.init(Cipher.ENCRYPT_MODE, byVersion.get(currentVersion),
+            cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(kek, "AES"),
                     new GCMParameterSpec(TAG_LENGTH_BITS, iv));
-            cipher.updateAAD(WRAP_AAD);
-            return new WrappedKey(currentVersion, iv, cipher.doFinal(dataKey));
+            cipher.updateAAD(aad(scope));
+            return new WrappedKey(scope, version, iv, cipher.doFinal(dataKey));
         } catch (GeneralSecurityException e) {
-            // No detail propagated: JCE messages can echo input length, and in
-            // some providers the input itself.
+            // No detail propagated: JCE messages can echo input length and, in
+            // some providers, the input itself.
             throw new IllegalStateException("key wrapping failed");
+        } finally {
+            Arrays.fill(kek, (byte) 0);
         }
     }
 
     /**
-     * Unwraps a DEK under whichever KEK version wrapped it.
+     * Unwraps a DEK under whichever KEK wrapped it.
      *
-     * <p>This is what makes rotation cheap: a record wrapped under {@code v1}
-     * stays readable for as long as {@code v1} is on the ring, whether or not it
-     * has been re-wrapped yet. Rotation therefore has no cutover - the ring is
-     * updated, new writes use the new version, and the re-wrap job catches up in
-     * its own time.
+     * <p>This is what makes rotation cheap AND what makes erasure absolute. A
+     * record wrapped under {@code v1} stays readable for as long as {@code v1}
+     * exists, whether or not it has been re-wrapped yet - so rotation has no
+     * cutover. And the instant a scope's keys are destroyed, every record naming
+     * that scope is unreadable everywhere, including in copies nobody can reach.
      *
-     * @throws UnknownKeyVersionException if the version has been removed from
-     *         the ring. Its own type, because it is operationally different from
-     *         corruption: the data is fine and a key is missing, which is
-     *         recoverable by restoring the key and is not recoverable by
-     *         anything else. (It is also exactly what phase 9c's
-     *         crypto-shredding produces on purpose.)
+     * @throws UnknownKeyException if the key is gone. Its own type, because it
+     *         is operationally different from corruption: the data is intact and
+     *         a key is missing. In 9b that is a mistake to recover from by
+     *         restoring the key; in 9c it is the successful outcome of an
+     *         erasure request, and the two are indistinguishable from here on
+     *         purpose - a system that could tell them apart could tell you what
+     *         it had erased
      */
     public byte[] unwrap(WrappedKey wrapped) {
-        SecretKeySpec kek = byVersion.get(wrapped.kekVersion());
-        if (kek == null) {
-            throw new UnknownKeyVersionException(wrapped.kekVersion(), byVersion.keySet());
-        }
+        byte[] kek = keys.find(wrapped.keyScope(), wrapped.kekVersion())
+                .orElseThrow(() -> new UnknownKeyException(
+                        wrapped.keyScope(), wrapped.kekVersion()));
         try {
             Cipher cipher = Cipher.getInstance(TRANSFORMATION);
-            cipher.init(Cipher.DECRYPT_MODE, kek,
+            cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(kek, "AES"),
                     new GCMParameterSpec(TAG_LENGTH_BITS, wrapped.iv()));
-            cipher.updateAAD(WRAP_AAD);
+            cipher.updateAAD(aad(wrapped.keyScope()));
             return cipher.doFinal(wrapped.ciphertext());
         } catch (GeneralSecurityException e) {
             throw new IllegalStateException("key unwrapping failed");
+        } finally {
+            Arrays.fill(kek, (byte) 0);
         }
     }
 
-    /** The version new records are wrapped under. */
-    public String currentVersion() {
-        return currentVersion;
-    }
-
-    /** Every version this ring can still unwrap. */
-    public Set<String> versions() {
-        return byVersion.keySet();
-    }
-
-    /** Whether this wrapped key already uses the current KEK. */
+    /** Whether this wrapped key already uses its scope's current KEK. */
     public boolean isCurrent(WrappedKey wrapped) {
-        return currentVersion.equals(wrapped.kekVersion());
+        return keys.currentVersion(wrapped.keyScope())
+                .map(current -> current.equals(wrapped.kekVersion()))
+                .orElse(false);
+    }
+
+    /** The version new records in this scope are wrapped under, if it has one yet. */
+    public java.util.Optional<String> currentVersion(String scope) {
+        return keys.currentVersion(scope);
+    }
+
+    /** Adds a new current version to a scope. The first half of a rotation. */
+    public String rotate(String scope) {
+        return keys.createCurrentVersion(scope);
     }
 
     /**
-     * The KEK that wrapped this value is no longer on the ring.
+     * <strong>Erases a scope.</strong> See {@link KekStore#forget}.
      *
-     * <p>The message names the version and the versions that ARE available, and
-     * nothing else. It must never carry the ciphertext or any part of it.
+     * @return how many key versions were destroyed
      */
-    public static class UnknownKeyVersionException extends RuntimeException {
+    public int forget(String scope) {
+        return keys.forget(scope);
+    }
 
-        public UnknownKeyVersionException(String version, Set<String> available) {
-            super("no KEK version '" + version + "' on the key ring; available: " + available);
+    /** Scopes that still hold key material. */
+    public Set<String> scopes() {
+        return keys.scopes();
+    }
+
+    private static byte[] aad(String scope) {
+        return (WRAP_AAD_PREFIX + scope).getBytes(StandardCharsets.UTF_8);
+    }
+
+    /**
+     * The KEK that wrapped this value no longer exists.
+     *
+     * <p>The message names the scope and version and nothing else - never the
+     * ciphertext, and never whether the key was erased or simply never created.
+     */
+    public static class UnknownKeyException extends RuntimeException {
+
+        public UnknownKeyException(String scope, String version) {
+            super("no key material for scope '" + scope + "' version '" + version
+                    + "' - it was never created, or it has been erased");
         }
     }
 }

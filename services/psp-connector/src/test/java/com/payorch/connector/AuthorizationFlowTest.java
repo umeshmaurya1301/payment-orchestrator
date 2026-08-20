@@ -48,6 +48,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 class AuthorizationFlowTest {
 
+    /**
+     * Phase 9c made the key scope a required argument to tokenize. This service
+     * only ever DEtokenizes, so the value is arbitrary here - what matters is
+     * that the fixture stores cards the way the edge does.
+     */
+    private static final String SCOPE = "merchant-under-test";
+
     private static final String PAN = "4242424242424242";
 
     @Autowired
@@ -73,6 +80,7 @@ class AuthorizationFlowTest {
                     -- kek_version is a pre-9b record read through the legacy cipher.
                     wrapped_dek  VARBINARY(64) NULL,
                     dek_iv       VARBINARY(12) NULL,
+                    key_scope    VARCHAR(64)   NULL,
                     kek_version  VARCHAR(32)   NULL,
                     bin          CHAR(6)       NOT NULL,
                     last4        CHAR(4)       NOT NULL,
@@ -85,7 +93,7 @@ class AuthorizationFlowTest {
 
     @Test
     void reversesTheTokenAndHandsTheRealCardToTheProvider() throws Exception {
-        TokenizedCard card = vault.tokenize(PAN, 11, 2031);
+        TokenizedCard card = vault.tokenize(PAN, 11, 2031, SCOPE);
 
         mvc.perform(authorize(card.token(), "stubpsp"))
                 .andExpect(status().isOk())
@@ -105,7 +113,7 @@ class AuthorizationFlowTest {
      */
     @Test
     void theResponseCarriesNoCardData() throws Exception {
-        TokenizedCard card = vault.tokenize(PAN, 11, 2031);
+        TokenizedCard card = vault.tokenize(PAN, 11, 2031, SCOPE);
 
         String body = mvc.perform(authorize(card.token(), "stubpsp"))
                 .andReturn().getResponse().getContentAsString();
@@ -127,7 +135,7 @@ class AuthorizationFlowTest {
 
     @Test
     void anUnconfiguredProviderIsARejection() throws Exception {
-        TokenizedCard card = vault.tokenize(PAN, 11, 2031);
+        TokenizedCard card = vault.tokenize(PAN, 11, 2031, SCOPE);
 
         mvc.perform(authorize(card.token(), "no-such-psp"))
                 .andExpect(status().isBadRequest())
@@ -140,7 +148,7 @@ class AuthorizationFlowTest {
      */
     @Test
     void aProviderThatDoesNotAnswerBecomesABadGateway() throws Exception {
-        TokenizedCard card = vault.tokenize(PAN, 11, 2031);
+        TokenizedCard card = vault.tokenize(PAN, 11, 2031, SCOPE);
         adapter.failWithUnavailable = true;
 
         mvc.perform(authorize(card.token(), "stubpsp"))
@@ -150,7 +158,7 @@ class AuthorizationFlowTest {
 
     @Test
     void aDeclineIsReturnedAsAnOutcomeNotAnError() throws Exception {
-        TokenizedCard card = vault.tokenize(PAN, 11, 2031);
+        TokenizedCard card = vault.tokenize(PAN, 11, 2031, SCOPE);
         adapter.decline = true;
 
         mvc.perform(authorize(card.token(), "stubpsp"))

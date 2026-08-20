@@ -28,6 +28,13 @@ class EnvelopeCipherTest {
     private static final String KEK_V1 = key();
     private static final String KEK_V2 = key();
 
+    /**
+     * Every record here lives in the shared scope, so these tests are about the
+     * cipher rather than about erasure. Scope-specific behaviour has its own
+     * tests below and in {@link VaultRotationTest}.
+     */
+    private static final String SCOPE = KeyRing.SHARED_SCOPE;
+
     /** A ring holding only v1, with v1 current. The state before a rotation. */
     private final KeyRing beforeRotation = ring("v1", Map.of("v1", KEK_V1));
 
@@ -53,7 +60,7 @@ class EnvelopeCipherTest {
     }
 
     private static KeyRing ring(String current, Map<String, String> keys) {
-        return new KeyRing(keys, current);
+        return new KeyRing(new InMemoryKekStore(keys, current));
     }
 
     // --- the basics --------------------------------------------------------
@@ -62,14 +69,14 @@ class EnvelopeCipherTest {
     void aCardRoundTrips() {
         EnvelopeCipher cipher = new EnvelopeCipher(beforeRotation);
 
-        EnvelopeCipher.Sealed sealed = cipher.encrypt(PAN, TOKEN);
+        EnvelopeCipher.Sealed sealed = cipher.encrypt(PAN, TOKEN, SCOPE);
 
         assertThat(cipher.decrypt(sealed, TOKEN)).isEqualTo(PAN);
     }
 
     @Test
     void theCiphertextDoesNotContainTheCard() {
-        EnvelopeCipher.Sealed sealed = new EnvelopeCipher(beforeRotation).encrypt(PAN, TOKEN);
+        EnvelopeCipher.Sealed sealed = new EnvelopeCipher(beforeRotation).encrypt(PAN, TOKEN, SCOPE);
 
         assertThat(new String(sealed.ciphertext(), java.nio.charset.StandardCharsets.ISO_8859_1))
                 .doesNotContain(PAN)
@@ -88,7 +95,7 @@ class EnvelopeCipherTest {
     @Test
     void theStoredKeyIsWrappedAndNotTheKeyItself() {
         EnvelopeCipher cipher = new EnvelopeCipher(beforeRotation);
-        EnvelopeCipher.Sealed sealed = cipher.encrypt(PAN, TOKEN);
+        EnvelopeCipher.Sealed sealed = cipher.encrypt(PAN, TOKEN, SCOPE);
 
         // If the stored bytes WERE the DEK, decrypting with them directly would
         // work. It must not.
@@ -113,7 +120,7 @@ class EnvelopeCipherTest {
         Set<String> deks = new HashSet<>();
 
         for (int i = 0; i < 50; i++) {
-            EnvelopeCipher.Sealed sealed = cipher.encrypt(PAN, TOKEN);
+            EnvelopeCipher.Sealed sealed = cipher.encrypt(PAN, TOKEN, SCOPE);
             deks.add(Base64.getEncoder()
                     .encodeToString(beforeRotation.unwrap(sealed.wrappedKey())));
         }
@@ -133,7 +140,7 @@ class EnvelopeCipherTest {
         Set<String> wrapNonces = new HashSet<>();
 
         for (int i = 0; i < 200; i++) {
-            EnvelopeCipher.Sealed sealed = cipher.encrypt(PAN, TOKEN);
+            EnvelopeCipher.Sealed sealed = cipher.encrypt(PAN, TOKEN, SCOPE);
             panNonces.add(Base64.getEncoder().encodeToString(sealed.iv()));
             wrapNonces.add(Base64.getEncoder().encodeToString(sealed.wrappedKey().iv()));
         }
@@ -150,7 +157,7 @@ class EnvelopeCipherTest {
     @Test
     void aCiphertextMovedToAnotherTokenDoesNotDecrypt() {
         EnvelopeCipher cipher = new EnvelopeCipher(beforeRotation);
-        EnvelopeCipher.Sealed sealed = cipher.encrypt(PAN, TOKEN);
+        EnvelopeCipher.Sealed sealed = cipher.encrypt(PAN, TOKEN, SCOPE);
 
         assertThatThrownBy(() -> cipher.decrypt(sealed, "tok_SOMEBODY_ELSES_ROW"))
                 .isInstanceOf(IllegalStateException.class)
@@ -160,7 +167,7 @@ class EnvelopeCipherTest {
     @Test
     void aTamperedCiphertextIsRefusedRatherThanDecryptedToGarbage() {
         EnvelopeCipher cipher = new EnvelopeCipher(beforeRotation);
-        EnvelopeCipher.Sealed sealed = cipher.encrypt(PAN, TOKEN);
+        EnvelopeCipher.Sealed sealed = cipher.encrypt(PAN, TOKEN, SCOPE);
         sealed.ciphertext()[0] ^= 0x01;
 
         assertThatThrownBy(() -> cipher.decrypt(sealed, TOKEN))
@@ -171,7 +178,7 @@ class EnvelopeCipherTest {
     @Test
     void failureMessagesCarryNothingSensitive() {
         EnvelopeCipher cipher = new EnvelopeCipher(beforeRotation);
-        EnvelopeCipher.Sealed sealed = cipher.encrypt(PAN, TOKEN);
+        EnvelopeCipher.Sealed sealed = cipher.encrypt(PAN, TOKEN, SCOPE);
 
         assertThatThrownBy(() -> cipher.decrypt(sealed, "tok_wrong"))
                 .hasMessageNotContaining(PAN)
@@ -195,7 +202,7 @@ class EnvelopeCipherTest {
     @Test
     void rotatingTheKekDoesNotTouchASingleCardCiphertext() {
         EnvelopeCipher before = new EnvelopeCipher(beforeRotation);
-        EnvelopeCipher.Sealed original = before.encrypt(PAN, TOKEN);
+        EnvelopeCipher.Sealed original = before.encrypt(PAN, TOKEN, SCOPE);
         byte[] ciphertextBefore = original.ciphertext().clone();
         byte[] ivBefore = original.iv().clone();
 
@@ -226,7 +233,7 @@ class EnvelopeCipherTest {
      */
     @Test
     void theDataKeyItselfIsUnchangedByRotation() {
-        EnvelopeCipher.Sealed original = new EnvelopeCipher(beforeRotation).encrypt(PAN, TOKEN);
+        EnvelopeCipher.Sealed original = new EnvelopeCipher(beforeRotation).encrypt(PAN, TOKEN, SCOPE);
         byte[] dekBefore = beforeRotation.unwrap(original.wrappedKey());
 
         KeyRing.WrappedKey rewrapped =
@@ -245,7 +252,7 @@ class EnvelopeCipherTest {
      */
     @Test
     void recordsNotYetRewrappedAreStillReadableAfterRotation() {
-        EnvelopeCipher.Sealed old = new EnvelopeCipher(beforeRotation).encrypt(PAN, TOKEN);
+        EnvelopeCipher.Sealed old = new EnvelopeCipher(beforeRotation).encrypt(PAN, TOKEN, SCOPE);
 
         EnvelopeCipher after = new EnvelopeCipher(afterRotation);
 
@@ -261,7 +268,7 @@ class EnvelopeCipherTest {
     void newRecordsAfterRotationUseTheNewVersionImmediately() {
         EnvelopeCipher after = new EnvelopeCipher(afterRotation);
 
-        EnvelopeCipher.Sealed fresh = after.encrypt(PAN, TOKEN);
+        EnvelopeCipher.Sealed fresh = after.encrypt(PAN, TOKEN, SCOPE);
 
         assertThat(fresh.wrappedKey().kekVersion()).isEqualTo("v2");
         assertThat(after.isCurrent(fresh.wrappedKey())).isTrue();
@@ -271,7 +278,7 @@ class EnvelopeCipherTest {
     @Test
     void anAlreadyRotatedRecordIsRecognisedAsCurrent() {
         EnvelopeCipher after = new EnvelopeCipher(afterRotation);
-        EnvelopeCipher.Sealed fresh = after.encrypt(PAN, TOKEN);
+        EnvelopeCipher.Sealed fresh = after.encrypt(PAN, TOKEN, SCOPE);
 
         assertThat(after.isCurrent(fresh.wrappedKey())).isTrue();
     }
@@ -287,42 +294,198 @@ class EnvelopeCipherTest {
      */
     @Test
     void aRecordWrappedUnderARemovedKeyIsUnreadableAndSaysWhy() {
-        EnvelopeCipher.Sealed old = new EnvelopeCipher(beforeRotation).encrypt(PAN, TOKEN);
+        EnvelopeCipher.Sealed old = new EnvelopeCipher(beforeRotation).encrypt(PAN, TOKEN, SCOPE);
 
         // v1 has been destroyed. Only v2 remains.
         KeyRing shredded = ring("v2", Map.of("v2", KEK_V2));
 
         assertThatThrownBy(() -> new EnvelopeCipher(shredded).decrypt(old, TOKEN))
-                .isInstanceOf(KeyRing.UnknownKeyVersionException.class)
+                .isInstanceOf(KeyRing.UnknownKeyException.class)
                 .hasMessageContaining("v1")
                 .as("and it must not leak the ciphertext in the message")
                 .hasMessageNotContaining(PAN);
     }
 
-    // --- the ring's own guards --------------------------------------------
+    // --- phase 9c: scope is the erasure boundary ---------------------------
 
+    /**
+     * THE CRYPTO-SHREDDING PROPERTY.
+     *
+     * <p>Two merchants, two scopes. Erasing one destroys that merchant's cards
+     * permanently and leaves the other untouched - which is the whole reason
+     * scope exists, and the thing a single shared KEK cannot do at all.
+     */
     @Test
-    void aRingWhoseCurrentVersionIsMissingRefusesToExist() {
-        assertThatThrownBy(() -> new KeyRing(Map.of("v1", KEK_V1), "v2"))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("v2")
-                .hasMessageContaining("not on the key ring");
+    void erasingOneScopeLeavesEveryOtherScopeIntact() {
+        KeyRing ring = new KeyRing(new InMemoryKekStore(Map.of("v1", KEK_V1), "v1"));
+        EnvelopeCipher cipher = new EnvelopeCipher(ring);
+
+        EnvelopeCipher.Sealed alice = cipher.encrypt(PAN, TOKEN, "merchant-alice");
+        EnvelopeCipher.Sealed bob = cipher.encrypt("4111111111111111", TOKEN, "merchant-bob");
+
+        assertThat(cipher.forget("merchant-alice"))
+                .as("one key version destroyed")
+                .isEqualTo(1);
+
+        assertThatThrownBy(() -> cipher.decrypt(alice, TOKEN))
+                .as("the erased merchant's card is gone, permanently")
+                .isInstanceOf(KeyRing.UnknownKeyException.class);
+
+        assertThat(cipher.decrypt(bob, TOKEN))
+                .as("and nobody else was affected")
+                .isEqualTo("4111111111111111");
     }
 
+    /**
+     * The ciphertext is untouched by erasure, and that is the point rather than
+     * an oversight.
+     *
+     * <p>Nothing goes looking for copies. The bytes stay exactly where they were
+     * - in the table, in the replica, in last night's backup - and every one of
+     * them is now meaningless. That is what makes erasure survive a restore,
+     * which a DELETE does not.
+     */
     @Test
-    void anEmptyRingRefusesToExist() {
-        assertThatThrownBy(() -> new KeyRing(Map.of(), "v1"))
+    void erasureDestroysTheKeyAndNotTheData() {
+        KeyRing ring = new KeyRing(new InMemoryKekStore(Map.of("v1", KEK_V1), "v1"));
+        EnvelopeCipher cipher = new EnvelopeCipher(ring);
+        EnvelopeCipher.Sealed sealed = cipher.encrypt(PAN, TOKEN, "merchant-alice");
+        byte[] ciphertextBefore = sealed.ciphertext().clone();
+
+        cipher.forget("merchant-alice");
+
+        assertThat(sealed.ciphertext())
+                .as("the data is still there and is now permanently meaningless")
+                .isEqualTo(ciphertextBefore);
+    }
+
+    /**
+     * Erasing a scope erases EVERY version of its key, not just the current one.
+     *
+     * <p>A merchant whose key has been rotated three times has three versions,
+     * with records under each. An erasure that destroyed only the current one
+     * would leave most of their cards readable while reporting success.
+     */
+    @Test
+    void erasureDestroysEveryVersionOfAScopeNotJustTheCurrentOne() {
+        KeyRing ring = new KeyRing(new InMemoryKekStore(Map.of("v1", KEK_V1), "v1"));
+        EnvelopeCipher cipher = new EnvelopeCipher(ring);
+
+        EnvelopeCipher.Sealed first = cipher.encrypt(PAN, TOKEN, "merchant-alice");
+        cipher.rotate("merchant-alice");
+        EnvelopeCipher.Sealed second = cipher.encrypt(PAN, TOKEN, "merchant-alice");
+
+        assertThat(first.wrappedKey().kekVersion())
+                .isNotEqualTo(second.wrappedKey().kekVersion());
+
+        assertThat(cipher.forget("merchant-alice")).isEqualTo(2);
+
+        assertThatThrownBy(() -> cipher.decrypt(first, TOKEN))
+                .isInstanceOf(KeyRing.UnknownKeyException.class);
+        assertThatThrownBy(() -> cipher.decrypt(second, TOKEN))
+                .isInstanceOf(KeyRing.UnknownKeyException.class);
+    }
+
+    /**
+     * A wrapped DEK relabelled into another scope does not unwrap, because the
+     * scope is bound into the wrap AAD.
+     *
+     * <p>Without that binding, somebody with write access could move an erased
+     * merchant's row into a live merchant's scope and resurrect a card that had
+     * been erased - turning a completed erasure request back into a data breach
+     * with one UPDATE.
+     */
+    @Test
+    void aWrappedKeyRelabelledIntoAnotherScopeDoesNotUnwrap() {
+        KeyRing ring = new KeyRing(new InMemoryKekStore(Map.of("v1", KEK_V1), "v1"));
+        EnvelopeCipher cipher = new EnvelopeCipher(ring);
+
+        EnvelopeCipher.Sealed alice = cipher.encrypt(PAN, TOKEN, "merchant-alice");
+        // Bob's scope must exist, or this fails for the uninteresting reason.
+        cipher.encrypt("4111111111111111", TOKEN, "merchant-bob");
+
+        KeyRing.WrappedKey relabelled = new KeyRing.WrappedKey(
+                "merchant-bob", alice.wrappedKey().kekVersion(),
+                alice.wrappedKey().iv(), alice.wrappedKey().ciphertext());
+
+        assertThatThrownBy(() -> cipher.decrypt(
+                new EnvelopeCipher.Sealed(alice.iv(), alice.ciphertext(), relabelled), TOKEN))
                 .isInstanceOf(IllegalStateException.class);
+    }
+
+    /**
+     * A scope's first key is created on first use.
+     *
+     * <p>Rather than at merchant onboarding: a merchant who has never taken a
+     * payment has nothing to protect and nothing to erase, and provisioning keys
+     * for them is key material existing for no reason.
+     */
+    @Test
+    void aScopeGetsItsFirstKeyOnFirstUse() {
+        KeyRing ring = new KeyRing(new InMemoryKekStore(Map.of("v1", KEK_V1), "v1"));
+
+        assertThat(ring.currentVersion("merchant-new")).isEmpty();
+
+        new EnvelopeCipher(ring).encrypt(PAN, TOKEN, "merchant-new");
+
+        assertThat(ring.currentVersion("merchant-new")).isPresent();
+    }
+
+    /**
+     * Erasing a scope that never existed is not an error. An erasure request for
+     * a merchant who never took a payment is satisfied by there being nothing to
+     * erase, and answering it with an exception would make the caller
+     * distinguish "erased" from "nothing to erase" - a distinction the whole
+     * point is to remove.
+     */
+    @Test
+    void erasingAScopeThatNeverExistedIsHarmless() {
+        KeyRing ring = new KeyRing(new InMemoryKekStore(Map.of("v1", KEK_V1), "v1"));
+
+        assertThat(ring.forget("merchant-who-never-paid")).isZero();
+    }
+
+    // --- the store's own guards -------------------------------------------
+
+    @Test
+    void aStoreWhoseCurrentSharedVersionIsMissingRefusesToExist() {
+        assertThatThrownBy(() -> new InMemoryKekStore(Map.of("v1", KEK_V1), "v2"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("v2")
+                .hasMessageContaining("not configured");
     }
 
     @Test
     void aKeyOfTheWrongLengthIsRefusedWithItsVersionNamed() {
         String tooShort = Base64.getEncoder().encodeToString(new byte[16]);
 
-        assertThatThrownBy(() -> new KeyRing(Map.of("v9", tooShort), "v9"))
+        assertThatThrownBy(() -> new InMemoryKekStore(Map.of("v9", tooShort), "v9"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("v9")
                 .hasMessageContaining("32 bytes");
+    }
+
+    /**
+     * A key handed out by the store is a COPY.
+     *
+     * <p>{@code EnvelopeCipher} wipes the KEK array it is given as soon as it is
+     * done with it - correct, and catastrophic if that array is the stored one.
+     * The second encryption under the same scope would then wrap under 32 zero
+     * bytes, and every record after that would be readable by anybody who
+     * guessed. The wipe is right; the store cloning is what makes it safe.
+     */
+    @Test
+    void theStoreHandsOutCopiesSoACallersWipeCannotShredAScope() {
+        InMemoryKekStore store = new InMemoryKekStore(Map.of("v1", KEK_V1), "v1");
+        EnvelopeCipher cipher = new EnvelopeCipher(new KeyRing(store));
+
+        EnvelopeCipher.Sealed first = cipher.encrypt(PAN, TOKEN, SCOPE);
+        EnvelopeCipher.Sealed second = cipher.encrypt(PAN, TOKEN, SCOPE);
+
+        assertThat(cipher.decrypt(first, TOKEN)).isEqualTo(PAN);
+        assertThat(cipher.decrypt(second, TOKEN))
+                .as("the second wrap must not have used a wiped key")
+                .isEqualTo(PAN);
     }
 
     /**
@@ -333,7 +496,7 @@ class EnvelopeCipherTest {
     @Test
     void aWrappedKeyCannotBeFedThroughTheCardDecryptionPath() {
         EnvelopeCipher cipher = new EnvelopeCipher(beforeRotation);
-        EnvelopeCipher.Sealed sealed = cipher.encrypt(PAN, TOKEN);
+        EnvelopeCipher.Sealed sealed = cipher.encrypt(PAN, TOKEN, SCOPE);
 
         EnvelopeCipher.Sealed confused = new EnvelopeCipher.Sealed(
                 sealed.wrappedKey().iv(), sealed.wrappedKey().ciphertext(), sealed.wrappedKey());

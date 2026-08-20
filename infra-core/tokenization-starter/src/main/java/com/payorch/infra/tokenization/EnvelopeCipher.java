@@ -86,7 +86,14 @@ public final class EnvelopeCipher {
     public record Sealed(byte[] iv, byte[] ciphertext, KeyRing.WrappedKey wrappedKey) {
     }
 
-    public Sealed encrypt(String pan, String token) {
+    /**
+     * @param keyScope the erasure boundary this record belongs to - the
+     *        merchant. Phase 9c. Choosing it wrongly is not something a later
+     *        refactor fixes: records wrapped under a shared key cannot be
+     *        separated afterwards without decrypting and re-encrypting them,
+     *        which is the expensive migration all of 9b was arranged to avoid
+     */
+    public Sealed encrypt(String pan, String token, String keyScope) {
         byte[] dek = keys.newDataKey();
         byte[] iv = new byte[IV_LENGTH];
         random.nextBytes(iv);
@@ -99,7 +106,7 @@ public final class EnvelopeCipher {
             cipher.updateAAD(token.getBytes(StandardCharsets.UTF_8));
             byte[] ciphertext = cipher.doFinal(plaintext);
 
-            return new Sealed(iv, ciphertext, keys.wrap(dek));
+            return new Sealed(iv, ciphertext, keys.wrap(keyScope, dek));
         } catch (GeneralSecurityException e) {
             throw new IllegalStateException("card encryption failed");
         } finally {
@@ -143,7 +150,11 @@ public final class EnvelopeCipher {
     public KeyRing.WrappedKey rewrap(KeyRing.WrappedKey wrapped) {
         byte[] dek = keys.unwrap(wrapped);
         try {
-            return keys.wrap(dek);
+            // Re-wrapped within its OWN scope. A rotation must never move a
+            // record between erasure boundaries: doing so would put a merchant's
+            // card under a scope their erasure request will not reach, and the
+            // deletion would silently fail to delete.
+            return keys.wrap(wrapped.keyScope(), dek);
         } finally {
             Arrays.fill(dek, (byte) 0);
         }
@@ -154,7 +165,23 @@ public final class EnvelopeCipher {
         return keys.isCurrent(wrapped);
     }
 
-    public String currentKeyVersion() {
-        return keys.currentVersion();
+    /** The version new records in this scope are wrapped under, if any yet. */
+    public java.util.Optional<String> currentKeyVersion(String keyScope) {
+        return keys.currentVersion(keyScope);
+    }
+
+    /** Adds a new current version to a scope. The first half of a rotation. */
+    public String rotate(String keyScope) {
+        return keys.rotate(keyScope);
+    }
+
+    /**
+     * Erases a scope: every record wrapped under it becomes permanently
+     * unreadable, in every copy that exists anywhere.
+     *
+     * @return how many key versions were destroyed
+     */
+    public int forget(String keyScope) {
+        return keys.forget(keyScope);
     }
 }

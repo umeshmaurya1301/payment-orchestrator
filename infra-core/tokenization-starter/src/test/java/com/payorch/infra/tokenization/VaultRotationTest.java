@@ -34,6 +34,7 @@ class VaultRotationTest {
                 pan_cipher   VARBINARY(64) NOT NULL,
                 wrapped_dek  VARBINARY(64) NULL,
                 dek_iv       VARBINARY(12) NULL,
+                key_scope    VARCHAR(64)   NULL,
                 kek_version  VARCHAR(32)   NULL,
                 bin          CHAR(6)       NOT NULL,
                 last4        CHAR(4)       NOT NULL,
@@ -72,12 +73,12 @@ class VaultRotationTest {
         connection = new VaultConnection(new HikariDataSource(config));
         connection.jdbc().sql(SCHEMA).update();
 
-        EnvelopeCipher onV1 = new EnvelopeCipher(new KeyRing(ring("v1", KEK_V1), "v1"));
+        EnvelopeCipher onV1 = new EnvelopeCipher(new KeyRing(new InMemoryKekStore(ring("v1", KEK_V1), "v1")));
 
         // Both versions on the ring, v2 current. This is the state a rotation
         // runs in - the old key stays until every row has moved off it.
         EnvelopeCipher onV2 = new EnvelopeCipher(
-                new KeyRing(ring("v1", KEK_V1, "v2", KEK_V2), "v2"));
+                new KeyRing(new InMemoryKekStore(ring("v1", KEK_V1, "v2", KEK_V2), "v2")));
 
         vaultOnV1 = new TokenVault(connection.jdbc(), null, onV1);
         vaultOnV2 = new TokenVault(connection.jdbc(), null, onV2);
@@ -92,7 +93,7 @@ class VaultRotationTest {
     private List<String> tokenizeAll(String... pans) {
         List<String> tokens = new ArrayList<>();
         for (String pan : pans) {
-            tokens.add(vaultOnV1.tokenize(pan, 12, 2030).token());
+            tokens.add(vaultOnV1.tokenize(pan, 12, 2030, KeyRing.SHARED_SCOPE).token());
         }
         return tokens;
     }
@@ -139,7 +140,7 @@ class VaultRotationTest {
                 "4242424242424242", "4111111111111111", "5555555555554444");
         Map<String, String> before = ciphertextsByToken();
 
-        VaultRotation.Pass pass = rotation.rotateAll(10);
+        VaultRotation.Pass pass = rotation.rotateAll(KeyRing.SHARED_SCOPE, 10);
 
         assertThat(pass.rewrapped()).isEqualTo(3);
         assertThat(pass.lost()).isZero();
@@ -158,11 +159,11 @@ class VaultRotationTest {
     void everyRowEndsUpOnTheCurrentKeyVersion() {
         tokenizeAll("4242424242424242", "4111111111111111");
 
-        assertThat(rotation.remaining()).containsExactly(Map.entry("v1", 2L));
+        assertThat(rotation.remaining()).containsExactly(Map.entry("shared/v1", 2L));
 
-        rotation.rotateAll(10);
+        rotation.rotateAll(KeyRing.SHARED_SCOPE, 10);
 
-        assertThat(rotation.remaining()).containsExactly(Map.entry("v2", 2L));
+        assertThat(rotation.remaining()).containsExactly(Map.entry("shared/v2", 2L));
     }
 
     /**
@@ -177,10 +178,10 @@ class VaultRotationTest {
 
         // One row at a time, checking everything still reads after each.
         VaultRotation oneAtATime = new VaultRotation(connection.jdbc(),
-                new EnvelopeCipher(new KeyRing(ring("v1", KEK_V1, "v2", KEK_V2), "v2")), 1);
+                new EnvelopeCipher(new KeyRing(new InMemoryKekStore(ring("v1", KEK_V1, "v2", KEK_V2), "v2"))), 1);
 
         for (int i = 0; i < 3; i++) {
-            oneAtATime.rotate();
+            oneAtATime.rotate(KeyRing.SHARED_SCOPE);
             for (String token : tokens) {
                 assertThat(vaultOnV2.detokenize(token).pan())
                         .as("every card must read at every point of a partial rotation")
@@ -188,16 +189,16 @@ class VaultRotationTest {
             }
         }
 
-        assertThat(oneAtATime.remaining()).containsExactly(Map.entry("v2", 3L));
+        assertThat(oneAtATime.remaining()).containsExactly(Map.entry("shared/v2", 3L));
     }
 
     /** Running it again when there is nothing left to do is free and harmless. */
     @Test
     void aSecondRotationOverAFullyRotatedVaultDoesNothing() {
         tokenizeAll("4242424242424242");
-        rotation.rotateAll(10);
+        rotation.rotateAll(KeyRing.SHARED_SCOPE, 10);
 
-        VaultRotation.Pass second = rotation.rotate();
+        VaultRotation.Pass second = rotation.rotate(KeyRing.SHARED_SCOPE);
 
         assertThat(second.rewrapped()).isZero();
         assertThat(second.complete()).isTrue();
@@ -211,14 +212,14 @@ class VaultRotationTest {
     @Test
     void rowsWrittenAfterTheRingMovedAreAlreadyCurrent() {
         tokenizeAll("4242424242424242");
-        vaultOnV2.tokenize("4111111111111111", 12, 2030);
+        vaultOnV2.tokenize("4111111111111111", 12, 2030, KeyRing.SHARED_SCOPE);
 
-        VaultRotation.Pass pass = rotation.rotateAll(10);
+        VaultRotation.Pass pass = rotation.rotateAll(KeyRing.SHARED_SCOPE, 10);
 
         assertThat(pass.rewrapped())
                 .as("only the v1 row needed moving")
                 .isEqualTo(1);
-        assertThat(rotation.remaining()).containsExactly(Map.entry("v2", 2L));
+        assertThat(rotation.remaining()).containsExactly(Map.entry("shared/v2", 2L));
     }
 
     // --- the legacy population ---------------------------------------------
@@ -237,14 +238,14 @@ class VaultRotationTest {
         tokenizeAll("4242424242424242");
         insertLegacyRow("tok_legacy");
 
-        VaultRotation.Pass pass = rotation.rotateAll(10);
+        VaultRotation.Pass pass = rotation.rotateAll(KeyRing.SHARED_SCOPE, 10);
 
         assertThat(pass.rewrapped()).isEqualTo(1);
         assertThat(pass.legacy())
                 .as("the row that cannot be rotated must be reported, not hidden")
                 .isEqualTo(1);
         assertThat(rotation.remaining())
-                .containsEntry("v2", 1L)
+                .containsEntry("shared/v2", 1L)
                 .containsEntry("legacy", 1L);
     }
 
@@ -265,7 +266,7 @@ class VaultRotationTest {
                 .update();
 
         TokenVault withLegacy = new TokenVault(connection.jdbc(), legacyCipher,
-                new EnvelopeCipher(new KeyRing(ring("v2", KEK_V2), "v2")));
+                new EnvelopeCipher(new KeyRing(new InMemoryKekStore(ring("v2", KEK_V2), "v2"))));
 
         assertThat(withLegacy.detokenize(token).pan()).isEqualTo("4242424242424242");
     }
@@ -300,15 +301,153 @@ class VaultRotationTest {
 
         // v1 destroyed before the rotation reached that row.
         TokenVault afterShred = new TokenVault(connection.jdbc(), null,
-                new EnvelopeCipher(new KeyRing(ring("v2", KEK_V2), "v2")));
+                new EnvelopeCipher(new KeyRing(new InMemoryKekStore(ring("v2", KEK_V2), "v2"))));
 
         assertThatThrownBy(() -> afterShred.detokenize(tokens.get(0)))
-                .isInstanceOf(KeyRing.UnknownKeyVersionException.class)
+                .isInstanceOf(KeyRing.UnknownKeyException.class)
                 .hasMessageContaining("v1");
 
         assertThat(rotation.remaining())
                 .as("and remaining() is what would have warned an operator first")
-                .containsExactly(Map.entry("v1", 1L));
+                .containsExactly(Map.entry("shared/v1", 1L));
+    }
+
+    // --- phase 9c: crypto-shredding, against a real table ------------------
+
+    /**
+     * PHASE 9C'S EXIT CRITERION: an erasure request renders one merchant's
+     * historical card data unrecoverable, verified.
+     *
+     * <p>Two merchants tokenize cards. One is erased. Their cards become
+     * permanently unreadable and the other merchant is entirely unaffected -
+     * <strong>and not one row is deleted or modified.</strong>
+     *
+     * <p>That last part is the whole argument. Nothing goes looking for copies,
+     * because there is nothing to look for: the ciphertext stays exactly where
+     * it is, in the table, in the replica, in last night's backup, and every
+     * copy of it is now meaningless. A {@code DELETE} would satisfy the request
+     * only until somebody restored a backup.
+     */
+    @Test
+    void erasingOneMerchantMakesTheirCardsUnrecoverableAndTouchesNoRow() {
+        InMemoryKekStore store = new InMemoryKekStore(ring("v1", KEK_V1), "v1");
+        KeyRing keys = new KeyRing(store);
+        TokenVault vault = new TokenVault(connection.jdbc(), null, new EnvelopeCipher(keys));
+
+        String aliceToken = vault.tokenize("4242424242424242", 12, 2030, "merchant-alice").token();
+        String bobToken = vault.tokenize("4111111111111111", 12, 2030, "merchant-bob").token();
+
+        long rowsBefore = connection.jdbc().sql("SELECT COUNT(*) FROM token_vault")
+                .query(Long.class).single();
+        Map<String, String> ciphertextsBefore = ciphertextsByToken();
+
+        assertThat(keys.forget("merchant-alice"))
+                .as("one key version destroyed")
+                .isEqualTo(1);
+
+        assertThatThrownBy(() -> vault.detokenize(aliceToken))
+                .as("the erased merchant's card is unrecoverable")
+                .isInstanceOf(KeyRing.UnknownKeyException.class);
+
+        assertThat(vault.detokenize(bobToken).pan())
+                .as("and no other merchant was affected")
+                .isEqualTo("4111111111111111");
+
+        assertThat(connection.jdbc().sql("SELECT COUNT(*) FROM token_vault")
+                .query(Long.class).single())
+                .as("erasure deletes nothing - that is what lets it survive a restore")
+                .isEqualTo(rowsBefore);
+        assertThat(ciphertextsByToken())
+                .as("and rewrites nothing either")
+                .isEqualTo(ciphertextsBefore);
+    }
+
+    /**
+     * A restore cannot bring an erased card back.
+     *
+     * <p>Simulated the only way it can be in-process: the row is copied out and
+     * re-inserted after the erasure, which is exactly what restoring a backup of
+     * this table would do. It is still unreadable, because the key was never in
+     * the table to be restored.
+     *
+     * <p>This is the assertion that separates crypto-shredding from
+     * {@code DELETE FROM token_vault}. The deleted row comes back; the destroyed
+     * key does not.
+     */
+    @Test
+    void restoringTheTableDoesNotUndoAnErasure() {
+        InMemoryKekStore store = new InMemoryKekStore(ring("v1", KEK_V1), "v1");
+        KeyRing keys = new KeyRing(store);
+        TokenVault vault = new TokenVault(connection.jdbc(), null, new EnvelopeCipher(keys));
+
+        String token = vault.tokenize("4242424242424242", 12, 2030, "merchant-alice").token();
+
+        // A backup, taken before the erasure.
+        connection.jdbc().sql("CREATE TABLE backup AS SELECT * FROM token_vault").update();
+
+        keys.forget("merchant-alice");
+        connection.jdbc().sql("DELETE FROM token_vault").update();
+
+        // ...and restored afterwards. Every byte is back.
+        connection.jdbc().sql("INSERT INTO token_vault SELECT * FROM backup").update();
+
+        assertThat(connection.jdbc().sql("SELECT COUNT(*) FROM token_vault")
+                .query(Long.class).single())
+                .as("the row is fully restored")
+                .isEqualTo(1);
+        assertThatThrownBy(() -> vault.detokenize(token))
+                .as("and it is still meaningless, because the key was never in the backup")
+                .isInstanceOf(KeyRing.UnknownKeyException.class);
+    }
+
+    /**
+     * The shared scope is not erasable per-merchant, and a record that lands
+     * there by accident is a record that cannot be erased.
+     *
+     * <p>Asserted so the consequence of choosing the wrong scope is written
+     * down: erasing the shared scope destroys every record that used it, which
+     * is why it is the default rather than the choice.
+     */
+    @Test
+    void erasingTheSharedScopeTakesEverythingInIt() {
+        InMemoryKekStore store = new InMemoryKekStore(ring("v1", KEK_V1), "v1");
+        KeyRing keys = new KeyRing(store);
+        TokenVault vault = new TokenVault(connection.jdbc(), null, new EnvelopeCipher(keys));
+
+        String first = vault.tokenize("4242424242424242", 12, 2030, KeyRing.SHARED_SCOPE).token();
+        String second = vault.tokenize("4111111111111111", 12, 2030, KeyRing.SHARED_SCOPE).token();
+
+        keys.forget(KeyRing.SHARED_SCOPE);
+
+        assertThatThrownBy(() -> vault.detokenize(first))
+                .isInstanceOf(KeyRing.UnknownKeyException.class);
+        assertThatThrownBy(() -> vault.detokenize(second))
+                .as("both, because they shared a key - which is the point of scoping")
+                .isInstanceOf(KeyRing.UnknownKeyException.class);
+    }
+
+    /** Rotation is per-scope: rotating one merchant leaves the others alone. */
+    @Test
+    void rotatingOneScopeDoesNotTouchAnother() {
+        InMemoryKekStore store = new InMemoryKekStore(ring("v1", KEK_V1), "v1");
+        KeyRing keys = new KeyRing(store);
+        EnvelopeCipher cipher = new EnvelopeCipher(keys);
+        TokenVault vault = new TokenVault(connection.jdbc(), null, cipher);
+        VaultRotation scoped = new VaultRotation(connection.jdbc(), cipher, 100);
+
+        String aliceToken = vault.tokenize("4242424242424242", 12, 2030, "merchant-alice").token();
+        String bobToken = vault.tokenize("4111111111111111", 12, 2030, "merchant-bob").token();
+
+        keys.rotate("merchant-alice");
+        VaultRotation.Pass pass = scoped.rotateAll("merchant-alice", 10);
+
+        assertThat(pass.rewrapped()).isEqualTo(1);
+        assertThat(scoped.remaining())
+                .containsEntry("merchant-alice/v2", 1L)
+                .containsEntry("merchant-bob/v1", 1L);
+
+        assertThat(vault.detokenize(aliceToken).pan()).isEqualTo("4242424242424242");
+        assertThat(vault.detokenize(bobToken).pan()).isEqualTo("4111111111111111");
     }
 
     private void insertLegacyRow(String token) {

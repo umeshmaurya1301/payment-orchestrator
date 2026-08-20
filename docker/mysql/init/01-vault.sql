@@ -95,6 +95,36 @@ CREATE TABLE IF NOT EXISTS token_vault (
     wrapped_dek  VARBINARY(64) NULL,
     dek_iv       VARBINARY(12) NULL,
 
+    -- Phase 9c. THE ERASURE BOUNDARY.
+    --
+    -- Which key this record's DEK is wrapped under - the merchant, because a
+    -- right-to-erasure request arrives for a merchant's data. Destroying that
+    -- merchant's key material makes every card here that names their scope
+    -- permanently undecryptable, in every copy of this table that exists: live,
+    -- replicated, in last night's backup, on a tape in a cupboard. None of
+    -- those copies is touched, and none of them needs to be found.
+    --
+    -- WHY DELETING THE ROW IS NOT ENOUGH
+    --
+    -- It sounds like it should be, and it is what "delete the token->PAN
+    -- mapping" suggests. A DELETE removes the row from the live table and from
+    -- nothing else. Restore last night's backup and the mapping is back.
+    -- Erasure has to survive a restore, which means the thing destroyed cannot
+    -- be in the backup - so it is the KEY, held in a different system with a
+    -- different backup lifecycle, and never in this table.
+    --
+    -- WHY THE SCOPE CANNOT BE CHOSEN LATER
+    --
+    -- Records wrapped under a shared key cannot be separated afterwards without
+    -- decrypting and re-encrypting them, which is the expensive migration all of
+    -- 9b was arranged to avoid. Whatever unit the business must be able to erase
+    -- has to be the unit named here, from the first record.
+    --
+    -- NULL means a row written by 9b, before scoping - there was one key, so
+    -- they belong to the shared scope by definition and TokenVault reads them
+    -- that way.
+    key_scope    VARCHAR(64)   NULL,
+
     -- Which KEK wrapped this record's DEK. The field that makes rotation
     -- gradual: a record names its own key version, so the ring can gain a new
     -- version and the re-wrap job can catch up over hours with no window in
@@ -110,7 +140,12 @@ CREATE TABLE IF NOT EXISTS token_vault (
     -- but that is exactly right here, because the query wants a large
     -- contiguous slice rather than a needle, and the alternative is a full scan
     -- of the most sensitive table in the system on every pass.
-    KEY idx_vault_kek_version (kek_version)
+    -- The rotation job's working set, and the erasure job's. Scope leads,
+    -- because both operations are scoped: "everything for this merchant not yet
+    -- on their current key". Equality column then equality column, and the
+    -- selective one first - a scope is one merchant out of many, a version is
+    -- one of a handful.
+    KEY idx_vault_scope_version (key_scope, kek_version)
 ) ENGINE = InnoDB;
 
 -- payments-edge. Writes on tokenization, and can read back what it wrote.

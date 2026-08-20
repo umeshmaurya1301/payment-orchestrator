@@ -83,9 +83,23 @@ public class TokenizationAutoConfiguration {
      * enveloped under {@code v1}. The two coexist, distinguished by
      * {@code kek_version}.
      */
+    /**
+     * Where KEKs live. Phase 9c.
+     *
+     * <p>In memory, which is honest for local development and useless for
+     * anything else: every merchant-scoped key is destroyed on restart, so cards
+     * tokenized under one become unreadable when the process stops. The shared
+     * scope is the exception - it is seeded from configuration and survives,
+     * which is what lets a 9b deployment adopt scoping gradually.
+     *
+     * <p>The production implementation is Vault, and it is outstanding. See
+     * {@link KekStore} for the one requirement any implementation has to meet:
+     * key material must not share a backup domain with the ciphertext it
+     * protects, or destroying it erases nothing.
+     */
     @Bean
     @ConditionalOnMissingBean
-    public KeyRing keyRing(VaultProperties properties) {
+    public KekStore kekStore(VaultProperties properties) {
         if (!properties.keys().isEmpty()) {
             String current = properties.currentKey();
             if (current == null || current.isBlank()) {
@@ -93,7 +107,7 @@ public class TokenizationAutoConfiguration {
                         "payorch.vault.current-key must name one of the configured "
                                 + "payorch.vault.keys versions: " + properties.keys().keySet());
             }
-            return new KeyRing(properties.keys(), current);
+            return new InMemoryKekStore(properties.keys(), current);
         }
 
         if (properties.key() == null || properties.key().isBlank()) {
@@ -102,7 +116,15 @@ public class TokenizationAutoConfiguration {
                             + "one version and payorch.vault.current-key to name it. "
                             + "Generate a key with: openssl rand -base64 32");
         }
-        return new KeyRing(java.util.Map.of("v1", properties.key()), "v1");
+        // A single unversioned key is the phase-1 and 9b form, adopted as the
+        // shared scope's v1 so an existing deployment needs no config change.
+        return new InMemoryKekStore(java.util.Map.of("v1", properties.key()), "v1");
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public KeyRing keyRing(KekStore kekStore) {
+        return new KeyRing(kekStore);
     }
 
     @Bean

@@ -21,6 +21,29 @@ x-vault-key: &vault-key "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
 
 x-java-service: &java-service
   restart: unless-stopped
+
+  # Phase 7i. THE HALF THAT WAS MISSING, and it made the other half theatre.
+  #
+  # Every service has carried `server.shutdown: graceful` since phase 0, and
+  # Spring's drain budget defaults to 30 seconds. Docker's stop_grace_period
+  # defaults to TEN. So SIGTERM arrived, Spring began draining with a 30s
+  # budget, and Docker SIGKILLed the container at 10s - two thirds of the way
+  # through, on exactly the requests that needed draining. A payment in flight
+  # at that moment was neither completed nor recorded as UNKNOWN; it was killed,
+  # which is the one outcome phase 7's exit criterion says must not happen.
+  #
+  # Nothing looked wrong. Both settings were individually reasonable and neither
+  # of them is expressed in terms of the other.
+  #
+  # The chain has to hold end to end:
+  #
+  #     stop_grace_period  >  timeout-per-shutdown-phase  >=  DEADLINE_BUDGET_MS
+  #          45s           >             35s              >=        30s
+  #
+  # The last term is what a request is actually allowed to take, so it drives
+  # the other two. Raising DEADLINE_BUDGET_MS for an experiment means raising
+  # all three, or the experiment quietly measures SIGKILL instead.
+  stop_grace_period: 45s
   # A limit, so -XX:MaxRAMPercentage=70 in the Dockerfile has something to
   # compute a heap from. 640m x 70% is roughly a 448m heap, which is the ~450m
   # per service the resource budget assumes.

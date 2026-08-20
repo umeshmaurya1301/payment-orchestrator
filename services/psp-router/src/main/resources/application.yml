@@ -1,4 +1,14 @@
 spring:
+  # Phase 7i. The drain budget for `server.shutdown: graceful` below.
+  #
+  # Derived, not chosen: it has to exceed the longest a request may still be
+  # running (the deadline budget), and docker-compose.yml's stop_grace_period
+  # has to exceed IT, or Docker SIGKILLs a server that is draining correctly.
+  # See payments-edge's application.yml for the chain and for what was broken
+  # before this - Docker's default grace period is 10s, so the 30s drain was
+  # being cut off two thirds of the way through.
+  lifecycle:
+    timeout-per-shutdown-phase: ${SHUTDOWN_DRAIN:35s}
   application:
     name: psp-router
   threads:

@@ -1,4 +1,34 @@
 spring:
+  # Phase 7i. How long the drain enabled by `server.shutdown: graceful` may
+  # actually take.
+  #
+  # THIS NUMBER IS NOT A PREFERENCE. IT IS DERIVED.
+  #
+  # Spring's default is 30s and was never stated here, which mattered because it
+  # is only one link in a chain that has to hold end to end:
+  #
+  #     docker stop_grace_period  >  timeout-per-shutdown-phase  >=  budget-ms
+  #              45s              >            35s               >=     30s
+  #
+  # budget-ms below is the longest a request may run before the deadline layer
+  # abandons it, so it is the longest anything can still be in flight when
+  # SIGTERM arrives. The drain has to cover that plus the time to write the
+  # response. And Docker has to wait longer than the drain, or it SIGKILLs a
+  # server that was draining correctly.
+  #
+  # WHAT WAS ACTUALLY BROKEN BEFORE THIS
+  #
+  # docker-compose.yml set no stop_grace_period, so Docker's default of TEN
+  # SECONDS applied. Spring was given 30s to drain and was killed at 10s. Every
+  # service in this project has carried `shutdown: graceful` since phase 0 and
+  # the drain could never have completed for any request that had been running
+  # more than ten seconds - which, with a 30s budget, is the case that needed
+  # draining. Configured, enabled, and cut off two thirds of the way through.
+  #
+  # Raise budget-ms and all three numbers have to move together. That is the
+  # cost of a generous request deadline, paid at deploy time.
+  lifecycle:
+    timeout-per-shutdown-phase: ${SHUTDOWN_DRAIN:35s}
   application:
     name: payments-edge
   threads:

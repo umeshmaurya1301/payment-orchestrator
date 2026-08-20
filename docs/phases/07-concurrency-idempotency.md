@@ -517,6 +517,64 @@ in `UNKNOWN`; **nothing is lost.**
 `exec` ensures SIGTERM actually reaches the JVM rather than being swallowed by a
 shell.
 
+#### 7i, as built — and the drain could never have finished
+
+**Both halves were set. Neither was expressed in terms of the other, and the
+combination did not work.**
+
+- Six services set `server.shutdown: graceful`.
+- None set `spring.lifecycle.timeout-per-shutdown-phase`, so Spring's default
+  applied: **30 s**.
+- `docker-compose.yml` set no `stop_grace_period`, so Docker's default applied:
+  **10 s**.
+
+SIGTERM arrives, Spring begins a 30-second drain, Docker SIGKILLs the container
+at 10. Every request still running at that point is killed — and with
+`DEADLINE_BUDGET_MS` at 30 s, a request is *allowed* to run three times longer
+than the window it would actually get. A payment in flight at ten seconds was
+neither completed nor recorded `UNKNOWN`; it was destroyed, which is the one
+outcome this phase's exit criterion says must not happen.
+
+Nothing looked wrong anywhere. There is no file in which this is a mistake. Both
+values are individually reasonable and the defect exists only in the
+relationship between them — which is why the fix is a *stated chain* rather than
+a better number:
+
+```
+stop_grace_period  >  timeout-per-shutdown-phase  >=  DEADLINE_BUDGET_MS
+      45s          >              35s             >=         30s
+```
+
+The last term drives the other two. `DEADLINE_BUDGET_MS` is what a request is
+actually permitted to take, so it is the longest anything can still be in flight
+when the signal lands; the drain must cover it plus writing the response, and
+Docker must wait longer than the drain. **Raising the request deadline for an
+experiment means raising all three**, or the experiment quietly measures SIGKILL.
+That is the price of a generous request deadline, paid at deploy time.
+
+**The preflight is the deliverable, more than the fix is.**
+`tools/loadtest/graceful-drain.sh` refuses to run unless the chain holds, and it
+asserts the *relationship* rather than the values — the only form in which this
+class of bug is catchable, since no individual number was wrong.
+
+**The two arms differ by one flag.** `docker stop -t N` overrides
+`stop_grace_period` for a single call, so the before and after need no config
+edit and no rebuild: `-t 45` is the configured behaviour, `-t 10` reproduces
+exactly what this project was running under until now. Arm B exists because the
+fix is otherwise unfalsifiable — a green arm A shows the system survives a
+restart, not that the grace period is why. The script also reads back the
+container's exit code, where **137 is SIGKILL** and 143 is a drain that
+finished.
+
+**What the criterion actually asks is subtler than "no errors".** `UNKNOWN` is an
+acceptable outcome: the system is not required to finish every payment across a
+restart, only to never be unable to say what happened to one. So the assertion is
+zero payments left in `INITIATED`, `ROUTED` or `AUTHORIZING` — states from which
+nothing will ever resolve them.
+
+**Not yet run**: needs the compose stack, which was unavailable. No numbers have
+been invented.
+
 ### 10. Hikari pool starvation demo
 
 Toxiproxy adds 800 ms to MySQL under load. Watch virtual threads pile up waiting
@@ -577,8 +635,14 @@ connections flat at `maximum-pool-size`, throughput flat, latency climbing.
       would otherwise assume it — 7h. Thirteen tests, most of them about the
       failure paths: an unreachable store, an overrun TTL, a failed release,
       and work that throws
-- [ ] Pumba SIGTERM mid-payment → in-flight requests complete or land in
-      `UNKNOWN`; nothing lost
+- [~] Pumba SIGTERM mid-payment → in-flight requests complete or land in
+      `UNKNOWN`; nothing lost. 7i found that **the drain could never have
+      completed**: Spring's default 30 s budget against Docker's default 10 s
+      grace period, on requests allowed to run 30 s. Fixed by stating the
+      chain (45 s > 35 s >= 30 s) and asserting the relationship in the
+      drill's preflight. `tools/loadtest/graceful-drain.sh` is written with
+      both arms one flag apart, and is **not yet run** — the stack was
+      unavailable
 - [x] Lock-free primitives justified by measurement rather than by reflex —
       7g. The `LongAdder` split in this codebase already matched the numbers,
       so nothing was converted; the deliverable is the evidence and one
@@ -676,6 +740,16 @@ operation. Measured in `LockFreePrimitivesTest` — 106 ms where pinning would c
 Left in place rather than deleted, because the more useful trap is the
 meta one: **a trap list is a cache, and this entry was stale for two JDK
 releases.** Every piece of advice here has a version it was true for.
+
+**A graceful shutdown longer than the orchestrator's patience.** Found in 7i.
+`server.shutdown: graceful` plus Spring's 30 s default plus Docker's 10 s default
+is a drain that is always cut off, and every one of those three values looks fine
+on its own. Whenever two systems both have a timeout for the same event, write
+down which one has to be larger — the bug lives in the relationship, never in a
+file.
+
+**Assuming a graceful shutdown is graceful because it is configured.** The
+symptom is exit code 137, and nothing else says anything at all.
 
 **Treating a TTL lock as a mutex.** It is not one, and no number of Redis nodes
 makes it one — the failure is between Redis and the holder. Write the job to be

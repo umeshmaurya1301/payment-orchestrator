@@ -66,6 +66,34 @@ considered, decision, consequences — including the ones you dislike.
 
 An ADR with no rejected option is a description, not a decision record.
 
+#### 10a, as built
+
+All eight are written, in [`docs/adr/`](../adr/). Each carries context, the
+options genuinely considered, the decision, and consequences — with every number
+traceable to a page in `docs/experiments/`.
+
+**Two of them conclude against the thing that was built**, which is what the
+trap list is asking for when it says an ADR whose every option loses to the
+built one reads as rationalisation:
+
+- [0002](../adr/0002-semaphore-bulkhead.md) records a bulkhead **the experiment
+  did not justify** — 92% less load on a dead provider, and success against a
+  merely *slow* one falling from 100% to 6.8%, with the edge still running out
+  of memory. It is kept on a judgement, and the ADR says it is a judgement.
+- [0001](../adr/0001-outbox-over-2pc.md) records machinery that **introduced two
+  worse bugs than the one it fixed** before it worked: a relay whose claim query
+  blocked the payment path, and a `@Transactional` that was silently inert on a
+  self-invoked method.
+
+[0006](../adr/0006-retry-budget.md) states its cost as a number rather than a
+preference — **67% success instead of 94%**, deliberately — and
+[0007](../adr/0007-tokenization-boundary.md) claims **three components in PCI
+scope, not one**, which is the claim the phase's own trap list warns against
+shrinking.
+
+The index also carries the four-question PCI table, and is explicit that the
+fourth question — *who read what* — is **not answered yet**.
+
 ### 4. The PII and PCI scope section
 
 In the README, with a data-flow diagram showing precisely:
@@ -104,7 +132,9 @@ Every number should be traceable to a page in `docs/experiments/`.
 
 - [ ] README opens with the architecture diagram and the traffic-shift graph
 - [ ] Every experiment has a page with all five sections, including "what surprised you"
-- [ ] 6-8 ADRs, each with a genuinely considered rejected option
+- [x] 6-8 ADRs, each with a genuinely considered rejected option — 10a.
+      Eight, in [`docs/adr/`](../adr/), two of which conclude against the
+      component they document
 - [ ] PII/PCI section with a data-flow diagram
 - [ ] 90-second demo rehearsed end to end from a cold start
 - [ ] Resume bullets, each traceable to a measured number

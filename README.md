@@ -10,7 +10,9 @@ produces a before/after graph in [`docs/experiments/`](docs/experiments/).
 > implementation complete (6a–6k) with every exit criterion met except the
 > saga's, which is built and unit-tested but not yet measured.** Fifteen
 > experiments with a measured before and after, plus one written and not yet
-> run, in [`docs/experiments/`](docs/experiments/).
+> run, in [`docs/experiments/`](docs/experiments/), and eight decision records
+> in [`docs/adr/`](docs/adr/) — two of which conclude against the component they
+> document.
 
 ## The graph
 

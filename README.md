@@ -312,6 +312,97 @@ Layer 3 is **not** the primary control and is not treated as one. It runs on
 every value written to the JSON log output, and gates card-number masking behind
 a Luhn checksum so that order IDs and trace IDs survive intact.
 
+### The data flow, and where audit scope ends
+
+```
+  merchant                    IN SCOPE                       out of scope
+     |          .-------------------------------.
+     |  PAN     |                               |
+     +--------->|  payments-edge                |
+                |    Pan.of() validate          |
+                |    TokenVault.tokenize()      |
+                |         |                     |
+                |         |  PAN + DEK          |
+                |         v                     |
+                |  token_vault  (own schema,    |
+                |    AES-256-GCM  own creds)    |
+                |    per-record DEK,            |
+                |    wrapped by merchant KEK    |
+                |         ^                     |
+                |         | SELECT only         |
+                |         |                     |
+                |  psp-connector                |
+                |    TokenVault.detokenize()    |
+                |         |                     |
+                '---------|---------------------'
+                          |  PAN (in memory, one method)
+                          v
+                     PSP provider
+
+     bin + token + last4 only, everywhere else:
+     payment-orchestrator -- psp-router -- ledger-notifier
+     Kafka topics -- MySQL payment rows -- Mongo journal -- log archives
+```
+
+Three components are in scope, and the boundary is enforced by three different
+mechanisms rather than by one: **a database grant** (`vault_reader` has `SELECT`
+and nothing else, the application user has no grant at all), **a method
+signature** (only `authorize` accepts a `DetokenizedCard` — capture, reversal and
+lookup reference the provider's own handle and have no parameter a card could
+arrive through), and **a log allowlist** that throws on an unknown field name.
+
+### How erasure propagates
+
+Everything outside the box above holds `bin + token + last4`. None of it needs to
+be found, visited or rewritten when a merchant asks to be erased — and that is
+the point, because **an immutable Kafka log, a log archive and a backup tape
+cannot be rewritten at all.** Copy-chasing is the approach that never actually
+completes.
+
+What happens instead is that the key is destroyed:
+
+```
+  erasure request for merchant M
+            |
+            v
+  KekStore.forget("M")          <-- destroys every KEK version for M
+            |
+            +--> token_vault rows for M    : untouched, now meaningless
+            +--> replica / binlog          : untouched, now meaningless
+            +--> last night's backup       : untouched, now meaningless
+            +--> Kafka events, log archives: never held a PAN anyway
+```
+
+**Deleting the mapping row is not enough**, and finding out why is the whole
+design. A `DELETE` removes the row from the live table and from nothing else —
+restore last night's backup and the mapping is back, so an erasure satisfied by a
+delete is satisfied only until somebody restores. The thing destroyed therefore
+has to be something that was never *in* the backup of the data: the key, held in
+a different system with a different backup lifecycle.
+`VaultRotationTest.restoringTheTableDoesNotUndoAnErasure` proves it by taking a
+copy of the table, erasing, dropping every row, restoring the copy, and requiring
+the card to still be unreadable.
+
+Three properties make that work, each of which is easy to get subtly wrong:
+
+| Property | Why it is required |
+|---|---|
+| **Per-merchant key scope** | One global KEK makes rotation cheap and erasure impossible — there is no key whose destruction removes *one* merchant. The scope has to be chosen when the card is first stored; records already wrapped under a shared key cannot be separated afterwards without decrypting every one. |
+| **Keys generated, never derived** | `HKDF(master, merchantId)` needs no store and is *unshreddable* — anyone with the master re-derives a "destroyed" key. A key that can be recomputed cannot be forgotten. |
+| **Scope bound into the wrap** | Otherwise an erased merchant's row can be relabelled into a live scope and read again, turning a completed erasure back into a breach with one `UPDATE`. |
+
+Rotation uses the same machinery in the opposite direction: because each record
+carries its own DEK, **rotating a KEK re-wraps 48 bytes per row and rewrites no
+card ciphertext at all** — asserted byte-for-byte in `VaultRotationTest`. With a
+single directly-applied key, rotation *is* a full re-encryption of every card,
+which is why systems built that way do not rotate until an incident forces them.
+
+**Not yet built:** the PII access audit log. "We encrypted it" does not answer
+"who looked at it", and the second is the question auditors ask. The KEK store
+shipped here is also in-memory — correct for demonstrating erasure, useless for
+holding anything, since every merchant key dies on restart. Vault is the
+production implementation and is outstanding.
+
 ### Where a card number actually exists
 
 Being precise about this is worth more than overclaiming. There are three

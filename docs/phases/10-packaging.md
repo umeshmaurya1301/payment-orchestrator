@@ -43,6 +43,42 @@ One page per chaos experiment. Each carries the five sections
 Section 5 is the one that matters. An experiment that confirms its hypothesis
 exactly teaches nothing and usually means the hypothesis was written afterwards.
 
+#### 10b: the audit, and what it found
+
+Seventeen pages exist. Checked mechanically for the five sections, then read
+where the check disagreed with the prose:
+
+| Pages | State |
+|---|---|
+| 00–03, 09–15 | All five sections present |
+| **04–08** | **No "what surprised me" section at all** — five pages, all from phases 3d–4f |
+| 16 | Hypothesis and assertions only, correctly — it has not been run |
+
+The material is plainly there in every one of the five: page 04 is titled around
+*"the first component the experiment did not justify"*, 05 has a section called
+*"where I got the design wrong"*, 07 opens on three alerts that could not fire.
+Those are surprises. They are simply not collected under the heading the phase
+asks for, so the criterion is **not** ticked.
+
+**I have deliberately not written those five sections.** They are first-person
+accounts of runs performed in phases 3d–4f, and composing "what surprised me"
+for somebody else's experiment is the exact failure the trap list describes as
+*"unrecoverable a month later"* — the recoverable-looking version is worse than
+the gap, because it reads as genuine. The gap is recorded here instead.
+
+#### 10b, as built
+
+- **The data-flow diagram** and audit-scope boundary are in the README, with the
+  three enforcement mechanisms named separately: a database grant, a method
+  signature, and the log allowlist.
+- **How erasure propagates** is new — it did not exist before 9b/9c — and it
+  states the part that is easy to get wrong: deleting the mapping row is *not*
+  erasure, because a restore brings it back. The key is what is destroyed, and
+  the test that proves it restores a backup.
+- **Resume bullets** are in [`docs/resume-bullets.md`](../resume-bullets.md),
+  split into *measured* and *built but not yet measured*, with the bulkhead
+  explicitly excluded because the experiment did not justify it.
+
 Expected inventory: `00-baseline` (phase 2), six from phase 3, the traffic shift
 (phase 5), broker kill and DLQ replay (phase 6), pool starvation, deadlock and
 the virtual-thread benchmark (phase 7), the index table (phase 8), REST vs gRPC
@@ -131,13 +167,21 @@ Every number should be traceable to a page in `docs/experiments/`.
 ## Exit criteria
 
 - [ ] README opens with the architecture diagram and the traffic-shift graph
-- [ ] Every experiment has a page with all five sections, including "what surprised you"
+- [~] Every experiment has a page with all five sections, including "what
+      surprised you". Audited in 10b: **five pages (04–08) have no such
+      section**, though each contains the material. Not written on the
+      author's behalf — see above
 - [x] 6-8 ADRs, each with a genuinely considered rejected option — 10a.
       Eight, in [`docs/adr/`](../adr/), two of which conclude against the
       component they document
-- [ ] PII/PCI section with a data-flow diagram
+- [x] PII/PCI section with a data-flow diagram — 10b. In the README, with the
+      audit-scope boundary, the three enforcement mechanisms, and how erasure
+      propagates through copies that can never be rewritten
 - [ ] 90-second demo rehearsed end to end from a cold start
-- [ ] Resume bullets, each traceable to a measured number
+- [x] Resume bullets, each traceable to a measured number —
+      [`docs/resume-bullets.md`](../resume-bullets.md). Twelve measured, four
+      built-but-unmeasured in a separate table, and one component deliberately
+      left out because its experiment did not justify it
 
 ## Traps
 

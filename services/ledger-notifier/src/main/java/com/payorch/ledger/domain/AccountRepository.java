@@ -4,7 +4,9 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -58,6 +60,35 @@ public interface AccountRepository extends JpaRepository<LedgerAccount, UUID> {
     @Modifying
     @Query("update LedgerAccount a set a.balanceMinor = a.balanceMinor + :delta where a.id = :id")
     int applyDelta(@Param("id") UUID id, @Param("delta") long delta);
+
+    /**
+     * Locks one account for the rest of the transaction. Phase 7e.
+     *
+     * <h2>Why a pessimistic lock exists here at all, when applyDelta does not
+     * need one</h2>
+     *
+     * <p>{@link #applyDelta} is the right tool for a posting and needs no lock
+     * from the application: the row lock InnoDB takes for the duration of the
+     * {@code UPDATE} is the critical section, and there is no round trip between
+     * the read and the write for anything to happen in. It is strictly better
+     * than {@code SELECT ... FOR UPDATE} for that case.
+     *
+     * <p>What it cannot express is a <strong>condition</strong>. "Move this
+     * amount only if the source has it" needs the balance read, a decision made
+     * in Java, and the write applied - with nothing else allowed to move the
+     * balance in between. That is what a transfer does, and it is the case
+     * pessimistic locking is actually for.
+     *
+     * <p>{@code PESSIMISTIC_WRITE} rather than {@code PESSIMISTIC_READ}: another
+     * transaction must not be able to read this balance and make its own
+     * decision on it while this one is deciding.
+     *
+     * <p><strong>Two of these in one transaction is where deadlocks live</strong>,
+     * which is the entire subject of phase 7e. See {@code LedgerTransfer}.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select a from LedgerAccount a where a.id = :id")
+    Optional<LedgerAccount> lockById(@Param("id") UUID id);
 
     /**
      * Every account whose cached balance disagrees with its entries.

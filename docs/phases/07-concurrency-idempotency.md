@@ -272,6 +272,52 @@ Then fix it via **consistent lock ordering** (sort by account ID before locking)
 deadlock, and the same test passing afterwards. A deadlock you can reproduce on
 command is far more convincing than one you once saw.
 
+#### 7e, as built
+
+**`LedgerTransfer`, and why it needed inventing.** Nothing in the ledger held two
+locks, because nothing needed to: `applyDelta` is the whole posting path and
+takes no application lock at all. A transfer between two accounts is the smallest
+honest thing that does — "move this amount only if the source has it" is a read,
+a decision in Java, and a write, which is three steps and two gaps that no atomic
+delta can close. That is the case pessimistic locking is actually for, and
+holding two of its locks is the entire ingredient list for a deadlock.
+
+**The seam is what makes it a test rather than an anecdote.** The window between
+taking one row lock and asking for the second is normally microseconds wide,
+which is exactly why lock-ordering bugs survive every suite and then happen in
+production at 3am. `chaos-core`'s `PAUSE` sits in that gap and widens it to half
+a second, so both transactions are guaranteed to be holding one lock and wanting
+the other at the same moment. `transfer(A,B)` and `transfer(B,A)` then deadlock
+**every time**.
+
+**The fix is ordering on the primary key, not retry.** Sort the two accounts by
+`id` before locking: if every transaction takes the lowest-numbered lock first no
+cycle can form, because whoever holds it always makes progress. Retry-on-deadlock
+also "works" and gets slower exactly as contention rises, which is when it is
+needed most. The order is on `id` rather than `accountRef` because the id is
+immutable and is what the row lock is actually taken against — ordering on a
+derived value is an ordering that can disagree with itself across two snapshots.
+
+**Both arms stay reachable.** `payorch.ledger.transfer.lock-ordering=declared`
+keeps the deadlocking version runnable, the way `EVENTS_PUBLISHER=direct` keeps
+phase 6's naive dual-write runnable. The phase asks for both states documented,
+which means both states have to exist.
+
+**Nearly measured nothing, twice.** The two `LedgerTransfer` beans in the test
+are `@Bean` methods rather than `new LedgerTransfer(...)` — a hand-constructed
+instance gets no `@Transactional` proxy, so the transfers would have run with no
+transaction, held no row locks past each statement, and the test would have
+proved that a deadlock does not occur when nothing locks anything. Phase 6d's bug
+again, one layer over.
+
+**And a real one found on the way.** A test asserting that a repeated transfer id
+is refused *passed the duplicate through*. `uq_entry_event_account` was declared
+only in `V1__ledger.sql`, so every schema generated from the entities — tests, and
+any future tool — had no such constraint. **The whole of phase 6e's at-least-once
+safety rests on that index, and it was reachable only through Flyway.**
+`IdempotencyRecord` had made exactly this declaration on the entity, for exactly
+this reason, three phases earlier; `LedgerEntry` had not.
+
 ### 5. Virtual threads vs platform pool benchmark
 
 On the connector fan-out path. **Real numbers, not assertions.** Measure
@@ -351,7 +397,13 @@ connections flat at `maximum-pool-size`, throughput flat, latency climbing.
       inside the provider call by a barrier: one 200, one 409, one `CAPTURED`,
       exactly one `payment.captured` outbox row — and **two** provider calls,
       which is the part worth knowing
-- [ ] Deadlock reproduced on command, then eliminated — **both documented**
+- [~] Deadlock reproduced on command, then eliminated — **both documented**.
+      7e. `LedgerDeadlockTest` reproduces it deterministically with the
+      sleep-in-held-lock seam and shows a consistent lock order removing it,
+      with both implementations kept runnable. **The `SHOW ENGINE INNODB
+      STATUS` capture the criterion also asks for is missing**: these run
+      against H2, which detects the cycle and breaks it but is not InnoDB, and
+      the compose stack was unavailable. Not written from memory
 - [ ] Pool-starvation graph showing that unbounded concurrency just relocates
       the bottleneck
 - [ ] Pumba SIGTERM mid-payment → in-flight requests complete or land in
@@ -426,7 +478,19 @@ carrier thread and quietly destroy virtual-thread scaling. Use `ReentrantLock`.
 This is the most likely reason a virtual-thread benchmark disappoints.
 
 **Deadlock tests that are flaky.** That is what the `chaos-core` sleep seam is
-for — make it deterministic, not probabilistic.
+for — make it deterministic, not probabilistic. Confirmed in 7e: with the seam
+armed at 500 ms the deadlock is certain, and without it the same two transfers
+almost never collide.
+
+**A constraint that exists only in the migration.** Found in 7e. Every schema
+generated from the entities — every test, every tool — silently lacks it, and a
+test written to prove idempotency will instead prove that duplicates are
+accepted. Declare it on the entity *and* in the migration; they are two different
+schemas with two different authors.
+
+**Constructing a `@Transactional` bean with `new` in a test.** No proxy, no
+transaction, no locks held past the statement — and a deadlock test that passes
+because nothing was locking anything.
 
 **Concluding "virtual threads are slow" from the starvation demo.** The
 conclusion is that the *pool* is the bottleneck. That is the whole insight.

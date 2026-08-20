@@ -1,0 +1,36 @@
+-- Phase 7e. No schema change - a note, and a deliberate one.
+--
+-- LedgerTransfer arrived in this phase and adds no tables and no columns. It
+-- moves funds between two existing ledger_account rows and writes two
+-- ledger_entry rows, both of which already exist, and its idempotency comes from
+-- uq_entry_event_account exactly like every other posting's.
+--
+-- WHAT DID CHANGE, AND WHY IT IS NOT HERE
+--
+-- The unique constraint above is now ALSO declared on the LedgerEntry entity.
+-- That is not a migration, because MySQL has had the constraint since V1 - it is
+-- a fix for every schema generated FROM the entity, which had none. A phase-7e
+-- test handed the ledger a duplicate event and it was accepted, because the H2
+-- schema Hibernate generates for tests had nothing to violate.
+--
+-- The whole of phase 6e's at-least-once safety rests on that index, and it was
+-- reachable only through Flyway. Worth recording here, where somebody reading
+-- the schema's history will look, rather than only in a Java comment.
+--
+-- WHY A TRANSFER TAKES LOCKS WHEN A POSTING DOES NOT
+--
+-- applyDelta - `balance = balance + :delta` - is one statement, and the row lock
+-- InnoDB holds for its duration is the critical section. Nothing can interleave
+-- because there is no gap to interleave in, and it is strictly better than
+-- SELECT ... FOR UPDATE for a posting.
+--
+-- What it cannot express is a CONDITION. "Move this amount only if the source
+-- has it" needs the balance read, a decision taken in Java, and the write
+-- applied, with nothing else allowed to move the balance in between. That is
+-- three steps and two gaps, and it is what pessimistic locking is actually for.
+--
+-- A transfer therefore holds TWO row locks at once, which is the entire
+-- ingredient list for a deadlock. See LedgerTransfer for the ordering rule that
+-- prevents one, and LedgerDeadlockTest for both states.
+
+SELECT 1;

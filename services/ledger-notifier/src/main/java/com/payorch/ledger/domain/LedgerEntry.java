@@ -8,6 +8,7 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.UniqueConstraint;
 
 /**
  * One leg of a double-entry pair.
@@ -18,7 +19,23 @@ import jakarta.persistence.Table;
  * opinion.
  */
 @Entity
-@Table(name = "ledger_entry")
+@Table(name = "ledger_entry",
+        // Declared here as well as in V1__ledger.sql, and phase 7e is where the
+        // gap showed. The migration is what creates it in MySQL; without it on
+        // the entity, ANY schema generated from these mappings - a test, a
+        // future tool - is missing the one constraint that makes this service
+        // idempotent. Not a hypothetical: a phase-7e test asserting that a
+        // repeated event is refused passed the ledger a duplicate happily,
+        // because the H2 schema Hibernate had generated from this class had no
+        // such constraint to violate.
+        //
+        // The whole of phase 6e's at-least-once safety rests on this index, and
+        // it was reachable only through Flyway. IdempotencyRecord makes the same
+        // declaration for the same reason; this is that lesson, applied a
+        // service late.
+        uniqueConstraints = @UniqueConstraint(
+                name = "uq_entry_event_account",
+                columnNames = {"event_id", "account_id"}))
 public class LedgerEntry {
 
     @Id

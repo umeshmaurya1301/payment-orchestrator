@@ -270,18 +270,13 @@ class CompensatingReversalTest {
      * indistinguishable from "the provider was called and the connection was
      * refused".
      */
-    static class StubConnector extends ConnectorClient {
+    static class StubConnector implements ConnectorClient {
 
         ConnectorApi.AuthorizeResponse authorizeResponse;
         ConnectorApi.CaptureResponse captureResponse;
         ConnectorApi.ReverseResponse reverseResponse;
         ConnectorApi.ReverseRequest lastReverse;
 
-        StubConnector() {
-            super("http://localhost:1", new DeadlinePropagation(30_000),
-                    new DeadlineExecutor(50, 30_000),
-                    io.micrometer.observation.ObservationRegistry.NOOP);
-        }
 
         @Override
         public ConnectorApi.AuthorizeResponse authorize(ConnectorApi.AuthorizeRequest request) {
@@ -304,6 +299,11 @@ class CompensatingReversalTest {
             captureResponse = null;
             reverseResponse = null;
             lastReverse = null;
+        }
+
+        @Override
+        public ConnectorApi.LookupResponse lookup(ConnectorApi.LookupRequest request) {
+            throw new UnsupportedOperationException("this test never looks up");
         }
     }
 }

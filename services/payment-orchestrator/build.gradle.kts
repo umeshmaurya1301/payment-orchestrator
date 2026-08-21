@@ -5,6 +5,10 @@ plugins {
 description = "Payment state machine, MySQL, transactional outbox, saga coordination."
 
 dependencies {
+    // Phase 9a. The generated stubs and a client transport.
+    implementation(project(":proto"))
+    implementation(libs.grpc.netty.shaded)
+
     implementation(libs.spring.boot.starter.web)
     implementation(libs.spring.boot.starter.actuator)
     implementation(libs.spring.boot.starter.validation)

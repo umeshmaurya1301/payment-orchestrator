@@ -43,6 +43,13 @@ tasks.withType<JavaExec>().configureEach {
 }
 
 dependencies {
+    // Phase 9a. The generated stubs, plus a server runtime. netty-shaded so the
+    // gRPC transport cannot collide with any other Netty on the classpath - the
+    // shaded artifact exists precisely because that collision is common and
+    // presents as an unrelated NoSuchMethodError.
+    implementation(project(":proto"))
+    implementation(libs.grpc.netty.shaded)
+
     implementation(libs.spring.boot.starter.web)
     implementation(libs.spring.boot.starter.actuator)
     implementation(libs.spring.boot.starter.validation)

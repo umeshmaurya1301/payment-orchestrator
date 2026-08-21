@@ -287,7 +287,7 @@ class PaymentFlowTest {
         }
     }
 
-    static class StubConnector extends ConnectorClient {
+    static class StubConnector implements ConnectorClient {
 
         ConnectorApi.AuthorizeResponse response;
         ConnectorApi.AuthorizeRequest lastRequest;
@@ -295,17 +295,6 @@ class PaymentFlowTest {
         boolean deadlineNotStarted;
         boolean deadlineAbandoned;
 
-        StubConnector() {
-            // Real collaborators even though authorize() is overridden: they are
-            // cheap, and constructing the stub the way production constructs the
-            // real client keeps this from compiling after a signature change
-            // that would break production.
-            super("http://localhost:1", new DeadlinePropagation(30_000), new DeadlineExecutor(50, 30_000),
-                    // No tracing in a unit test, but the argument is still passed:
-                    // constructing the stub the way production does is what makes a
-                    // signature change fail here rather than in a container.
-                    io.micrometer.observation.ObservationRegistry.NOOP);
-        }
 
         @Override
         public ConnectorApi.AuthorizeResponse authorize(ConnectorApi.AuthorizeRequest request) {
@@ -328,6 +317,21 @@ class PaymentFlowTest {
             unavailable = false;
             deadlineNotStarted = false;
             deadlineAbandoned = false;
+        }
+
+        @Override
+        public ConnectorApi.CaptureResponse capture(ConnectorApi.CaptureRequest request) {
+            throw new UnsupportedOperationException("this test never captures");
+        }
+
+        @Override
+        public ConnectorApi.ReverseResponse reverse(ConnectorApi.ReverseRequest request) {
+            throw new UnsupportedOperationException("this test never reverses");
+        }
+
+        @Override
+        public ConnectorApi.LookupResponse lookup(ConnectorApi.LookupRequest request) {
+            throw new UnsupportedOperationException("this test never looks up");
         }
     }
 }

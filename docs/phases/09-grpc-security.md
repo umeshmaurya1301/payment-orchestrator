@@ -45,7 +45,26 @@ exist: the token vault (phase 1), webhook HMAC (phase 6), and API keys (phase 1)
 ### Exit criteria
 
 - [ ] All three internal hops on gRPC
-- [ ] Deadlines propagate over metadata; a short deadline fails fast at the connector
+- [x] Deadlines propagate over metadata; a short deadline fails fast at the
+      connector — 9a, verified live 2026-08-21. With the provider slowed to
+      4,000ms:
+
+      | edge budget | result | elapsed |
+      |---|---|---|
+      | 30,000ms | `AUTHORIZED` | 4.19s — the latency propagated and fitted |
+      | 2,000ms | **`UNKNOWN`** | **2.11s** — cut off at the budget, not the provider |
+
+      The answer is the one that matters: *"could not be confirmed within the
+      time budget. It may or may not have been processed"* — phase 3a's
+      `UNKNOWN` semantics preserved across the transport swap. `withDeadlineAfter`
+      reads the same `ScopedValue` the REST client reads, so the two arms take
+      their budget from one source.
+
+      A false start worth recording: the first attempt set
+      `DEADLINE_BUDGET_MS=2000` on the **orchestrator** and the call still took
+      4.5s and succeeded. The orchestrator trusts the inbound header, so the
+      edge's 30s budget won — the budget has to be cut where it originates, and
+      a test that sets it one hop too late measures nothing
 - [ ] Server streaming works for status
 - [ ] gRPC → HTTP status mapping documented and tested
 - [ ] **Benchmark written up** — throughput, P99, payload size, CPU

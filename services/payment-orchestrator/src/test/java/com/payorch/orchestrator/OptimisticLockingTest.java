@@ -282,7 +282,7 @@ class OptimisticLockingTest {
      * is still being dispatched - and a race that only sometimes happens is a
      * test that only sometimes tests anything.
      */
-    static class BlockingConnector extends ConnectorClient {
+    static class BlockingConnector implements ConnectorClient {
 
         ConnectorApi.AuthorizeResponse authorizeResponse;
         ConnectorApi.CaptureResponse captureResponse;
@@ -291,11 +291,6 @@ class OptimisticLockingTest {
 
         private volatile CyclicBarrier insideCapture;
 
-        BlockingConnector() {
-            super("http://localhost:1", new DeadlinePropagation(30_000),
-                    new DeadlineExecutor(50, 30_000),
-                    io.micrometer.observation.ObservationRegistry.NOOP);
-        }
 
         void holdInsideCapture(int parties) {
             this.insideCapture = new CyclicBarrier(parties);
@@ -333,6 +328,11 @@ class OptimisticLockingTest {
             captureResponse = null;
             captureCalls.set(0);
             insideCapture = null;
+        }
+
+        @Override
+        public ConnectorApi.LookupResponse lookup(ConnectorApi.LookupRequest request) {
+            throw new UnsupportedOperationException("this test never looks up");
         }
     }
 }

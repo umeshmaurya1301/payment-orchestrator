@@ -29,6 +29,13 @@ server:
   shutdown: graceful
 
 payorch:
+  # Phase 9a. The gRPC server, alongside REST rather than instead of it - see
+  # GrpcServerConfiguration for why both stay up until the benchmark has run.
+  grpc:
+    server:
+      enabled: ${GRPC_SERVER_ENABLED:false}
+      port: ${GRPC_SERVER_PORT:9090}
+
   psp:
     # 3f. The connector's own resilience settings live in psp_config, not
     # here. What is left in this file is how to REACH that table - which is

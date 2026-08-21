@@ -148,6 +148,10 @@ payorch:
       lock-ttl-ms: ${UNKNOWN_POLLER_LOCK_TTL_MS:120000}
 
   connector:
+    # Phase 9a. rest or grpc. REST is the default and stays the default until
+    # the benchmark exists - see OrchestratorConfiguration.
+    transport: ${CONNECTOR_TRANSPORT:rest}
+    grpc-target: ${CONNECTOR_GRPC_TARGET:psp-connector:9090}
     # No timeout setting here, and that is the phase-1 constraint rather than an
     # omission: phase 2 has to watch this call hang before phase 3 is allowed to
     # put a deadline on it.

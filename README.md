@@ -7,7 +7,7 @@ failure it prevents has been observed and measured**. Every phase from 3 onward
 produces a before/after graph in [`docs/experiments/`](docs/experiments/).
 
 > **Status: phases 0–4 complete, phase 5 all but one criterion, phase 6 complete
-> — every exit criterion met and measured.** Twenty-one experiments with a measured
+> — every exit criterion met and measured.** Twenty-two experiments with a measured
 > before and after in [`docs/experiments/`](docs/experiments/), and eight
 > decision records in [`docs/adr/`](docs/adr/) — two of which conclude against
 > the component they document.

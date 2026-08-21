@@ -136,7 +136,7 @@ management:
         # chaosseams and dlq are phase 6f. Neither is reachable unless it is
         # listed here, which keeps shipping the chaos machinery somewhere it
         # should not be an explicit act rather than an accident.
-        include: health,info,loggers,metrics,prometheus,ledger,chaosseams,dlq
+        include: health,info,loggers,metrics,prometheus,ledger,chaosseams,dlq,recon
   endpoint:
     health:
       show-details: always

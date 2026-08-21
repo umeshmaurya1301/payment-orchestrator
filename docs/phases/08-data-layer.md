@@ -220,7 +220,27 @@ it costs.
       not usage, is what makes a column worth indexing**, and a column every
       query filters on but every row satisfies is the worst case because it
       looks the most useful
-- [ ] Recon job produces a mismatch report across all three classes
+- [x] Recon job produces a mismatch report across all three classes —
+      [experiment 22](../experiments/22-reconciliation.md),
+      `tools/loadtest/reconciliation.sh`, run 2026-08-21. The defects are
+      **planted**, one of each class, so the job is measured on whether it finds
+      precisely those rather than on whether it finds something:
+
+      | class | found | planted |
+      |---|---|---|
+      | `SETTLED_NOT_IN_LEDGER` | **1** | a paymentId this system never issued, 9,900 minor |
+      | `AMOUNT_MISMATCH` | **1** | a real payment, amount skewed by 700 |
+      | `LEDGER_NOT_SETTLED` | 500 (capped) | everything the 3-line file omits |
+
+      The matched line produced **no mismatch of any kind**, which is the other
+      half of the result. 43ms over 28,668 journal entries — fast only because
+      `SettlementLine.paymentId` is `@Indexed`; phase 8's trap is that an
+      unindexed `$lookup` is a collection scan per input document.
+
+      **The class that matters has the fewest rows.** 500 benign against 1 that
+      is money, so a threshold on "total mismatches" would be dominated
+      permanently by timing noise — the same shape as 6i's finding that DLQ
+      depth is the wrong number and `pending` is the right one
 - [~] `UNKNOWN` payments resolve automatically; alert fires when the backlog
       grows — 8a. **The resolution half is now measured**
       ([experiment 20](../experiments/20-unknown-resolution.md), run 2026-08-21);

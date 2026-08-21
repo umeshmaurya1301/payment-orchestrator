@@ -226,6 +226,12 @@ grpc-stub = { module = "io.grpc:grpc-stub", version.ref = "grpc" }
 grpc-netty-shaded = { module = "io.grpc:grpc-netty-shaded", version.ref = "grpc" }
 grpc-services = { module = "io.grpc:grpc-services", version.ref = "grpc" }
 grpc-gen-java = { module = "io.grpc:protoc-gen-grpc-java", version.ref = "grpc" }
+# Test only. The status mapping is a contract between two modules, and the only
+# honest way to test it is to send a real call over a real gRPC stack - a unit
+# test that calls the mapping method directly would assert the code I wrote
+# rather than the code the runtime produces. In-process transport gives a real
+# client, server, serializer and status path with no port and no container.
+grpc-inprocess = { module = "io.grpc:grpc-inprocess", version.ref = "grpc" }
 # javax.annotation.Generated, which the generated stubs reference and Java 25
 # does not ship.
 tomcat-annotations = { module = "org.apache.tomcat:annotations-api", version = "6.0.53" }

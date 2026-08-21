@@ -1,6 +1,6 @@
 # Architecture decision records
 
-Eight decisions this project would be asked to defend, each with the options
+Nine decisions this project would be asked to defend, each with the options
 that were genuinely considered and the consequences — including the ones that
 are unwelcome.
 
@@ -23,6 +23,7 @@ Numbers are traceable to a page in [`../experiments/`](../experiments/).
 | [0006](0006-retry-budget.md) | Retry budget over naive retry | 3b | 67% success instead of 94% — deliberately |
 | [0007](0007-tokenization-boundary.md) | Tokenization boundary and PCI scope | 1, 9b, 9c | Three components in scope, not one. The CVV is unavailable to any real integration |
 | [0008](0008-infra-core-included-build.md) | `infra-core` as an included build | 0 | No version compatibility story, because there is only ever one version |
+| [0009](0009-grpc-status-mapping.md) | A status description carries "maybe charged" | 9a | An unvalidated string is the only thing separating a refusal from a possible double charge — and a bare `UNAVAILABLE` resolves the unsafe way |
 
 ## The four questions the PCI story answers
 

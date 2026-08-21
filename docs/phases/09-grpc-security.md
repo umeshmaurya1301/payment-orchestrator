@@ -66,7 +66,34 @@ exist: the token vault (phase 1), webhook HMAC (phase 6), and API keys (phase 1)
       edge's 30s budget won — the budget has to be cut where it originates, and
       a test that sets it one hop too late measures nothing
 - [ ] Server streaming works for status
-- [ ] gRPC → HTTP status mapping documented and tested
+- [x] gRPC → HTTP status mapping documented and tested — 9a.
+      Documented as [ADR 0009](../adr/0009-grpc-status-mapping.md), with the
+      four options that lost; tested in both directions over in-process gRPC
+      rather than mocked stubs, so a status has to survive the real serializer:
+
+      | Cause | status | description | client throws | payment |
+      |---|---|---|---|---|
+      | breaker open | `UNAVAILABLE` | `circuit_open` | Rejected | `FAILED` |
+      | bulkhead full | `UNAVAILABLE` | `bulkhead_full` | Rejected | `FAILED` |
+      | egress limited | `RESOURCE_EXHAUSTED` | `provider_rate_limited` | Rejected | `FAILED` |
+      | no answer | `UNAVAILABLE` | **`provider_unavailable`** | Unavailable | **`UNKNOWN`** |
+      | we gave up | `DEADLINE_EXCEEDED` | any | Unavailable | **`UNKNOWN`** |
+      | our own bug | `INTERNAL` | `internal_error` | Unavailable | **`UNKNOWN`** |
+      | anything else | any | any | Unavailable | **`UNKNOWN`** |
+
+      21 tests across `ConnectorGrpcStatusMappingTest` and
+      `GrpcStatusTranslationTest`. Verified non-vacuous by mutation: flipping
+      `DEADLINE_EXCEEDED` to Rejected fails exactly one test, the one that says
+      *"the request may well have reached a provider before we gave up"*.
+
+      Two things this found. `ConnectorRejectedException` had said *"its circuit
+      is open"* since phase 3 and is thrown by four different gates — a message
+      naming the wrong subsystem sends an operator to inspect a breaker that is
+      closed, so it now names the gate that actually refused. And a **bare**
+      `UNAVAILABLE` with no description maps to `FAILED`, which is the one place
+      the safe-side rule is knowingly not applied; it is right for a refused
+      connection and wrong if a proxy ever rewrites a real timeout. That is
+      recorded in the ADR and pinned by a test rather than left to be discovered
 - [x] **Benchmark written up** — throughput, P99, payload size, CPU —
       [experiment 23](../experiments/23-rest-vs-grpc.md), two independent runs
       agreeing to within 1%:

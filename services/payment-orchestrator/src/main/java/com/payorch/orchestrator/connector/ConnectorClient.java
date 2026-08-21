@@ -56,14 +56,30 @@ public interface ConnectorClient {
     /**
      * The connector refused to send the request at all.
      *
-     * <p>Its circuit breaker is open. The provider was not contacted, so unlike
+     * <p>The provider was not contacted, so unlike
      * {@link ConnectorUnavailableException} this is a definite non-event: the
-     * payment is {@code FAILED} and a merchant may retry it freely.
+     * payment is {@code FAILED} and a merchant may retry it freely. That is the
+     * only thing the orchestrator needs to know, and it is the same for every
+     * gate that produces this.
+     *
+     * <p><strong>Which gate, though, matters to the person reading the log.</strong>
+     * Four different things throw this — an open circuit, a full bulkhead, the
+     * egress rate limiter, and a connection that was refused outright — and they
+     * want four different responses from an operator. Until phase 9a this
+     * exception said "its circuit is open" in all four cases, which was written
+     * when the breaker was the only gate that existed and stayed there through
+     * three more being added. A message that names the wrong subsystem is worse
+     * than a vague one: it sends somebody to look at a breaker that is closed.
      */
     class ConnectorRejectedException extends RuntimeException {
 
+        /** Prefer {@link #ConnectorRejectedException(String, Throwable)}. */
         public ConnectorRejectedException(Throwable cause) {
-            super("psp-connector refused the request; its circuit is open", cause);
+            this("without contacting the provider", cause);
+        }
+
+        public ConnectorRejectedException(String reason, Throwable cause) {
+            super("psp-connector refused the request: " + reason, cause);
         }
     }
 }

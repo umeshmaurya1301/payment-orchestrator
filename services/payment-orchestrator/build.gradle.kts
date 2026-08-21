@@ -75,5 +75,6 @@ dependencies {
 
     // Lets the context test start without a MySQL container. See the comment
     // in PaymentOrchestratorApplicationTest for why Flyway is off there.
+    testImplementation(libs.grpc.inprocess)
     testRuntimeOnly(libs.h2)
 }

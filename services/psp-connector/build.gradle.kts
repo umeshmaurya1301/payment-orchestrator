@@ -103,5 +103,6 @@ dependencies {
     implementation(libs.hikaricp)
     runtimeOnly(libs.mysql.connector)
 
+    testImplementation(libs.grpc.inprocess)
     testRuntimeOnly(libs.h2)
 }

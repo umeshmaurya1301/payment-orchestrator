@@ -202,7 +202,11 @@ public class GrpcConnectorClient implements ConnectorClient {
         if (code == Status.Code.RESOURCE_EXHAUSTED
                 || (code == Status.Code.UNAVAILABLE && !OUTCOME_UNKNOWN.equals(description))) {
             log.debug("connector refused {} locally: {} {}", operation, code, description);
-            return new ConnectorRejectedException(e);
+            // The description is the connector's own gate name - circuit_open,
+            // bulkhead_full, provider_rate_limited - so it is the accurate
+            // answer to "which gate", and null when nothing tagged it.
+            return new ConnectorRejectedException(
+                    description == null ? "connection refused" : description, e);
         }
 
         // DEADLINE_EXCEEDED is UNKNOWN, and it is the one people get wrong.

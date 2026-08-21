@@ -209,6 +209,12 @@ services:
       COMPENSATION_ENABLED: ${COMPENSATION_ENABLED:-false}
       # Phase 9a. rest | grpc
       CONNECTOR_TRANSPORT: ${CONNECTOR_TRANSPORT:-rest}
+      # Phase 9a. The second internal hop: this service now also SERVES gRPC,
+      # for payments-edge to call. 9091, not 9090 - psp-connector holds 9090,
+      # and a shared default works in containers and collides the moment two
+      # servers run on one host, which is what debugging outside Docker means.
+      GRPC_SERVER_ENABLED: ${ORCH_GRPC_SERVER_ENABLED:-true}
+      GRPC_SERVER_PORT: "9091"
       # Phase 7's virtual-vs-platform benchmark flips this on both services
       # that sit on the request path. Default true - unchanged since phase 0.
       VIRTUAL_THREADS: ${VIRTUAL_THREADS:-true}
@@ -267,6 +273,12 @@ services:
       EDGE_DB_USER: payorch
       EDGE_DB_PASSWORD: payorch
       ORCHESTRATOR_BASE_URL: http://payment-orchestrator:8081
+      # Phase 9a. rest | grpc, the same switch CONNECTOR_TRANSPORT is one hop
+      # down. REST stays the default: the benchmark needs the REST arm to be the
+      # one actually serving traffic, and a transport swap that cannot be turned
+      # off is a deploy with no rollback.
+      ORCHESTRATOR_TRANSPORT: ${ORCHESTRATOR_TRANSPORT:-rest}
+      ORCHESTRATOR_GRPC_TARGET: payment-orchestrator:9091
       # Phase 7a. The key behind the request fingerprint.
       #
       # A local development value like every other secret here; phase 9c is

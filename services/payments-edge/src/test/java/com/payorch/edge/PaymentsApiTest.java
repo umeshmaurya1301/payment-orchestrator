@@ -589,20 +589,23 @@ class PaymentsApiTest {
         }
     }
 
-    static class StubOrchestrator extends OrchestratorClient {
+    /**
+     * Implements the interface rather than extending the REST client.
+     *
+     * <p>Before 9a made this hop selectable, {@code OrchestratorClient} was a
+     * class and this stub extended it — which meant constructing a real
+     * {@code RestClient} pointed at {@code localhost:1} and inheriting three
+     * methods it then overrode. The comment justifying that constructor said it
+     * made a signature change fail here rather than in a container, and the
+     * interface does that better: a method added to the contract fails to
+     * compile here, with no pretend transport involved.
+     */
+    static class StubOrchestrator implements OrchestratorClient {
 
         final List<CreatePaymentRequest> requests = new ArrayList<>();
         final List<PaymentResponse> created = new ArrayList<>();
         boolean unavailable;
         String merchantIdOverride;
-
-        StubOrchestrator() {
-            super("http://localhost:1", new DeadlinePropagation(30_000), new DeadlineExecutor(50, 30_000),
-                    // No tracing in a unit test, but the argument is still passed:
-                    // constructing the stub the way production does is what makes a
-                    // signature change fail here rather than in a container.
-                    io.micrometer.observation.ObservationRegistry.NOOP);
-        }
 
         @Override
         public PaymentResponse create(CreatePaymentRequest request) {
@@ -632,6 +635,17 @@ class PaymentsApiTest {
         @Override
         public Optional<PaymentResponse> find(String paymentId) {
             return created.stream().filter(p -> p.id().equals(paymentId)).findFirst();
+        }
+
+        /**
+         * Not exercised by this class - capture has its own tests - but the
+         * interface has three methods and a stub that silently did nothing for
+         * one of them would make a future capture test pass for the wrong
+         * reason.
+         */
+        @Override
+        public PaymentResponse capture(String paymentId) {
+            throw new UnsupportedOperationException("capture is not stubbed here");
         }
 
         void reset() {

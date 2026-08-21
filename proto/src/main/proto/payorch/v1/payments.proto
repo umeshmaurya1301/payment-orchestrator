@@ -1,0 +1,106 @@
+syntax = "proto3";
+
+package payorch.v1;
+
+option java_package = "com.payorch.proto.v1";
+option java_multiple_files = true;
+option java_outer_classname = "PaymentsProto";
+
+// The edge -> orchestrator contract, as protobuf. Phase 9a.
+//
+// WHY THIS HOP AND NOT "ALL THREE"
+//
+// The phase asks to migrate "orchestrator <-> router <-> connector". There is no
+// router hop. `psp-router` is a phase-0 skeleton containing one class and a
+// health endpoint, and provider selection actually happens IN PROCESS inside the
+// orchestrator - HealthWeightedRouter, phase 5 - because a routing decision that
+// needs the orchestrator's breaker state, rolling success rate and P99 is not
+// improved by putting a network hop in the middle of it.
+//
+// So the internal hops that exist are two, and this file is the second:
+//
+//   payments-edge -> payment-orchestrator     this file
+//   payment-orchestrator -> psp-connector     connector.proto
+//
+// Saying that plainly is better than adding a network call to a service with no
+// logic in it so that a checklist item can be ticked.
+//
+// SAME SHAPE AS EdgeApi, DELIBERATELY
+//
+// Every field has a counterpart in OrchestratorClient's records. The reasoning
+// is connector.proto's and it holds here: a proto redesigned to be leaner would
+// make the REST/gRPC comparison measure the redesign rather than the transport.
+//
+// AND STILL NO CARD NUMBER
+//
+// CreatePaymentRequest carries a vault token, a BIN and a last four. The edge
+// tokenizes on arrival and the orchestrator has never been able to see a PAN -
+// enforced here by the shape of the message rather than by a rule somebody has
+// to remember, which is the same property phase 1 built into the REST body.
+
+service Payments {
+  // Create and authorize. The merchant-facing POST, one hop in.
+  rpc Create(CreatePaymentRequest) returns (PaymentResponse);
+
+  // Phase 6j. Capture an authorization the provider already holds.
+  rpc Capture(CapturePaymentRequest) returns (PaymentResponse);
+
+  // Look one up. NOT_FOUND is an answer here rather than a failure, which is
+  // the one place this service's status mapping differs from the connector's.
+  rpc Get(GetPaymentRequest) returns (PaymentResponse);
+}
+
+message CreatePaymentRequest {
+  string merchant_id = 1;
+  int64 amount_minor = 2;
+  string currency = 3;
+
+  // A vault token. See the header.
+  string card_token = 4;
+  string card_bin = 5;
+  string card_last4 = 6;
+
+  string merchant_reference = 7;
+}
+
+message CapturePaymentRequest {
+  string payment_id = 1;
+}
+
+message GetPaymentRequest {
+  string payment_id = 1;
+}
+
+message PaymentResponse {
+  string id = 1;
+  string merchant_id = 2;
+
+  // The state machine's name for where this payment is: AUTHORIZED, CAPTURED,
+  // FAILED, UNKNOWN. A string rather than an enum, and that is a deliberate
+  // concession rather than laziness - phase 6 adds states, and an enum here
+  // would make every new state a proto change deployed to two services in
+  // order, where a string makes it a change to one.
+  //
+  // The cost is real and is accepted: nothing validates it, so a typo in the
+  // orchestrator becomes a state the edge silently does not recognise.
+  string state = 3;
+
+  int64 amount_minor = 4;
+  string currency = 5;
+  string card_bin = 6;
+  string card_last4 = 7;
+  string psp_id = 8;
+  string provider_ref = 9;
+  string error_code = 10;
+  string merchant_reference = 11;
+
+  // Epoch milliseconds rather than google.protobuf.Timestamp.
+  //
+  // Timestamp is the correct type and it costs a well-known-types import plus a
+  // conversion at both ends. These two fields are carried, logged and echoed -
+  // never compared, never arithmetic - so the conversion would buy type safety
+  // nothing in this system uses. Recorded as a choice because "we used an int64
+  // for a time" is otherwise indistinguishable from not knowing better.
+  int64 created_at_ms = 12;
+  int64 updated_at_ms = 13;
+}

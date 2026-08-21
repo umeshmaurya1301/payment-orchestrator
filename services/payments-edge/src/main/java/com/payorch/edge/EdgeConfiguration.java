@@ -8,13 +8,21 @@ import com.payorch.infra.idempotency.WaitBudget;
 import com.payorch.edge.merchant.ApiKeyUsageRecorder;
 import com.payorch.edge.merchant.MerchantApiKeyRepository;
 import com.payorch.edge.merchant.MerchantRepository;
+import com.payorch.edge.orchestrator.GrpcOrchestratorClient;
 import com.payorch.edge.orchestrator.OrchestratorClient;
+import com.payorch.edge.orchestrator.RestOrchestratorClient;
+import com.payorch.edge.orchestrator.OrchestratorClient;
+import com.payorch.edge.orchestrator.RestOrchestratorClient;
+import com.payorch.edge.orchestrator.GrpcOrchestratorClient;
 import com.payorch.infra.resilience.ratelimit.EndpointCosts;
 import com.payorch.infra.resilience.ratelimit.RateLimitFilter;
 import com.payorch.infra.resilience.ratelimit.RateLimiters;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Value;
+import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
 import io.micrometer.observation.ObservationRegistry;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.Ordered;
@@ -33,12 +41,50 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @EnableScheduling
 public class EdgeConfiguration {
 
+    /**
+     * REST unless told otherwise. Phase 9a made this hop selectable the same way
+     * the connector hop is, and the default stays REST for the same reason: the
+     * benchmark needs the REST arm to be the one actually serving traffic, and a
+     * transport swap that cannot be turned off is a deploy with no rollback.
+     */
     @Bean
-    public OrchestratorClient orchestratorClient(@Value("${payorch.orchestrator.base-url}") String baseUrl,
-                                                 DeadlinePropagation propagation,
-                                                 DeadlineExecutor deadlines,
-                                                 ObservationRegistry observations) {
-        return new OrchestratorClient(baseUrl, propagation, deadlines, observations);
+    @ConditionalOnProperty(name = "payorch.orchestrator.transport", havingValue = "rest",
+            matchIfMissing = true)
+    public OrchestratorClient restOrchestratorClient(
+            @Value("${payorch.orchestrator.base-url}") String baseUrl,
+            DeadlinePropagation propagation,
+            DeadlineExecutor deadlines,
+            ObservationRegistry observations) {
+        return new RestOrchestratorClient(baseUrl, propagation, deadlines, observations);
+    }
+
+    /**
+     * The channel is a bean so it is shared, keep-alive'd and closed properly.
+     *
+     * <p>Phase 9's trap list: use connection pooling and keep-alive on both arms
+     * or you are measuring TCP handshakes. A channel per call would multiplex
+     * nothing and hand gRPC a handicap {@code RestClient}, which pools by
+     * default, does not have.
+     */
+    @Bean(destroyMethod = "shutdown")
+    @ConditionalOnProperty(name = "payorch.orchestrator.transport", havingValue = "grpc")
+    public ManagedChannel orchestratorChannel(
+            @Value("${payorch.orchestrator.grpc-target:payment-orchestrator:9091}") String target) {
+        return ManagedChannelBuilder.forTarget(target)
+                // No TLS on the internal hop yet. mTLS is 9b's criterion and is
+                // outstanding; saying so here is better than a reader assuming
+                // the channel is encrypted because it is gRPC.
+                .usePlaintext()
+                .keepAliveTime(30, java.util.concurrent.TimeUnit.SECONDS)
+                .build();
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "payorch.orchestrator.transport", havingValue = "grpc")
+    public OrchestratorClient grpcOrchestratorClient(
+            ManagedChannel orchestratorChannel,
+            @Value("${payorch.deadline.budget-ms:30000}") long defaultBudgetMs) {
+        return new GrpcOrchestratorClient(orchestratorChannel, defaultBudgetMs);
     }
 
     /**

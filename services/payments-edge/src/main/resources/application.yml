@@ -195,6 +195,13 @@ payorch:
     # is allowed to put a deadline on it.
     base-url: ${ORCHESTRATOR_BASE_URL:http://localhost:8081}
 
+    # Phase 9a. rest | grpc - the second internal hop, selectable the same way
+    # CONNECTOR_TRANSPORT selects the first. REST is the default and stays it
+    # until the benchmark says otherwise; both stacks are on the classpath and
+    # exactly one set of beans is created, so the unused one costs a jar.
+    transport: ${ORCHESTRATOR_TRANSPORT:rest}
+    grpc-target: ${ORCHESTRATOR_GRPC_TARGET:localhost:9091}
+
   vault:
     # A SECOND connection, with its own credentials. vault_writer is granted
     # SELECT and INSERT on payorch_vault.token_vault and nothing else - see

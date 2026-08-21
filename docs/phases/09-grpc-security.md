@@ -44,7 +44,36 @@ exist: the token vault (phase 1), webhook HMAC (phase 6), and API keys (phase 1)
 
 ### Exit criteria
 
-- [ ] All three internal hops on gRPC
+- [x] All internal hops on gRPC — 9a,
+      [experiment 27](../experiments/27-second-grpc-hop.md), with the count
+      corrected. The phase names three (*"orchestrator ↔ router ↔ connector"*)
+      and **there is no router hop**: `psp-router` is a phase-0 skeleton with one
+      class and a health endpoint, and provider selection happens *in process*
+      in the orchestrator because a decision needing its breaker state, success
+      rate and P99 is not improved by a network call in the middle. Adding a hop
+      to an empty service so a checklist reads three would make the system worse
+      to make the document truer.
+
+      The two hops that exist are both selectable, both live-verified:
+
+      | hop | switch | proto |
+      |---|---|---|
+      | payments-edge → payment-orchestrator | `ORCHESTRATOR_TRANSPORT` | `payments.proto` |
+      | payment-orchestrator → psp-connector | `CONNECTOR_TRANSPORT` | `connector.proto` |
+
+      Proved rather than asserted: the edge was restarted on gRPC with
+      `ORCHESTRATOR_BASE_URL` pointing at a nonexistent host, and payments still
+      succeeded — a client that silently fell back to REST would have produced a
+      passing demo that proved nothing.
+
+      **And it shipped the bug ADR 0009 exists to prevent.** A second capture
+      answers 409 *"Capture refused"* over REST and answered 502 *"it may or may
+      not have been created"* over gRPC, because `PaymentService` raises
+      `ApiException` and the gRPC service had branches only for the exceptions I
+      was thinking about — a default case is exactly as safe as the author's
+      memory of what can be thrown. 522 tests were green; what was untested is
+      *the two doors agreeing*, which is a property of neither door. Found by
+      capturing the same payment twice by hand
 - [x] Deadlines propagate over metadata; a short deadline fails fast at the
       connector — 9a, verified live 2026-08-21. With the provider slowed to
       4,000ms:

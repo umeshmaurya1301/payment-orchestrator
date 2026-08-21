@@ -5,6 +5,12 @@ plugins {
 description = "REST surface, API-key auth, rate limiting, idempotency, and the origin of the deadline budget."
 
 dependencies {
+    // Phase 9a. The edge -> orchestrator hop is selectable between REST and
+    // gRPC, so both stacks are on the classpath and only one is wired at
+    // startup - see EdgeConfiguration and payorch.orchestrator.transport.
+    implementation(project(":proto"))
+    implementation(libs.grpc.netty.shaded)
+
     implementation(libs.spring.boot.starter.web)
     implementation(libs.spring.boot.starter.actuator)
     implementation(libs.spring.boot.starter.validation)
@@ -55,5 +61,6 @@ dependencies {
 
     runtimeOnly(libs.mysql.connector)
 
+    testImplementation(libs.grpc.inprocess)
     testRuntimeOnly(libs.h2)
 }

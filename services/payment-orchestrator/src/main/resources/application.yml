@@ -147,6 +147,14 @@ payorch:
       # number that says this is too short.
       lock-ttl-ms: ${UNKNOWN_POLLER_LOCK_TTL_MS:120000}
 
+  # Phase 9a. This service SERVES gRPC too, for payments-edge. Off unless asked
+  # for - the connector's server defaulted on for exactly one build and the whole
+  # psp-connector suite failed to bind, because the real container held the port.
+  grpc:
+    server:
+      enabled: ${GRPC_SERVER_ENABLED:false}
+      port: ${GRPC_SERVER_PORT:9091}
+
   connector:
     # Phase 9a. rest or grpc. REST is the default and stays the default until
     # the benchmark exists - see OrchestratorConfiguration.

@@ -94,7 +94,38 @@ exist: the token vault (phase 1), webhook HMAC (phase 6), and API keys (phase 1)
       4.5s and succeeded. The orchestrator trusts the inbound header, so the
       edge's 30s budget won — the budget has to be cut where it originates, and
       a test that sets it one hop too late measures nothing
-- [ ] Server streaming works for status
+- [x] Server streaming works for status — 9a,
+      [experiment 28](../experiments/28-watch-vs-poll.md). One merchant-facing
+      endpoint, `GET /v1/payments/{id}/events` (SSE), backed by a gRPC server
+      stream or a REST polling loop depending on transport — the polling loop is
+      **kept**, deliberately, as the only way to keep the comparison re-runnable
+      rather than quoted.
+
+      Same states delivered by both arms, ending within 113ms of each other:
+
+      ```
+      orchestrator GETs        40            0
+      SSE frames delivered      2            2
+      stream ended after   10283ms      10170ms
+      ```
+
+      The claim is bounded rather than oversold: this state machine has no
+      change feed, so the orchestrator still watches by re-reading on an
+      interval, held equal on both arms by the measuring script. What streaming
+      removes is not polling - it is the *N* in N clients each polling
+      separately. One loop replaces N loops.
+
+      **Found by comparing two transports against each other, not by testing
+      either alone.** The REST arm listed `CAPTURED` as a terminal state in its
+      own copy of the state machine's endings; `PaymentTransitions` allows
+      `CAPTURED -> REVERSED` (phase 6k's saga), so the REST-backed watch would
+      silently stop the instant a payment was captured and never deliver a
+      reversal that followed - no error, no timeout, a stream that closed one
+      transition early and looked exactly like success. The javadoc predicting
+      this class's failure mode, written before the bug was found, predicted the
+      opposite: a watch that never ends. What happened was worse - one that ends
+      too soon. Fixed and mutation-checked: reintroducing `CAPTURED` fails
+      exactly `aCapturedPaymentThatIsLaterReversedIsStillDelivered`, nothing else
 - [x] gRPC → HTTP status mapping documented and tested — 9a.
       Documented as [ADR 0009](../adr/0009-grpc-status-mapping.md), with the
       four options that lost; tested in both directions over in-process gRPC

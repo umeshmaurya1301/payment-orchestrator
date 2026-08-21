@@ -152,6 +152,100 @@ public class PaymentsController {
     }
 
     /**
+     * Live payment status, as Server-Sent Events. Phase 9a item 4.
+     *
+     * <h2>The thing it replaces</h2>
+     *
+     * <p>A merchant waiting for a payment to leave {@code AUTHORIZING} — or to
+     * come back from {@code UNKNOWN} — calls {@code GET /v1/payments/{id}} in a
+     * loop. Every one of those costs an API-key lookup, a rate-limit token, a
+     * deadline scope, two network hops and a database read, and all but the last
+     * returns exactly what the previous one did. The polling interval sets both
+     * the load and the worst-case delay, and they move in opposite directions.
+     *
+     * <h2>Why SSE rather than a WebSocket</h2>
+     *
+     * <p>This is one-directional, short-lived, and the client is somebody's
+     * backend rather than a browser with a reconnect library. SSE is a
+     * {@code GET} that keeps the response open — it survives proxies, needs no
+     * upgrade handshake, and a merchant can consume it with {@code curl}. A
+     * WebSocket would add a protocol upgrade and a framing layer in order to
+     * carry messages in the one direction SSE already carries them.
+     *
+     * <h2>Both transports serve this, deliberately differently</h2>
+     *
+     * <p>{@code orchestrator.watch} is a gRPC server stream when the edge is on
+     * gRPC, and a polling loop when it is on REST. The merchant sees the same
+     * endpoint either way — a merchant-visible feature must not appear and
+     * disappear with an internal deployment choice — and experiment 28 measures
+     * what the difference costs.
+     *
+     * <h2>Bounded, like everything else on this path</h2>
+     *
+     * <p>The stream ends at a terminal state or when the budget runs out,
+     * whichever comes first. An open SSE connection is a held connection and a
+     * held thread; phase 3's whole argument is that unbounded is the failure
+     * being removed, and a stream with no ending would reintroduce it in a shape
+     * that looks like a feature.
+     */
+    @GetMapping(value = "/{id}/events", produces = org.springframework.http.MediaType.TEXT_EVENT_STREAM_VALUE)
+    public org.springframework.web.servlet.mvc.method.annotation.SseEmitter events(
+            @PathVariable String id,
+            @org.springframework.web.bind.annotation.RequestParam(defaultValue = "30") int seconds,
+            @org.springframework.web.bind.annotation.RequestParam(defaultValue = "250") long intervalMs,
+            HttpServletRequest httpRequest) {
+
+        UUID merchantId = authenticatedMerchant(httpRequest);
+
+        // Ownership is checked ONCE, before anything is streamed. Checking it
+        // per frame would be re-reading the same immutable fact, and not
+        // checking it at all would let a merchant watch somebody else's payment
+        // change state - which leaks more than the 404 this avoids, because it
+        // leaks over time.
+        OrchestratorClient.PaymentResponse initial = orchestrator.find(id)
+                .filter(found -> merchantId.toString().equals(found.merchantId()))
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "payment_not_found",
+                        "no payment with that id"));
+
+        java.time.Duration budget = java.time.Duration.ofSeconds(Math.clamp(seconds, 1, 120));
+
+        // The emitter's own timeout is the budget plus a margin. Equal values
+        // race: Spring would abort the connection at the same instant the watch
+        // completes normally, turning a clean ending into an AsyncRequestTimeout
+        // in the log on every single stream.
+        var emitter = new org.springframework.web.servlet.mvc.method.annotation.SseEmitter(
+                budget.toMillis() + 2_000);
+
+        // A virtual thread, not the request thread. SSE hands back the emitter
+        // immediately and writes to it afterwards; doing the watch inline would
+        // block the controller and never return one.
+        Thread.ofVirtual().name("watch-" + id).start(() -> {
+            try {
+                orchestrator.watch(id, budget, Math.clamp(intervalMs, 50, 5_000), payment -> {
+                    try {
+                        emitter.send(org.springframework.web.servlet.mvc.method.annotation.SseEmitter
+                                .event()
+                                .name(payment.state())
+                                .data(toEdgeResponse(payment)));
+                    } catch (java.io.IOException e) {
+                        // The merchant closed the connection. Normal, and the
+                        // only way to find out is to fail writing to it.
+                        throw new java.io.UncheckedIOException(e);
+                    }
+                });
+                emitter.complete();
+
+            } catch (java.io.UncheckedIOException e) {
+                emitter.complete();
+            } catch (RuntimeException e) {
+                emitter.completeWithError(e);
+            }
+        });
+
+        return emitter;
+    }
+
+    /**
      * Phase 6j. Capture a payment the merchant already holds an authorization for.
      *
      * <p><strong>No idempotency key, and that is a deliberate asymmetry worth

@@ -129,6 +129,53 @@ public class GrpcOrchestratorClient implements OrchestratorClient {
     }
 
     /**
+     * The server stream. One call, and the orchestrator does the watching.
+     *
+     * <p>A blocking iterator rather than an async observer: this runs on the
+     * thread serving the merchant's SSE connection, which is a virtual thread,
+     * so blocking it costs a continuation rather than a platform thread. The
+     * async form would need its own executor and a way to propagate failures
+     * back out, to arrive at the same place.
+     *
+     * <p>{@code CANCELLED} and {@code DEADLINE_EXCEEDED} end the stream quietly.
+     * Both mean "we stopped", which is the normal ending for a watch that ran
+     * out of budget or a merchant who closed the page — turning either into an
+     * error would fill the log with routine departures.
+     */
+    @Override
+    public void watch(String paymentId, java.time.Duration budget, long intervalMs,
+                      java.util.function.Consumer<PaymentResponse> onUpdate) {
+        try {
+            var stream = stub
+                    .withDeadlineAfter(budget.toMillis(), TimeUnit.MILLISECONDS)
+                    .watch(com.payorch.proto.v1.WatchPaymentRequest.newBuilder()
+                            .setPaymentId(paymentId)
+                            .setPollIntervalMs((int) intervalMs)
+                            .build());
+
+            while (stream.hasNext()) {
+                onUpdate.accept(fromProto(stream.next()));
+            }
+
+        } catch (StatusRuntimeException e) {
+            Status.Code code = e.getStatus().getCode();
+            if (code == Status.Code.CANCELLED || code == Status.Code.DEADLINE_EXCEEDED) {
+                log.debug("watch of {} ended: {}", paymentId, code);
+                return;
+            }
+            if (code == Status.Code.NOT_FOUND) {
+                // Nothing to watch. The endpoint has already answered 404 for
+                // this case, so reaching here means the payment vanished
+                // between two calls, which cannot happen - log it rather than
+                // swallow it.
+                log.warn("watch of {} found no payment", paymentId);
+                return;
+            }
+            throw translate(e, "watch");
+        }
+    }
+
+    /**
      * One place where a status becomes an exception the edge understands.
      *
      * <p>{@code FAILED_PRECONDITION} and {@code INVALID_ARGUMENT} are the

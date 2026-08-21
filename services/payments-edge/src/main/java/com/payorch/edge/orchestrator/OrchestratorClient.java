@@ -42,6 +42,29 @@ public interface OrchestratorClient {
 
     Optional<PaymentResponse> find(String paymentId);
 
+    /**
+     * Emits the payment's state now, and again whenever it changes, until it is
+     * terminal or {@code budget} runs out. Phase 9a item 4.
+     *
+     * <p>On the interface rather than on the gRPC client, because <strong>both
+     * transports can do this and they do it differently</strong> — gRPC opens a
+     * server stream, REST polls in a loop — and the whole point of the criterion
+     * is the difference between those two. A method that existed only on the
+     * gRPC side would make the comparison impossible to run and the SSE endpoint
+     * conditional on a transport setting, which is a merchant-visible feature
+     * appearing and disappearing with an internal deployment choice.
+     *
+     * <p>{@code intervalMs} is a parameter for the reason the proto's comment
+     * gives: an experiment comparing the two arms has to hold it equal, or it
+     * measures the interval instead of the transport. Experiments 19 and 23 both
+     * measured the wrong subsystem in exactly this way.
+     *
+     * <p>The callback runs on the caller's thread. It must not block for long,
+     * and in practice it writes one SSE frame.
+     */
+    void watch(String paymentId, java.time.Duration budget, long intervalMs,
+               java.util.function.Consumer<PaymentResponse> onUpdate);
+
     record CreatePaymentRequest(
             String merchantId,
             long amountMinor,

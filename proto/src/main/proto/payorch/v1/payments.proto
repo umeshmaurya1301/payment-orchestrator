@@ -48,6 +48,34 @@ service Payments {
   // Look one up. NOT_FOUND is an answer here rather than a failure, which is
   // the one place this service's status mapping differs from the connector's.
   rpc Get(GetPaymentRequest) returns (PaymentResponse);
+
+  // Live status. Phase 9a item 4.
+  //
+  // WHAT THIS REPLACES, WHICH IS THE ONLY REASON IT EXISTS
+  //
+  // A merchant waiting for a payment to leave AUTHORIZING - or to come back
+  // from UNKNOWN - polls GET in a loop. Every one of those requests costs an
+  // API-key lookup, a rate-limit token, a deadline scope and a database read,
+  // and all but the last one returns exactly what the previous one did. The
+  // polling interval then sets both the load and the worst-case delay, and
+  // they move in opposite directions: poll faster to see the change sooner,
+  // and pay for it on every payment that did not change.
+  //
+  // A stream pays once and delivers on change.
+  //
+  // WHAT IT DOES NOT DO
+  //
+  // It does not remove polling from the system - it moves it. The server side
+  // watches the payment by re-reading it, because this state machine has no
+  // change feed. One loop in the orchestrator replaces N loops across N
+  // clients, which is a real reduction and is not the same as none. Saying so
+  // here is better than a reader assuming a push they did not build.
+  //
+  // The stream completes when the payment reaches a terminal state, or when
+  // the caller's deadline expires. It is never unbounded: an open stream is a
+  // held connection, and phase 3's whole argument is that unbounded is the
+  // failure being removed.
+  rpc Watch(WatchPaymentRequest) returns (stream PaymentResponse);
 }
 
 message CreatePaymentRequest {
@@ -69,6 +97,20 @@ message CapturePaymentRequest {
 
 message GetPaymentRequest {
   string payment_id = 1;
+}
+
+message WatchPaymentRequest {
+  string payment_id = 1;
+
+  // How often the server re-reads the payment, in milliseconds. Zero means the
+  // server's default.
+  //
+  // A parameter rather than a constant because the experiment comparing this
+  // against client polling has to hold the interval equal on both arms - a
+  // stream that checks every 200ms against a client polling every 2s would be
+  // measuring the interval, not the transport. Experiment 19 and 23 both
+  // measured the wrong subsystem exactly this way.
+  int32 poll_interval_ms = 2;
 }
 
 message PaymentResponse {

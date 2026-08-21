@@ -639,13 +639,29 @@ class PaymentsApiTest {
 
         /**
          * Not exercised by this class - capture has its own tests - but the
-         * interface has three methods and a stub that silently did nothing for
+         * interface has four methods and a stub that silently did nothing for
          * one of them would make a future capture test pass for the wrong
          * reason.
          */
         @Override
         public PaymentResponse capture(String paymentId) {
             throw new UnsupportedOperationException("capture is not stubbed here");
+        }
+
+        /**
+         * Emits the payment once and stops. Phase 9a.
+         *
+         * <p>Enough for the SSE endpoint's own behaviour - it opens a stream,
+         * writes a frame and completes - without simulating a state machine.
+         * A stub that looped would make this class's tests depend on timing.
+         */
+        @Override
+        public void watch(String paymentId, java.time.Duration budget, long intervalMs,
+                          java.util.function.Consumer<PaymentResponse> onUpdate) {
+            created.stream()
+                    .filter(p -> p.id().equals(paymentId))
+                    .findFirst()
+                    .ifPresent(onUpdate);
         }
 
         void reset() {

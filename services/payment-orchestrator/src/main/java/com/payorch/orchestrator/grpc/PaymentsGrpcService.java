@@ -58,9 +58,15 @@ public class PaymentsGrpcService extends PaymentsGrpc.PaymentsImplBase {
     private static final Logger log = LoggerFactory.getLogger(PaymentsGrpcService.class);
 
     private final PaymentService payments;
+    private final long defaultWatchIntervalMs;
 
     public PaymentsGrpcService(PaymentService payments) {
+        this(payments, 250);
+    }
+
+    public PaymentsGrpcService(PaymentService payments, long defaultWatchIntervalMs) {
         this.payments = payments;
+        this.defaultWatchIntervalMs = defaultWatchIntervalMs;
     }
 
     @Override
@@ -106,6 +112,122 @@ public class PaymentsGrpcService extends PaymentsGrpc.PaymentsImplBase {
             }
             return toProto(found.get());
         });
+    }
+
+    /**
+     * Live status, as a server stream. Phase 9a item 4.
+     *
+     * <h2>It moves the polling; it does not remove it</h2>
+     *
+     * <p>This loop re-reads the payment on an interval, because the state
+     * machine has no change feed — transitions are written by whichever thread
+     * is handling a request or a Kafka message, and nothing publishes them
+     * in-process. So one loop in the orchestrator replaces N loops across N
+     * clients, which is a real reduction and is not the same as none.
+     *
+     * <p>Saying that plainly matters, because "we replaced polling with
+     * streaming" is the sentence everyone writes and it is usually this.
+     *
+     * <h2>What it does remove, which is the measurable part</h2>
+     *
+     * <p>Every client poll costs an API-key lookup, a rate-limit token, a
+     * deadline scope, an HTTP round trip and a database read, and all but the
+     * last returns exactly what the previous one did. This loop costs a database
+     * read, and emits only on change.
+     *
+     * <h2>Three ways it ends, and none of them is "never"</h2>
+     *
+     * <ul>
+     *   <li>the payment reaches a terminal state — the expected ending;</li>
+     *   <li>the caller's deadline expires — gRPC cancels the context and the
+     *       loop notices;</li>
+     *   <li>the caller goes away — {@link Context#isCancelled()}.</li>
+     * </ul>
+     *
+     * <p>An open stream is a held connection and a held thread. Phase 3's whole
+     * argument is that unbounded is the failure being removed, so a stream with
+     * no ending would be re-introducing it in a shape that looks like a feature.
+     */
+    @Override
+    public void watch(com.payorch.proto.v1.WatchPaymentRequest request,
+                      StreamObserver<PaymentResponse> out) {
+        UUID id = Uuid7.parseOrNull(request.getPaymentId());
+        if (id == null) {
+            out.onError(Status.NOT_FOUND.withDescription("no such payment").asRuntimeException());
+            return;
+        }
+
+        long intervalMs = request.getPollIntervalMs() > 0
+                ? request.getPollIntervalMs() : defaultWatchIntervalMs;
+
+        try {
+            String lastState = null;
+
+            while (!Context.current().isCancelled()) {
+                Optional<OrchestratorApi.PaymentResponse> found = payments.find(id);
+                if (found.isEmpty()) {
+                    // Only possible on the first pass - a payment does not stop
+                    // existing - so this is "you asked to watch something that
+                    // is not there" rather than "it went away".
+                    out.onError(Status.NOT_FOUND
+                            .withDescription("no such payment").asRuntimeException());
+                    return;
+                }
+
+                OrchestratorApi.PaymentResponse payment = found.get();
+
+                // The FIRST emission is unconditional, and it is not an
+                // optimisation to skip it. A caller that attaches after the
+                // payment already reached its final state would otherwise wait
+                // for a change that has already happened and then time out -
+                // which is the classic watch-API bug, and it only shows up on
+                // fast payments, which are the common case.
+                if (!payment.state().equals(lastState)) {
+                    out.onNext(toProto(payment));
+                    lastState = payment.state();
+                }
+
+                if (isTerminal(payment.state())) {
+                    out.onCompleted();
+                    return;
+                }
+
+                Thread.sleep(intervalMs);
+            }
+
+            // Cancelled. No onCompleted and no onError: the caller is gone, and
+            // writing to a cancelled observer throws.
+            log.debug("watch cancelled by the caller for {}", id);
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            out.onError(Status.UNAVAILABLE.withDescription("watch interrupted").asRuntimeException());
+
+        } catch (ApiException e) {
+            out.onError(fromHttpStatus(e).withDescription(e.errorCode()).asRuntimeException());
+
+        } catch (Exception e) {
+            log.error("unhandled error while watching {}", id, e);
+            out.onError(Status.INTERNAL.withDescription("internal_error").asRuntimeException());
+        }
+    }
+
+    /**
+     * Read from the state machine rather than listed here.
+     *
+     * <p>A hard-coded set of terminal states in this class is a second source of
+     * truth about the state machine, and the failure it produces is a stream
+     * that never completes for a state somebody added — the caller waits for its
+     * whole deadline on a payment that finished immediately.
+     */
+    private static boolean isTerminal(String state) {
+        try {
+            return com.payorch.orchestrator.domain.PaymentState.valueOf(state).isTerminal();
+        } catch (IllegalArgumentException e) {
+            // A state this build does not know. Not terminal, so the stream
+            // keeps watching rather than declaring an ending it cannot justify.
+            return false;
+        }
     }
 
     /**

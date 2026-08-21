@@ -1,0 +1,73 @@
+-- Phase 8, V15. Three indexes, and one of them is deliberately a bad idea.
+--
+-- Measured on this project's own data - 131,585 payments and 116,251 attempts
+-- accumulated by the experiments in this repository, not generated for the
+-- benchmark. Phase 8's trap list is explicit about why that matters: on an empty
+-- table every plan is a full scan and every scan is fast, so a benchmark there
+-- proves nothing about either the index or its absence.
+--
+-- The numbers are in docs/experiments/21-index-benchmark.md and are reproducible
+-- with tools/loadtest/index-benchmark.sh.
+
+-- ---------------------------------------------------------------------------
+-- 1. THE ONE THAT PAYS FOR ITSELF
+--
+-- "What happened to my reference" is the commonest support question there is,
+-- and merchant_reference had no index at all. 123,070 distinct values in 131,585
+-- rows, so it is nearly unique - close to the best case an index can have.
+--
+-- Before: Table scan on payment, 131,585 rows examined, to return 1.
+--
+-- Not UNIQUE, deliberately. A merchant's reference is THEIR identifier and this
+-- system does not get to decide it is unique - two merchants may legitimately
+-- both call something "invoice-1", and phase 1 already keys idempotency on
+-- (merchant_id, idempotency_key) rather than trusting a caller-supplied string
+-- to be globally distinct. A unique constraint here would reject a valid
+-- payment for a reason no merchant could act on.
+CREATE INDEX ix_payment_merchant_reference ON payment (merchant_reference);
+
+-- ---------------------------------------------------------------------------
+-- 2. THE COVERING ONE
+--
+-- A merchant dashboard asks for state and amount over a date range. There is
+-- already ix_payment_merchant_created (merchant_id, created_at), which finds the
+-- right rows and then reads every one of them from the clustered index to fetch
+-- two more columns.
+--
+-- Adding those columns to the index means InnoDB never touches the row at all -
+-- EXPLAIN reports "Using index", and the lookup becomes a range scan over a
+-- structure that already holds the answer.
+--
+-- The cost is honest: this index duplicates state and amount_minor, so it is
+-- wider, it is written on every insert AND on every state transition, and a
+-- payment transitions up to four times. It is worth it here because the
+-- dashboard query is frequent and the columns are narrow. It would not be worth
+-- it for a wide column or a rare query, and "add a covering index" is not
+-- advice, it is a trade.
+CREATE INDEX ix_payment_merchant_covering
+    ON payment (merchant_id, created_at, state, amount_minor);
+
+-- ---------------------------------------------------------------------------
+-- 3. THE DELIBERATELY BAD ONE
+--
+-- Kept, and named, because showing what does NOT work is more convincing than a
+-- table where everything improved.
+--
+-- currency has ONE distinct value in this dataset. The index is therefore a
+-- single key entry pointing at every row in the table: it cannot narrow a search
+-- because there is nothing to narrow to. The optimiser knows this - it costs the
+-- index scan against the table scan, sees no benefit, and ignores it.
+--
+-- So it is pure cost. Every INSERT maintains it. Every page split touches it. It
+-- occupies buffer pool that a useful index could have had. And it looks
+-- perfectly reasonable in a schema review, which is the point: "queries filter
+-- on currency, so index currency" is a sentence nobody argues with.
+--
+-- The general rule it illustrates: an index is only worth its write cost if it
+-- ELIMINATES rows. Selectivity, not usage, is what makes a column worth
+-- indexing - and a column filtered by every query but satisfied by every row is
+-- the worst case, because it looks the most useful.
+--
+-- Dropped in the same phase it was added? No - deliberately left in place so the
+-- benchmark can keep measuring it. See the experiment writeup.
+CREATE INDEX ix_payment_currency ON payment (currency);

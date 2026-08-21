@@ -194,11 +194,32 @@ it costs.
 
 ## Exit criteria
 
-- [ ] A benchmark table in `docs/experiments/`: query, rows examined before,
+- [x] A benchmark table in `docs/experiments/`: query, rows examined before,
       rows examined after, p50/p99 before and after — **real numbers from your
-      own data**
-- [ ] At least one covering index demonstrated with `Using index` in `EXPLAIN`
-- [ ] At least one deliberately *bad* index measured and explained
+      own data** — [experiment 21](../experiments/21-index-benchmark.md), run
+      2026-08-21 against 131,585 payments accumulated by this repository's own
+      experiments. `merchant_reference` point lookup: **131,585 rows examined →
+      1**, p50 **24.000ms → 0.015ms**. Timings from `EXPLAIN ANALYZE` rather
+      than a stopwatch, because one `docker exec mysql` costs ~50ms and would
+      have reported every index as worthless
+- [x] At least one covering index demonstrated with `Using index` in `EXPLAIN` —
+      `ix_payment_merchant_covering`. Same 49,192 rows either way; the
+      difference is what happens to each: `Using index condition` (46.1ms, goes
+      back to the row for `state` and `amount_minor`) against
+      **`Using where; Using index`** (9.8ms, never touches the row). **4.7x for
+      the same rows.** Note the two strings overlap — the first version of the
+      check grepped for `Using index` and was satisfied by the NON-covering
+      plan
+- [x] At least one deliberately *bad* index measured and explained —
+      `ix_payment_currency`, on a column with **one distinct value**, and the
+      result is worse than predicted. The optimiser does **not** ignore it: it
+      picks it and reads all 131,585 rows through it at 21.8ms against the table
+      scan's 24.0ms, because the index is narrower than the row. So the plan
+      names an index, the timing is a hair faster, and every signal a reviewer
+      checks says it is working — while it is pure write cost. **Selectivity,
+      not usage, is what makes a column worth indexing**, and a column every
+      query filters on but every row satisfies is the worst case because it
+      looks the most useful
 - [ ] Recon job produces a mismatch report across all three classes
 - [~] `UNKNOWN` payments resolve automatically; alert fires when the backlog
       grows — 8a. **The resolution half is now measured**
@@ -228,7 +249,9 @@ it costs.
 
       After: 50 resolved per tick, `inconclusive` flat at its pre-fix value,
       backlog 11,601 → 11,201 and falling
-- [ ] Every index added via a Flyway migration
+- [x] Every index added via a Flyway migration — `V15__payment_indexes.sql`.
+      None applied by hand; the first attempt was numbered V12 and collided with
+      an existing migration, which Flyway caught at startup by refusing to boot
 
 The "deliberately bad index" row is worth including. Showing what does *not* work
 and why is more convincing than a table where everything improved.

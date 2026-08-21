@@ -62,6 +62,8 @@ includeBuild("infra-core") {
 }
 
 include(
+    // Phase 9a. Generated gRPC stubs, shared by every service on an internal hop.
+    "proto",
     "services:payments-edge",
     "services:payment-orchestrator",
     "services:psp-router",

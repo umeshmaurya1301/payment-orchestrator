@@ -16,6 +16,15 @@
 # Jackson, with Jackson 2 (com.fasterxml.jackson, 2.21.4) available for
 # compatibility. All our code targets Jackson 3.
 springBoot = "4.1.0"
+# Phase 9a. gRPC, protobuf, and the codegen plugin.
+#
+# grpc-java and protobuf are versioned together on purpose: the generated stubs
+# are compiled against both, and a mismatch is a NoSuchMethodError at startup
+# rather than a compile error - the same shape as the otel/micrometer pairing in
+# the phase-4 note above.
+grpc = "1.68.1"
+protobuf = "4.28.3"
+protobufPlugin = "0.9.4"
 java = "25"
 
 # Not managed by the Boot BOM - must be pinned here.
@@ -209,5 +218,18 @@ payorch-chaos-core = { module = "com.payorch.infra:chaos-core", version = "0.1.0
 # --- test -----------------------------------------------------------------
 h2 = { module = "com.h2database:h2" }
 
+# --- gRPC (phase 9a) --------------------------------------------------------
+protobuf-java = { module = "com.google.protobuf:protobuf-java", version.ref = "protobuf" }
+protobuf-protoc = { module = "com.google.protobuf:protoc", version.ref = "protobuf" }
+grpc-protobuf = { module = "io.grpc:grpc-protobuf", version.ref = "grpc" }
+grpc-stub = { module = "io.grpc:grpc-stub", version.ref = "grpc" }
+grpc-netty-shaded = { module = "io.grpc:grpc-netty-shaded", version.ref = "grpc" }
+grpc-services = { module = "io.grpc:grpc-services", version.ref = "grpc" }
+grpc-gen-java = { module = "io.grpc:protoc-gen-grpc-java", version.ref = "grpc" }
+# javax.annotation.Generated, which the generated stubs reference and Java 25
+# does not ship.
+tomcat-annotations = { module = "org.apache.tomcat:annotations-api", version = "6.0.53" }
+
 [plugins]
+protobuf = { id = "com.google.protobuf", version.ref = "protobufPlugin" }
 spring-boot = { id = "org.springframework.boot", version.ref = "springBoot" }

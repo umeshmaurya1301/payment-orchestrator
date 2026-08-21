@@ -1,0 +1,144 @@
+syntax = "proto3";
+
+package payorch.v1;
+
+option java_package = "com.payorch.proto.v1";
+option java_multiple_files = true;
+option java_outer_classname = "ConnectorProto";
+
+// The orchestrator -> connector contract, as protobuf.
+//
+// DELIBERATELY THE SAME SHAPE AS ConnectorApi, NOT A BETTER ONE
+//
+// Phase 9's benchmark compares REST against gRPC "under identical load". That
+// only means something if the two carry the same information: a proto redesigned
+// to be leaner would make the comparison measure the redesign rather than the
+// transport, and the honest conclusion would be unavailable.
+//
+// So every field below has a counterpart in ConnectorApi, and phase 1's comment
+// on that class - "note what the request cannot express: there is no field for a
+// card number" - holds here for the same reason and by the same construction.
+//
+// WHAT IS NOT IN THIS FILE, AND WHY
+//
+// No deadline field. gRPC has first-class deadlines that propagate in metadata
+// automatically, which is the whole point of item 3 in the phase plan: phase 3a
+// hand-rolled a header scheme precisely so the two could be compared. Adding a
+// deadline field here would be re-implementing by hand the thing gRPC is being
+// evaluated for.
+//
+// No trace context field either. It travels in metadata via the OpenTelemetry
+// gRPC instrumentation - and phase 6g's finding applies unchanged: it does not
+// propagate for free, and it has to be verified rather than assumed.
+
+service Connector {
+  // Authorize a payment. The one call that needs a card, and it takes a vault
+  // token instead - the tokenization boundary is enforced by the shape of the
+  // message rather than by a rule somebody has to remember.
+  rpc Authorize(AuthorizeRequest) returns (AuthorizeResponse);
+
+  // Take the money on an authorization the provider already holds. No token
+  // field: a capture references the provider's own handle, so the vault is never
+  // opened for one. Phase 6j's PspAdapter.capture makes the same point with a
+  // Java signature.
+  rpc Capture(CaptureRequest) returns (CaptureResponse);
+
+  // Give it back. Phase 6k's compensating reversal.
+  rpc Reverse(ReverseRequest) returns (ReverseResponse);
+
+  // Ask every provider whether they hold a reference. Phase 8a's lookup, and the
+  // one place `silent` matters more than `answered`.
+  rpc Lookup(LookupRequest) returns (LookupResponse);
+}
+
+// The two answers a provider can actually give.
+//
+// UNSPECIFIED = 0 is required by proto3 and is not padding: an unset enum field
+// deserializes to zero, so if APPROVED were 0 then a message from a client that
+// had never heard of this field would arrive claiming the payment succeeded.
+// The zero value must always be the one that means "nobody said".
+//
+// There is deliberately no UNKNOWN member. A response that arrives is by
+// definition known; not receiving one is the absence of a response, signalled by
+// a gRPC status rather than by a body claiming uncertainty. UNKNOWN lives in the
+// orchestrator's state machine, where the distinction has consequences.
+enum Outcome {
+  OUTCOME_UNSPECIFIED = 0;
+  OUTCOME_APPROVED = 1;
+  OUTCOME_DECLINED = 2;
+}
+
+message AuthorizeRequest {
+  // The orchestrator's attempt id, passed to the provider as its idempotency
+  // key. Reusing it on a retry is what makes the retry safe; changing it is what
+  // causes a double charge.
+  string reference = 1;
+  string psp_id = 2;
+
+  // int64 minor units. Never a double and never a decimal string: money in
+  // floating point is a rounding bug with a schedule, and a string would move
+  // parsing into every consumer.
+  int64 amount_minor = 3;
+  string currency = 4;
+
+  // A vault reference, worthless without the vault.
+  string card_token = 5;
+  string card_bin = 6;
+  string card_last4 = 7;
+}
+
+message AuthorizeResponse {
+  string provider_ref = 1;
+  Outcome outcome = 2;
+  string error_code = 3;
+  string auth_code = 4;
+}
+
+message CaptureRequest {
+  string provider_ref = 1;
+  string psp_id = 2;
+  int64 amount_minor = 3;
+}
+
+message CaptureResponse {
+  string provider_ref = 1;
+  Outcome outcome = 2;
+  string error_code = 3;
+  int64 captured_amount_minor = 4;
+}
+
+message ReverseRequest {
+  string provider_ref = 1;
+  string psp_id = 2;
+}
+
+message ReverseResponse {
+  string provider_ref = 1;
+  Outcome outcome = 2;
+  string error_code = 3;
+  int64 reversed_amount_minor = 4;
+}
+
+message LookupRequest {
+  string reference = 1;
+}
+
+message LookupResponse {
+  string reference = 1;
+
+  // Empty when nobody claimed it.
+  string claimed_by = 2;
+  Outcome outcome = 3;
+  bool captured = 4;
+  bool reversed = 5;
+  int64 amount_minor = 6;
+
+  // Providers that gave a definitive answer, and providers that did not.
+  //
+  // `silent` is the field a caller must read before concluding anything, and
+  // phase 8a is the reason it is called out here: a provider that did not answer
+  // is not a provider that said no, and treating silence as "nobody has it" is
+  // the double-charge reasoning the UNKNOWN state exists to prevent.
+  repeated string answered = 7;
+  repeated string silent = 8;
+}

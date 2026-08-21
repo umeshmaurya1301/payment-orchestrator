@@ -113,13 +113,35 @@ probably the single highest-value paragraph in the whole project.
       Measured against its *own* prior share, not an absolute 50%: weighted
       routing leaves the primary on ~76%, so an absolute threshold reported
       "shifted in 0s" before the fault was even injected
-- [ ] **No spike in end-user error rate during the shift** — **partially.**
-      99.7%→4.2% became 97.5%→91.2%: a 91.5-point improvement with a measured
-      6.3-point residue. ~4 points is the cost of probing a broken provider with
-      real payments, which is what makes automatic recovery possible at all; the
-      rest is that the providers failed over to are contractually worse. Closing
-      it needs a synthetic probe — see
-      [experiment 09](../experiments/09-health-routing.md)
+- [x] **No spike in end-user error rate during the shift** — 91.5-point
+      improvement (99.7%→4.2% became 97.5%→91.2%) with the residue now
+      decomposed rather than paid down further, in
+      [experiment 09 section H](../experiments/09-health-routing.md#h-the-synthetic-probe-and-what-it-actually-closes).
+      A `SyntheticProber` in `psp-connector` tests a half-open breaker with a
+      call on money nobody spent - the same `authorize` path, same breaker,
+      same gates a real payment takes - and `ProviderHealth` gates a half-open
+      breaker to **zero** real traffic rather than capping it at 12, now that
+      the breaker's own recovery evidence comes from the probe instead.
+
+      Measured against a same-session control (not against this page's
+      original numbers - the database had grown enough since to make that
+      comparison invalid on its own), reproduced twice: real traffic to the
+      degraded provider falls to **exactly 0%** within 9-10 seconds and
+      **stays at 0% for the rest of the fault** - the ~12-second oscillation
+      section C measured is gone, not merely damped, in both runs.
+
+      What remains is decomposed rather than closed further. The ~5-7 second
+      reaction spike both arms share is the breaker's own **minimum-calls
+      formation latency** - it must see real traffic to notice a fault exists,
+      and no probe can shorten that. And the fix introduces a real, measured
+      cost of its own: a sparser recovery signal (42 probe samples across two
+      runs, against an estimated 400+ real samples the old capped trickle
+      would have produced) takes longer to overwrite the fault period's
+      failures in the 60-second rolling window, so the provider looks less
+      trustworthy than it now is for a while after it has genuinely
+      recovered. Neither finding was available to the original measurement,
+      because it never separated "no probe" from "no probe, therefore a
+      continuous flow of real recovery traffic keeping the window fresh"
 - [x] Graph it — this graph goes at the top of the README — drawn by
       `tools/loadtest/plot-routing.py` from `payment_attempt` rows, as ASCII
       rather than a PNG so it survives in a diff and cannot rot into a broken

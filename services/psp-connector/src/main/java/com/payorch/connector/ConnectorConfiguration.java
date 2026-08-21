@@ -5,6 +5,8 @@ import javax.sql.DataSource;
 import com.payorch.connector.config.ProviderConfigEndpoint;
 import com.payorch.connector.health.ProviderHealthEndpoint;
 import com.payorch.connector.health.ProviderHealthService;
+import com.payorch.connector.health.SyntheticProber;
+import com.payorch.connector.health.SyntheticProberMetrics;
 import com.payorch.connector.config.ProviderConfigMetrics;
 import com.payorch.connector.config.ProviderConfigStore;
 import com.payorch.connector.provider.MockPspAdapter;
@@ -116,6 +118,30 @@ public class ConnectorConfiguration {
     @Bean
     public ProviderHealthEndpoint providerHealthEndpoint(ProviderHealthService health) {
         return new ProviderHealthEndpoint(health);
+    }
+
+    /**
+     * Phase 5, the standing question experiment 09 left open. On by default -
+     * this is the mechanism that lets a half-open breaker be gated rather than
+     * merely capped in {@link com.payorch.infra.observability.ProviderHealth},
+     * so turning it off without also reverting that gate would leave a
+     * recovering provider with no way back to CLOSED at all. See
+     * {@link SyntheticProber}'s own javadoc for the full argument.
+     */
+    @Bean
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(
+            name = "payorch.psp.probe-enabled", havingValue = "true", matchIfMissing = true)
+    public SyntheticProber syntheticProber(ProviderConfigStore configs,
+                                           CircuitBreakers breakers,
+                                           PspAdapterRegistry adapters) {
+        return new SyntheticProber(configs, breakers, adapters);
+    }
+
+    @Bean
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(
+            name = "payorch.psp.probe-enabled", havingValue = "true", matchIfMissing = true)
+    public SyntheticProberMetrics syntheticProberMetrics(SyntheticProber prober) {
+        return new SyntheticProberMetrics(prober);
     }
 
     @Bean

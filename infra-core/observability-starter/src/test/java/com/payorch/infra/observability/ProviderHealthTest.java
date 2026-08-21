@@ -73,13 +73,22 @@ class ProviderHealthTest {
     }
 
     @Test
-    @DisplayName("a half-open breaker is capped, so recovery does not summon a thundering herd")
-    void halfOpenIsCapped() {
+    @DisplayName("a half-open breaker is gated to zero - psp-connector's SyntheticProber "
+            + "supplies the recovery evidence now, not real customer traffic")
+    void halfOpenIsGatedNotCapped() {
+        // Deliberately perfect on every other axis, exactly like
+        // openBreakerIsUnroutable - a half-open breaker used to let some of this
+        // through as a capped trickle. Experiment 09 measured that trickle at
+        // ~4 points of real payments spent proving a provider had recovered.
+        // Gated to 0 now that SyntheticProber exists to spend synthetic ones
+        // instead - see the class javadoc on ProviderHealth.score for the
+        // before/after and experiment 09 for the number this closes.
         ProviderHealth h = score(1.0, 100, 2, 1.0, 500);
 
-        assertThat(h.score()).isLessThanOrEqualTo(12);
-        assertThat(h.routable()).isTrue();      // eligible for a trickle, not for everything
+        assertThat(h.score()).isZero();
+        assertThat(h.routable()).isFalse();
         assertThat(h.reason()).contains("half-open");
+        assertThat(h.reason()).contains("synthetically");
     }
 
     @Test

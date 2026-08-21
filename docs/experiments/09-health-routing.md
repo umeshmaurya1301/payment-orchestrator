@@ -26,6 +26,21 @@ is an **input to a decision** rather than a terminal outcome.
 > that proves it **failed by passing three times** before it measured anything
 > real.
 
+> **Update, phase 5's synthetic probe (section H).** The 6.3-point residue above
+> was measured against the *old* half-open behaviour — a capped trickle of real
+> customer payments used to test a recovering provider, because routing was the
+> only way the breaker's own probes ever got made. A `SyntheticProber` now
+> supplies those probes instead, on money nobody spent, and `ProviderHealth`
+> gates a half-open breaker to **zero** real traffic rather than capping it at
+> 12. Measured twice, reproducibly: real traffic to the degraded provider falls
+> to **exactly 0%** within 9–10 seconds and **stays at 0% for the remaining ~80
+> seconds** of the fault — the ~12-second oscillation documented in section C is
+> gone, not merely damped. What remains is a different, more fundamental limit
+> the probe cannot touch (the breaker still needs real traffic to *notice* the
+> fault in the first place) and a genuinely new cost the probe introduces (a
+> thinner recovery signal that takes longer to overwrite a stale one). Both are
+> measured in section H rather than assumed away.
+
 ---
 
 ## Hypothesis
@@ -436,6 +451,139 @@ the residue is the honest part.
 
 ---
 
+## H. The synthetic probe, and what it actually closes
+
+Section D left one standing question: *"a synthetic probe would remove the ~4
+points that recovery-probing costs... it would need to be a real authorization
+of a trivial amount."* This is that probe, built, and measured against a
+same-session control rather than against section D's original numbers — which
+turned out to matter.
+
+### Why the original numbers could not be reused as a baseline
+
+The first run of the new code measured a pre-fault success rate of 83.8%,
+against section D's 97.5%. That is not the fix failing; it is this project's
+database being enormously larger than it was when section D was first
+measured — hundreds of thousands of rows from a session's worth of load tests
+run against the same MySQL instance since. Comparing today's numbers to a
+figure recorded against a much smaller database would have been the exact
+mistake experiment 26 made with its own "before" index numbers, in a new
+costume.
+
+So the comparison here is a same-session **control**: the pre-probe code
+(`ProviderHealth`'s half-open score reverted to the 12-point cap, `SyntheticProber`
+disabled) and the treatment, run back to back against the identical warm stack,
+same database, same load, same fault — `tools/loadtest/routing-experiment.sh`,
+unchanged, `MAX_RATE=40 DEGRADE_AFTER=45 DEGRADE_FOR=90 RECOVER_FOR=45
+DEGRADE_MODE=errors`, matching section D's original parameters.
+
+### What the summary numbers say, and why they are not the finding
+
+```
+                     control   treatment   treatment-2
+BEFORE  overall        94.1%       96.5%        95.4%
+DURING  overall        92.9%       91.8%        92.4%
+AFTER   overall        96.9%       94.9%        96.6%
+```
+
+Read as a single before/after pair, this looks like nothing happened — DURING
+is not obviously better, and it moves in both directions across the two
+treatment runs. **That reading is wrong, and the reason is where the noise
+actually lives.** `psp-b`'s own success rate swung between 74.8% and 92.9%
+across these three runs with no change to it at all — the mock simulator's own
+probabilistic fault injection on the providers NOT under test dominates a
+single 90-second window's overall number far more than anything psp-a
+contributes. A single run's OVERALL success is not a reliable before/after
+metric here, and asserting one from three runs would be the same mistake
+experiment 23 made trusting a single k6 pair before running it twice.
+
+### What is reproducible: the per-provider time series
+
+Real traffic to `psp-a`, as a share of all attempts, in 2–3 second buckets
+relative to the fault:
+
+```
+CONTROL (the old capped score)
+  t+0s   66.9%      t+16s   0.8%      t+31s   2.4%      t+46s   0.0%
+  t+3s   56.1%      t+19s   3.0%      t+34s   0.0%      t+49s   0.0%
+  t+6s   25.5%      t+22s   0.0%      t+37s   0.0%      t+52s   0.9%
+  t+9s    0.0%       t+25s   0.0%      t+40s   0.9%      t+54s   6.0%   <- oscillating
+  t+13s   0.0%       t+28s   0.8%      t+43s   4.1%      t+57s.. 0.0% (settles)
+
+TREATMENT (gated score + SyntheticProber), run 1 and run 2
+  t+0s   77.3%       t+9s    0.0%
+  t+2s   78.1%       t+11s   0.0%
+  t+5s   70.1%       ...     0.0%   <- flat zero for the remaining ~80s, both runs
+  t+7s   29.2%       t+90s   0.0%
+```
+
+**Real traffic to the degraded provider falls to exactly 0% within 9–10 seconds
+in both treatment runs and stays there — no recurring blips.** Control shows
+the ~12-second oscillation section C already documented: small returns of
+traffic (0.8%–6.0%) roughly every 11–12 seconds, each one the capped half-open
+score buying a trickle of real payments to test a provider still failing 80% of
+its calls. That oscillation is **absent in both treatment runs**, not merely
+smaller — the reproducibility across two independent runs is what makes this
+the finding rather than a run's noise.
+
+`SyntheticProber`'s own counters confirm the mechanism did the work: **42 probe
+calls fired, 25 succeeded**, across the two treatment runs. Those are the calls
+that used to be real customer payments.
+
+### The reaction window is a different limit, and the probe cannot touch it
+
+Both control and treatment show the *same* initial spike — real traffic to
+psp-a at 60–78% for the first 5–7 seconds of the fault, before dropping. That
+window is not half-open leakage; it is the time the breaker needs to
+**notice** the fault at all. `psp-a`'s breaker requires `breaker_minimum_calls`
+(50) inside a 30-second time window before it can evaluate a failure rate and
+open — and nothing, probe or otherwise, can shorten that, because the breaker
+cannot know a provider is failing without some real calls going out first. The
+synthetic probe only ever fires once a breaker is already `HALF_OPEN`; it has
+no opinion about a breaker that has not yet opened. This is a more precise
+statement of where the residual cost lives than section D had: it was never
+really "the cost of probing", it is "the cost of noticing", and a probe that
+fires before there is anything to probe cannot help with that part.
+
+### A cost the probe introduces, found by measuring the recovery window
+
+`psp-a`'s share of traffic in the 45-second AFTER window is smaller in both
+treatment runs (6.4%, 6.5%) than in control (28.6%) — despite psp-a being
+equally healthy in all three by then (95–98% success wherever it is chosen).
+That is not the fix failing either; it is the `RollingOutcomes` window (60
+seconds, `ObservabilityAutoConfiguration`) doing arithmetic.
+
+Control's psp-a received a continuous ~12% trickle of *real* traffic
+throughout the 90-second fault - on the order of 400+ samples, mostly failures
+while the fault was live, but a large and fast-refreshing pool. Treatment's
+psp-a received only the probe's samples - 42 across the whole experiment,
+because the probe fires far less often than real traffic would and only while
+`HALF_OPEN`. A 60-second window with fewer, sparser samples takes longer to
+dilute the fault-period failures with fresh good ones, so for a while after the
+breaker closes the score is still depressed by stale evidence. With a
+45-second AFTER window measured immediately after a 90-second fault, the
+60-second rolling window has not yet fully rolled past the fault period at
+all.
+
+**The trade the probe makes, stated plainly:** it removes real payments from
+being spent *testing* a provider, and it pays for that by making the provider
+*look* less trustworthy than it now is for a while after it has actually
+recovered - because the evidence proving it recovered is thinner than a flood
+of real traffic would have produced. Neither number was assumed; both came
+from watching the same drill measure both windows.
+
+### What this closes, and what it leaves open
+
+The synthetic probe closes the oscillation section C measured and the
+recovery-probing cost section D attributed to it - both were real, both are
+gone in two independent runs. It does not, and structurally cannot, close the
+breaker's own formation latency, and it introduces a slower-to-refresh
+post-recovery signal that section D had no way to discover, because section D
+never separated "no synthetic probe" from "no synthetic probe, therefore
+lots of real recovery traffic keeping the window fresh."
+
+---
+
 ## What surprised me
 
 **That routing on health alone made the system worse.** The score was correct,
@@ -459,14 +607,43 @@ own 10-second interval, and it was invisible in aggregate — the "during" row o
 the summary shows a stable 7.6%. It only appears when the same data is read at
 2-second resolution.
 
+**That the fix for section D's cost created a new cost section D had no way to
+see.** Building the synthetic probe felt like closing a standing question, not
+opening one. The oscillation genuinely disappeared, reproducibly, in two runs
+— and then the AFTER window showed psp-a recovering to a fifth of the traffic
+share it used to reclaim, for a reason that had nothing to do with the
+mechanism being wrong: a thinner sample pool takes longer to overwrite in a
+60-second rolling window than a thick one does. Section D could not have found
+this, because section D's "before" always had real traffic keeping the window
+fresh throughout. Removing that traffic is the fix, and it also removes the
+thing that was quietly making the window recover fast.
+
+**That comparing against an old baseline would have shown an improvement that
+was not real, and comparing against a fresh one showed none was provable in a
+single run.** The first version of this measurement compared today's numbers
+against section D's original ones and found an 83.8% pre-fault baseline where
+97.5% was expected — the database had simply grown. A same-session control
+fixed that, and then the *overall success* numbers still would not resolve
+cleanly across three runs, because a different provider's own randomised fault
+injection dominates a single 90-second window more than the mechanism under
+test does. Both problems would have been invisible to a script that printed
+one number and stopped, which by this point in the project should not have
+been a surprise at all.
+
 ---
 
 ## Standing questions
 
-- **A synthetic probe** would remove the ~4 points that recovery-probing costs.
-  It also introduces the classic risk that the probe passes while real payments
-  fail, so it would need to be a real authorization of a trivial amount, or
-  reconciled against live outcomes.
+- **The post-recovery window needs a longer observation** to say whether the
+  thinner-sample-pool cost in section H is transient (the 60-second window
+  finishes clearing the fault period and psp-a's share converges back toward
+  control's) or persistent under repeated faults. `RECOVER_FOR=120` or more
+  would answer it and was not run.
+- **The probe could also fire briefly after `CLOSED`**, to refresh the rolling
+  window with a few known-good samples immediately on recovery rather than
+  waiting for real traffic's own trickle to do it - trading a handful more
+  synthetic calls for a faster return to full confidence. Not built; section
+  H's finding is what motivates it.
 - **Deterministic strategies decay.** `PRIORITY`, `CHEAPEST` and
   `LEAST_LATENCY` stop exploring, so the providers they do not choose go quiet
   and their measurements expire. They therefore react to a degradation later

@@ -76,13 +76,27 @@ public record ProviderHealth(
      * not, and the score says so. That ordering is the whole point of the
      * exponent, and a test asserts it so a later tweak cannot quietly invert it.
      *
-     * <h2>The breaker is a gate, not a term</h2>
+     * <h2>The breaker is a gate for BOTH open and half-open states</h2>
      *
      * <p>An open breaker means calls are not reaching the provider at all, so
      * there is nothing to weigh: the score is 0 and the provider is skipped.
-     * Half-open is capped rather than zeroed, which is the phase-5 answer to the
-     * thundering herd on recovery - a recovering provider becomes eligible for a
-     * trickle of traffic rather than for all of it the instant it half-opens.
+     *
+     * <p><strong>Half-open used to be capped rather than gated</strong> - eligible
+     * for a trickle of real traffic, on the reasoning that routing was the only
+     * way the breaker's own half-open probes ever got made, and a provider
+     * starved of all traffic can never prove it is back. Experiment 09 measured
+     * what that trickle cost: ~4 of the phase's residual 6.3 points of "no spike
+     * in error rate" were real customer payments spent proving a provider had
+     * recovered.
+     *
+     * <p>It is gated to 0 now, matching a fully open breaker, because
+     * {@code psp-connector}'s {@code SyntheticProber} supplies the half-open
+     * evidence instead - a synthetic {@code authorize} call through the exact
+     * same breaker, on money nobody spent. The stale-health trap this cap
+     * originally answered is still real; the fix moved from "accept some real
+     * losses" to "stop needing a real customer for the test at all". See
+     * {@code SyntheticProber}'s javadoc for the mechanism and experiment 09's
+     * section D for the measurement this closes.
      */
     public static ProviderHealth score(String pspId,
                                        double successRate,
@@ -96,11 +110,14 @@ public record ProviderHealth(
             return new ProviderHealth(pspId, 0, successRate, p99Ms, breakerState,
                     freePermits, samples, "breaker open");
         }
+        if (breakerState == 2) {
+            return new ProviderHealth(pspId, 0, successRate, p99Ms, breakerState,
+                    freePermits, samples, "breaker half-open - probed synthetically, not with real traffic");
+        }
 
         // No evidence: sit at neutral rather than inventing a verdict. See NEUTRAL.
         if (samples == 0 || successRate < 0) {
-            int score = breakerState == 2 ? Math.min(NEUTRAL, HALF_OPEN_CAP) : NEUTRAL;
-            return new ProviderHealth(pspId, score, successRate, p99Ms, breakerState,
+            return new ProviderHealth(pspId, NEUTRAL, successRate, p99Ms, breakerState,
                     freePermits, samples, "no recent calls - neutral");
         }
 
@@ -123,52 +140,34 @@ public record ProviderHealth(
 
         int score = (int) Math.round(100 * availability * latency * capacity);
 
-        if (breakerState == 2) {
-            score = Math.min(score, HALF_OPEN_CAP);
-        }
-
+        // breakerState is always 0 (closed) by this point - 1 and 2 both
+        // returned above - so it is not threaded into dominant(), which used to
+        // take it solely to report "breaker half-open - probing" for a case
+        // that now has its own reason string at the point of the early return.
         return new ProviderHealth(pspId, clampScore(score), successRate, p99Ms,
-                breakerState, freePermits, samples, dominant(availability, latency, capacity, breakerState));
+                breakerState, freePermits, samples, dominant(availability, latency, capacity));
     }
 
     /**
-     * A half-open breaker is letting a handful of probes through to decide
-     * whether the provider is back. Giving it a full share of traffic on the
-     * strength of those probes is the thundering herd the phase plan warns
-     * about, so its score is capped until the breaker closes and the ordinary
-     * signals have real evidence behind them again.
+     * 12, formerly. Until this experiment, a half-open breaker's score was
+     * capped rather than gated to 0, at this value - tuned down from 30 against
+     * a measured ~12-second oscillation matching the breaker's own
+     * {@code waitInOpenSeconds}, because a score of 30 was buying roughly a
+     * sixth of the traffic against a breaker only willing to admit five probe
+     * calls in half-open, and everything past the fifth became a failed
+     * payment.
      *
-     * <p><strong>12, tuned against a measured oscillation.</strong> The first
-     * value was 30, and a 90-second fault produced this, sampled every 2 s as a
-     * share of attempts:
-     *
-     * <pre>
-     *   t+8s    psp-a  0.0%   breaker opened
-     *   t+17s   psp-a 14.1%   <- readmitted
-     *   t+29s   psp-a 16.7%   <- again
-     *   t+41s   psp-a  9.4%   <- again
-     *   t+53s   psp-a 12.9%   <- again
-     * </pre>
-     *
-     * <p>A clean ~12 s cycle, matching the breaker's own 10 s
-     * {@code waitInOpenSeconds}. Every time it half-opened, a score of 30 bought
-     * roughly a sixth of the traffic - while the breaker was only willing to
-     * admit five probe calls. Everything past the fifth was refused instantly and
-     * became a failed payment, so each probe cycle cost real money to re-learn
-     * something the previous cycle had already established.
-     *
-     * <p>12 sits just above {@link #UNROUTABLE}, so a recovering provider still
-     * receives a trickle - which it must, because routing is where the breaker's
-     * probes come from, and a provider starved of all traffic can never prove it
-     * is back. That is the stale-health trap and it is the reason this is a cap
-     * rather than a gate.
+     * <p>The cap existed because routing was the only way the breaker's
+     * half-open probes ever got made, and a provider starved of all traffic can
+     * never prove it is back - the stale-health trap. {@code SyntheticProber}
+     * answers that trap a different way now: probes come from a scheduled
+     * synthetic call rather than from routing real payments to a provider still
+     * being tested, so the score can gate to 0 and the trickle this constant
+     * used to buy is unnecessary. See {@link #score} for where the gate lives
+     * now and experiment 09 for what the cap cost while it was the only answer.
      */
-    private static final int HALF_OPEN_CAP = 12;
 
-    private static String dominant(double availability, double latency, double capacity, int breakerState) {
-        if (breakerState == 2) {
-            return "breaker half-open - probing";
-        }
+    private static String dominant(double availability, double latency, double capacity) {
         double worst = Math.min(availability, Math.min(latency, capacity));
         if (worst > 0.9) {
             return "healthy";

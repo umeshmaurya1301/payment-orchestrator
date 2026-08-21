@@ -49,6 +49,21 @@ payorch:
     # here. What is left in this file is how to REACH that table - which is
     # the one piece of configuration that cannot itself come from the table.
     config-poll-ms: ${PSP_CONFIG_POLL_MS:2000}
+
+    # Phase 5, SyntheticProber. On by default: ProviderHealth gates a
+    # half-open breaker to zero real traffic on the assumption this is
+    # running to supply the recovery evidence instead. Turning it off
+    # without also reverting that gate leaves a recovering provider with no
+    # path back to CLOSED at all - see SyntheticProber's javadoc.
+    probe-enabled: ${PSP_PROBE_ENABLED:true}
+    # Deliberately much faster than a breaker's own half-open window needs
+    # to be probed once. Real customer traffic, under load, arrives
+    # continuously and competes for the same permittedNumberOfCallsInHalf-
+    # OpenState slots - slower than this and real payments win most of the
+    # race for those slots before a probe gets a turn, which is the exact
+    # cost this class exists to remove.
+    probe-interval-ms: ${PSP_PROBE_INTERVAL_MS:750}
+
     config-datasource:
       # config_reader holds SELECT on payorch.psp_config and nothing else.
       # Enforced by docker/mysql/init/02-config-reader.sql, not by this file:

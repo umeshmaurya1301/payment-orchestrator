@@ -490,6 +490,11 @@ services:
       RATELIMIT_ENABLED: ${RATELIMIT_ENABLED:-true}
       RATELIMIT_KIND: ${RATELIMIT_KIND:-atomic-lua}
       RATELIMIT_EGRESS_RPS: ${RATELIMIT_EGRESS_RPS:-200}
+      # Phase 5. On by default - see SyntheticProber's javadoc for why turning
+      # it off without also reverting ProviderHealth's half-open gate leaves a
+      # recovering provider with no path back to CLOSED at all.
+      PSP_PROBE_ENABLED: ${PSP_PROBE_ENABLED:-true}
+      PSP_PROBE_INTERVAL_MS: ${PSP_PROBE_INTERVAL_MS:-750}
       # Phase 9b. Server-only: this service is dialed by payment-orchestrator
       # and never dials anything over gRPC itself.
       GRPC_TLS_ENABLED: ${GRPC_TLS_ENABLED:-true}

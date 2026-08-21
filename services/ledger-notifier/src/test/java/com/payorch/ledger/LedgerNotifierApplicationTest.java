@@ -26,6 +26,8 @@ import org.springframework.boot.test.context.SpringBootTest;
                 // no equivalent - a MongoTemplate with nobody listening is built
                 // happily and only fails on first use.
                 "payorch.ledger.listener-autostart=false",
+        // No Mongo in this test, and MongoIndexes talks to it at startup.
+        "payorch.recon.create-indexes=false",
                 "payorch.ledger.bootstrap-servers=localhost:9092"
         })
 class LedgerNotifierApplicationTest {

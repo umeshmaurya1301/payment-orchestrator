@@ -104,11 +104,24 @@ the query that results is write-only.
 
 **43 milliseconds, and it should not have been.** Phase 8's trap list says
 `$lookup` is a nested-loop join, and an unindexed one is a collection scan *per
-input document* — 28,668 scans for this report. It is fast because
-`SettlementLine.paymentId` carries `@Indexed`, which was written for exactly this
-and is the difference between a report and an overnight job. The number is
-unremarkable and is worth recording precisely because a regression here would
-show up as a job that quietly takes all night rather than as a failure.
+input document* — 28,668 scans for this report.
+
+> **Correction, phase 9c.** This section originally concluded: *"It is fast
+> because `SettlementLine.paymentId` carries `@Indexed`."* **That index did not
+> exist.** Spring Data MongoDB has defaulted `auto-index-creation` to false since
+> 3.0, so every `@Indexed` in this project was decoration — asked directly, the
+> live database reported one index on each collection, `_id_`, against 47,452
+> journal documents.
+>
+> The measurement was real; the explanation was invented. It is fast because the
+> aggregation is driven from the **settlement** side, and a three-line batch means
+> three passes rather than 28,668 — the small driving set was doing the work I
+> credited to an index.
+>
+> Measured again in 9c once the indexes were created explicitly: **64ms without
+> them, 30–35ms with**. Roughly half, which is worth having and is nothing like
+> the difference between a report and an overnight job that the original text
+> implied. See [experiment 26](26-mongo-retention.md).
 
 **The class that matters is the one with the fewest rows.** 500
 `LEDGER_NOT_SETTLED` against 1 `SETTLED_NOT_IN_LEDGER`, and the 500 are almost

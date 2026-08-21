@@ -432,7 +432,41 @@ Generate per-encryption, never reuse a nonce under the same key.
 
       `vault_auditor` has no grant on `token_vault` at all: the account used to
       investigate card access cannot itself access cards
-- [ ] TTL demonstrably expires raw payloads
+- [x] TTL demonstrably expires raw payloads — 9c,
+      [experiment 26](../experiments/26-mongo-retention.md), with the criterion
+      restated rather than met as worded. **This system has no raw-payload
+      collection** — the ledger stores structured projections, and nothing
+      persists a raw Kafka message or webhook body — so inventing one in order
+      to expire it would be building a component to delete it. The TTL goes on
+      `settlement_line`, which is genuinely raw third-party input and is
+      re-ingestible; the `journal` deliberately gets none, because a retention
+      control on a financial record is a data-loss feature wearing a compliance
+      badge.
+
+      ```
+      ok   the 30-day-old line was expired                      0
+      ok   the fresh line survived                              1
+      ok   a line with no ingestedAt is NOT expired             1
+        lines with no ingestedAt: 7 of 14
+      ```
+
+      **The drill's first output was that no Mongo index existed at all.**
+      `@Indexed` has been on these entities since phases 6e and 8 — including
+      `@Indexed(unique = true)` on `JournalEntry.eventId`, written as the guard
+      against at-least-once redelivery — and Spring Data has defaulted
+      `auto-index-creation` to false since 3.0. 47,452 journal documents, one
+      index, `_id_`. Zero duplicates existed, which was the ordering doing the
+      work rather than the constraint: the consumer checks MySQL first.
+
+      Two findings the drill forced. **Retention fails open**: a document whose
+      TTL field is missing is skipped silently and forever, and 7 of 14 lines
+      were in that state — so the policy would have been false for precisely the
+      oldest data. And the backfill takes its timestamp from the **ObjectId**,
+      not the clock, because `now()` would have granted every historical line a
+      fresh full retention period.
+
+      Reconciliation re-measured, correcting experiment 22's stated cause:
+      **64ms without the indexes, 30–35ms with**
 
 ### Traps
 

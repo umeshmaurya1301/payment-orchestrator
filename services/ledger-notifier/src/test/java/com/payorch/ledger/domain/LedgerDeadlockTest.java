@@ -67,6 +67,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
         "spring.jpa.hibernate.ddl-auto=create-drop",
         "spring.flyway.enabled=false",
         "payorch.ledger.listener-autostart=false",
+        // No Mongo in this test, and MongoIndexes talks to it at startup.
+        "payorch.recon.create-indexes=false",
         "payorch.ledger.bootstrap-servers=localhost:9092",
         // Shorter than H2's default, so the losing transaction gives up inside
         // the test rather than inside the reader's patience. A deadlock that

@@ -43,6 +43,18 @@ public class SettlementLine {
     @Id
     private String id;
 
+    /**
+     * <strong>These annotations create nothing.</strong> Spring Data MongoDB has
+     * defaulted {@code auto-index-creation} to false since 3.0, so every
+     * {@code @Indexed} in this project has been decoration since it was written -
+     * verified against the live database in phase 9c: 47,452 journal documents
+     * and one index, {@code _id_}.
+     *
+     * <p>They are kept because they document intent next to the field, and the
+     * indexes are now created explicitly by {@link MongoIndexes}, which logs what
+     * it creates. An index that exists only as an annotation is worse than no
+     * index, because the code reads as though the problem was handled.
+     */
     @Indexed
     private String batchId;
 
@@ -62,6 +74,24 @@ public class SettlementLine {
     private String pspId;
     private Instant settledAt;
 
+    /**
+     * When we ingested this line — the TTL field. Phase 9c.
+     *
+     * <p>Separate from {@code settledAt}, which the provider supplies and which
+     * therefore cannot govern our retention: a file that arrives late, or a
+     * provider that back-dates, would make lines expire on somebody else's
+     * clock. Worse, a settlement date in the past would make a freshly ingested
+     * batch expire the moment Mongo's TTL monitor next woke up.
+     *
+     * <p>Retention here is short and that is the point. A settlement batch is
+     * raw provider input: once reconciled it is disposable, it is re-ingestible
+     * from the source file, and it carries provider references and amounts that
+     * this system has no reason to hold indefinitely. The journal is the
+     * opposite - a financial record that must be kept - which is why the TTL is
+     * on this collection and emphatically not on that one.
+     */
+    private Instant ingestedAt;
+
     protected SettlementLine() {
     }
 
@@ -76,6 +106,7 @@ public class SettlementLine {
         line.currency = currency;
         line.pspId = pspId;
         line.settledAt = settledAt;
+        line.ingestedAt = Instant.now();
         return line;
     }
 
@@ -109,5 +140,9 @@ public class SettlementLine {
 
     public Instant getSettledAt() {
         return settledAt;
+    }
+
+    public Instant getIngestedAt() {
+        return ingestedAt;
     }
 }

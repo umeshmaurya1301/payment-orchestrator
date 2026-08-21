@@ -202,6 +202,16 @@ payorch:
     transport: ${ORCHESTRATOR_TRANSPORT:rest}
     grpc-target: ${ORCHESTRATOR_GRPC_TARGET:localhost:9091}
 
+  grpc:
+    # Phase 9b. Client-only, for the same reason psp-connector's config is
+    # server-only: this service dials payment-orchestrator and is never
+    # dialed itself over gRPC.
+    tls:
+      enabled: ${GRPC_TLS_ENABLED:false}
+      cert-file: ${GRPC_TLS_CERT_FILE:}
+      key-file: ${GRPC_TLS_KEY_FILE:}
+      ca-file: ${GRPC_TLS_CA_FILE:}
+
   vault:
     # A SECOND connection, with its own credentials. vault_writer is granted
     # SELECT and INSERT on payorch_vault.token_vault and nothing else - see

@@ -36,6 +36,14 @@ payorch:
       enabled: ${GRPC_SERVER_ENABLED:false}
       port: ${GRPC_SERVER_PORT:9090}
 
+    # Phase 9b. Server-only: this service is dialed by payment-orchestrator
+    # and never dials anything over gRPC itself.
+    tls:
+      enabled: ${GRPC_TLS_ENABLED:false}
+      cert-file: ${GRPC_TLS_CERT_FILE:}
+      key-file: ${GRPC_TLS_KEY_FILE:}
+      ca-file: ${GRPC_TLS_CA_FILE:}
+
   psp:
     # 3f. The connector's own resilience settings live in psp_config, not
     # here. What is left in this file is how to REACH that table - which is

@@ -185,6 +185,26 @@ services:
         condition: service_healthy
     networks: [payorch]
 
+  # Phase 9b. A local CA and one certificate per internal service, generated
+  # fresh into a named volume the same way mongo-init initialises a replica
+  # set: idempotent, runs with plain `docker compose up`, and a
+  # `docker compose down -v` produces a fresh CA next time exactly the way it
+  # produces a fresh database. See docker/certs/generate-certs.sh for why this
+  # is not a file committed to the repo.
+  #
+  # `alpine/openssl` rather than a bare alpine + `apk add`: the latter needs
+  # network access to Alpine's package mirror on every single `docker compose
+  # up`, which is slow and fails offline. This image already has openssl
+  # baked in, so cert generation costs nothing beyond the one-time image pull.
+  cert-init:
+    image: alpine/openssl:latest
+    container_name: payorch-cert-init
+    entrypoint: ["sh", "/generate-certs.sh"]
+    volumes:
+      - ./docker/certs/generate-certs.sh:/generate-certs.sh:ro
+      - certs-data:/certs
+    networks: [payorch]
+
   payment-orchestrator:
     <<: *java-service
     container_name: payorch-payment-orchestrator
@@ -248,10 +268,23 @@ services:
       DEADLINE_BUDGET_MS: ${DEADLINE_BUDGET_MS:-30000}
       DEADLINE_MAX_BUDGET_MS: ${DEADLINE_MAX_BUDGET_MS:-60000}
       DEADLINE_MIN_SLICE_MS: ${DEADLINE_MIN_SLICE_MS:-50}
+      # Phase 9b. This service is BOTH ends of an mTLS pair: a server on the
+      # hop from payments-edge, and a client on the hop to psp-connector - one
+      # identity, one cert, used both ways, because it is one service either
+      # way and a caller on the second hop should present the same identity it
+      # verifies callers against on the first.
+      GRPC_TLS_ENABLED: ${GRPC_TLS_ENABLED:-true}
+      GRPC_TLS_CERT_FILE: /certs/payment-orchestrator.crt
+      GRPC_TLS_KEY_FILE: /certs/payment-orchestrator.key
+      GRPC_TLS_CA_FILE: /certs/ca.crt
     ports: ["8081:8081"]
+    volumes:
+      - certs-data:/certs:ro
     depends_on:
       toxiproxy:
         condition: service_healthy
+      cert-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8081/actuator/health"]
       interval: 5s
@@ -325,15 +358,30 @@ services:
       RATELIMIT_WRITE_BURST: ${RATELIMIT_WRITE_BURST:-300}
       RATELIMIT_WRITE_RPS: ${RATELIMIT_WRITE_RPS:-150}
       RATELIMIT_READ_RPS: ${RATELIMIT_READ_RPS:-500}
+      # Phase 9b. Client-only: this service dials payment-orchestrator and is
+      # never dialed itself over gRPC, so it carries a cert but no server-side
+      # TLS config.
+      GRPC_TLS_ENABLED: ${GRPC_TLS_ENABLED:-true}
+      GRPC_TLS_CERT_FILE: /certs/payments-edge.crt
+      GRPC_TLS_KEY_FILE: /certs/payments-edge.key
+      GRPC_TLS_CA_FILE: /certs/ca.crt
     ports: ["8080:8080"]
+    volumes:
+      - certs-data:/certs:ro
     depends_on:
       redis:
         condition: service_healthy
       # Not just mysql. payment-orchestrator owns the Flyway migrations, and this
       # service starts with `ddl-auto: validate` - so it has to come up after the
       # tables it validates against exist, or it fails startup on a cold volume.
+      # That ordering also guarantees cert-init has already completed, since
+      # payment-orchestrator depends on it too - listed explicitly anyway so the
+      # requirement is visible here rather than only provable by tracing the
+      # graph.
       payment-orchestrator:
         condition: service_healthy
+      cert-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
       interval: 5s
@@ -442,12 +490,22 @@ services:
       RATELIMIT_ENABLED: ${RATELIMIT_ENABLED:-true}
       RATELIMIT_KIND: ${RATELIMIT_KIND:-atomic-lua}
       RATELIMIT_EGRESS_RPS: ${RATELIMIT_EGRESS_RPS:-200}
+      # Phase 9b. Server-only: this service is dialed by payment-orchestrator
+      # and never dials anything over gRPC itself.
+      GRPC_TLS_ENABLED: ${GRPC_TLS_ENABLED:-true}
+      GRPC_TLS_CERT_FILE: /certs/psp-connector.crt
+      GRPC_TLS_KEY_FILE: /certs/psp-connector.key
+      GRPC_TLS_CA_FILE: /certs/ca.crt
     ports: ["8083:8083", "9090:9090"]
+    volumes:
+      - certs-data:/certs:ro
     depends_on:
       toxiproxy:
         condition: service_healthy
       redis:
         condition: service_healthy
+      cert-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8083/actuator/health"]
       interval: 5s
@@ -763,3 +821,4 @@ volumes:
   kafka-2-data:
   kafka-3-data:
   mongo-data:
+  certs-data:

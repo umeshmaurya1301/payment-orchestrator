@@ -289,7 +289,39 @@ a change to every row.
       every card ciphertext is byte-identical afterwards, that the vault reads
       correctly at every point of a partial rotation, and that a retired key
       version makes exactly the rows still naming it unreadable
-- [ ] mTLS between all internal services
+- [x] mTLS between all internal services — 9b,
+      [experiment 29](../experiments/29-mtls.md). A local CA and one identity
+      per service, generated fresh into a named volume by `cert-init` the same
+      way `mongo-init` sets up a replica set. `payment-orchestrator` carries
+      one identity used both ways - server on the edge's hop, client on the
+      connector's - because it is one service in both roles.
+
+      Proved by an actual gRPC call, not a completed handshake:
+
+      ```
+      payments-edge's real certificate  -> admitted, reached PaymentsGrpcService
+      no certificate at all             -> refused before any call could complete
+      a certificate this CA never signed -> refused
+      ```
+
+      plus four more assertions in `GrpcMutualTlsTest`, portable and
+      Docker-free, covering both directions of authentication.
+
+      **The first probe said the opposite of what was true.** `openssl
+      s_client` with no client certificate printed `CONNECTION ESTABLISHED`
+      against a server requiring one. RFC 8446 §4.4.2 lets a TLS 1.3 server
+      accept an empty client certificate at the raw handshake layer and defer
+      the decision upward - the handshake completing is not evidence the RPC
+      would have. Switching to a real gRPC client (`grpcurl` live, `keytool` +
+      the actual production `TlsFiles.sslContext()` in the JVM test) showed the
+      opposite and correct result. Mutation-checked: weakening
+      `ClientAuth.REQUIRE` to `OPTIONAL` fails exactly the two tests that name
+      the certificate-less and untrusted-CA cases.
+
+      Scoped honestly: mTLS gates the gRPC servers only. REST remains the
+      default transport on both hops and runs in plaintext exactly as before -
+      this criterion covers the transport phase 9 built, not every hop this
+      stack can run
 - [x] API keys hashed at rest, rotation demonstrated — 9b,
       [experiment 24](../experiments/24-key-rotation.md). Hashing was already
       true since V2 in phase 1; ticking the criterion on that alone would have

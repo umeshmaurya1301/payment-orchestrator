@@ -155,6 +155,21 @@ payorch:
       enabled: ${GRPC_SERVER_ENABLED:false}
       port: ${GRPC_SERVER_PORT:9091}
 
+    # Phase 9b. One identity, used both ways: this service is the SERVER on
+    # the hop from payments-edge and the CLIENT on the hop to psp-connector,
+    # so the same cert answers both roles - a caller on the second hop
+    # presents the same identity it verified callers against on the first.
+    #
+    # Off by default outside Docker. A default of true would break every unit
+    # test and every "run it on my laptop against localhost" workflow the
+    # moment gRPC is enabled at all, since none of those have a cert-init
+    # container to point at.
+    tls:
+      enabled: ${GRPC_TLS_ENABLED:false}
+      cert-file: ${GRPC_TLS_CERT_FILE:}
+      key-file: ${GRPC_TLS_KEY_FILE:}
+      ca-file: ${GRPC_TLS_CA_FILE:}
+
   connector:
     # Phase 9a. rest or grpc. REST is the default and stays the default until
     # the benchmark exists - see OrchestratorConfiguration.

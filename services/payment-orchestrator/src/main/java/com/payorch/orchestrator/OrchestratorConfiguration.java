@@ -7,6 +7,13 @@ import com.payorch.orchestrator.connector.GrpcConnectorClient;
 import com.payorch.orchestrator.connector.RestConnectorClient;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+// Shaded 1.80.0: GrpcSslContexts and NettyChannelBuilder live under
+// io.grpc.netty.shaded.*, not the unshaded io.grpc.netty.* older examples
+// show - verified against the resolved jar in GrpcServerConfiguration, one
+// hop down, where this was worked out the first time.
+import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;
+import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
+import io.grpc.netty.shaded.io.netty.handler.ssl.SslContext;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.beans.factory.annotation.Value;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -59,14 +66,67 @@ public class OrchestratorConfiguration {
     @Bean(destroyMethod = "shutdown")
     @ConditionalOnProperty(name = "payorch.connector.transport", havingValue = "grpc")
     public ManagedChannel connectorChannel(
-            @Value("${payorch.connector.grpc-target:psp-connector:9090}") String target) {
-        return ManagedChannelBuilder.forTarget(target)
-                // No TLS on the internal hop yet. mTLS is 9b's criterion and is
-                // not done; saying so here is better than a reader assuming the
-                // channel is encrypted because it is gRPC.
-                .usePlaintext()
+            @Value("${payorch.connector.grpc-target:psp-connector:9090}") String target,
+            @Value("${payorch.grpc.tls.enabled:false}") boolean tlsEnabled,
+            @Value("${payorch.grpc.tls.cert-file:}") String certFile,
+            @Value("${payorch.grpc.tls.key-file:}") String keyFile,
+            @Value("${payorch.grpc.tls.ca-file:}") String caFile) {
+
+        if (!tlsEnabled) {
+            // Plaintext is still reachable - not every environment this runs in
+            // has cert-init's output to point at, and a dev box running the
+            // jar directly rather than through Docker Compose is exactly that
+            // environment. Chosen explicitly rather than defaulted silently:
+            // see the TLS-off default in application.yml for why.
+            return ManagedChannelBuilder.forTarget(target)
+                    .usePlaintext()
+                    .keepAliveTime(30, java.util.concurrent.TimeUnit.SECONDS)
+                    .build();
+        }
+
+        // Phase 9b. This service's OWN cert, presented here as a CLIENT
+        // credential - the same file OrchestratorGrpcServerConfiguration
+        // presents as a SERVER credential one hop up. mTLS means every party
+        // authenticates, not only the server: psp-connector's grants already
+        // assume the caller is this service and nothing else, and until this
+        // bean existed that assumption was enforced by nothing on the wire.
+        SslContext sslContext = clientSslContext(certFile, keyFile, caFile);
+        return NettyChannelBuilder.forTarget(target)
+                .sslContext(sslContext)
                 .keepAliveTime(30, java.util.concurrent.TimeUnit.SECONDS)
                 .build();
+    }
+
+    /**
+     * Shared by both gRPC client channels this service builds - this one, to
+     * psp-connector, and the edge's equivalent bean one hop up build the same
+     * shape independently rather than through a shared module, for the reason
+     * {@code GrpcServerConfiguration.TlsFiles} states: these services are
+     * independently deployable and a shared TLS module is the coupling this
+     * project has already rejected once.
+     */
+    static SslContext clientSslContext(String certFile, String keyFile, String caFile) {
+        if (certFile.isBlank() || keyFile.isBlank() || caFile.isBlank()) {
+            throw new IllegalStateException(
+                    "payorch.grpc.tls.enabled is true but cert-file, key-file or ca-file is "
+                            + "blank - mTLS was turned on without the certificates to back it");
+        }
+        try {
+            return GrpcSslContexts.forClient()
+                    // keyManager: THIS client's own identity, presented to the
+                    // server so it can verify who is calling. Without it the
+                    // handshake is one-directional TLS - the client verifies
+                    // the server and the server verifies nothing, which is the
+                    // half of mTLS that is easy to forget because a
+                    // connection still succeeds without it.
+                    .keyManager(new java.io.File(certFile), new java.io.File(keyFile))
+                    .trustManager(new java.io.File(caFile))
+                    .build();
+        } catch (javax.net.ssl.SSLException e) {
+            throw new IllegalStateException(
+                    "could not build a client SSL context from " + certFile + ", " + keyFile
+                            + ", " + caFile, e);
+        }
     }
 
     @Bean

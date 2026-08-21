@@ -1,10 +1,19 @@
 package com.payorch.orchestrator.grpc;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.concurrent.TimeUnit;
 
 import io.grpc.Server;
 import io.grpc.ServerBuilder;
+// grpc-netty-shaded 1.80.0 shades ALL of io.grpc.netty.* and io.netty.* under
+// its own io.grpc.netty.shaded.* prefix, verified against the resolved jar
+// rather than assumed - see the matching comment in GrpcServerConfiguration
+// one hop down, where this was worked out.
+import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;
+import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
+import io.grpc.netty.shaded.io.netty.handler.ssl.ClientAuth;
+import io.grpc.netty.shaded.io.netty.handler.ssl.SslContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
@@ -37,6 +46,20 @@ import com.payorch.orchestrator.PaymentService;
  * shared default would work in containers and collide the moment two servers run
  * on one host — which is exactly what happens when somebody runs this stack
  * outside Docker to debug it.
+ *
+ * <h2>mTLS, phase 9b</h2>
+ *
+ * <p>This service is BOTH ends of an mTLS pair: a server here, and a client one
+ * hop down in {@link com.payorch.orchestrator.OrchestratorConfiguration} for the
+ * call to psp-connector. One identity, one cert, used both ways — a caller on
+ * the second hop presents the same certificate it verified callers against on
+ * the first, because it is one service in both roles.
+ *
+ * <p>{@code payorch.grpc.tls.enabled} switches this server between plain
+ * {@code ServerBuilder.forPort} and a Netty builder carrying an
+ * {@code SslContext} with {@code ClientAuth.REQUIRE}: a caller with no
+ * certificate, or one not signed by this deployment's CA, cannot complete the
+ * handshake.
  */
 @Configuration
 @ConditionalOnProperty(name = "payorch.grpc.server.enabled", havingValue = "true")
@@ -53,8 +76,44 @@ public class OrchestratorGrpcServerConfiguration {
     @Bean
     public PaymentsGrpcServerLifecycle paymentsGrpcServerLifecycle(
             PaymentsGrpcService service,
-            @Value("${payorch.grpc.server.port:9091}") int port) {
-        return new PaymentsGrpcServerLifecycle(service, port);
+            @Value("${payorch.grpc.server.port:9091}") int port,
+            @Value("${payorch.grpc.tls.enabled:false}") boolean tlsEnabled,
+            @Value("${payorch.grpc.tls.cert-file:}") String certFile,
+            @Value("${payorch.grpc.tls.key-file:}") String keyFile,
+            @Value("${payorch.grpc.tls.ca-file:}") String caFile) {
+        return new PaymentsGrpcServerLifecycle(service, port,
+                new TlsFiles(tlsEnabled, certFile, keyFile, caFile));
+    }
+
+    /**
+     * The three files an mTLS server needs, or none of them. Phase 9b.
+     *
+     * <p>Identical in shape to {@code GrpcServerConfiguration.TlsFiles} one hop
+     * down, and deliberately not shared between the two: these two services are
+     * independently deployable, and a shared TLS-config module would be the
+     * same coupling this project has already rejected once, for
+     * {@code OrchestratorApi}'s request records duplicating
+     * {@code ConnectorApi}'s rather than sharing a jar.
+     */
+    record TlsFiles(boolean enabled, String certFile, String keyFile, String caFile) {
+
+        SslContext sslContext() {
+            if (certFile.isBlank() || keyFile.isBlank() || caFile.isBlank()) {
+                throw new IllegalStateException(
+                        "payorch.grpc.tls.enabled is true but cert-file, key-file or ca-file "
+                                + "is blank - mTLS was turned on without the certificates to back it");
+            }
+            try {
+                return GrpcSslContexts.forServer(new File(certFile), new File(keyFile))
+                        .trustManager(new File(caFile))
+                        .clientAuth(ClientAuth.REQUIRE)
+                        .build();
+            } catch (javax.net.ssl.SSLException e) {
+                throw new IllegalStateException(
+                        "could not build an SSL context from " + certFile + ", " + keyFile
+                                + ", " + caFile, e);
+            }
+        }
     }
 
     /**
@@ -69,17 +128,28 @@ public class OrchestratorGrpcServerConfiguration {
 
         private final PaymentsGrpcService service;
         private final int port;
+        private final TlsFiles tls;
         private Server server;
 
-        public PaymentsGrpcServerLifecycle(PaymentsGrpcService service, int port) {
+        public PaymentsGrpcServerLifecycle(PaymentsGrpcService service, int port, TlsFiles tls) {
             this.service = service;
             this.port = port;
+            this.tls = tls;
         }
 
         @Override
         public void afterPropertiesSet() throws IOException {
-            server = ServerBuilder.forPort(port).addService(service).build().start();
-            log.info("gRPC payments service listening on {}", port);
+            if (tls.enabled()) {
+                server = NettyServerBuilder.forPort(port)
+                        .addService(service)
+                        .sslContext(tls.sslContext())
+                        .build()
+                        .start();
+                log.info("gRPC payments service listening on {} (mTLS, client cert required)", port);
+            } else {
+                server = ServerBuilder.forPort(port).addService(service).build().start();
+                log.info("gRPC payments service listening on {} (plaintext)", port);
+            }
         }
 
         @Override

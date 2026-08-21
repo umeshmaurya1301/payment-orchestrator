@@ -21,6 +21,12 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Value;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+// Shaded 1.80.0: GrpcSslContexts and NettyChannelBuilder live under
+// io.grpc.netty.shaded.*, verified against the resolved jar in
+// GrpcServerConfiguration (psp-connector), where this was worked out first.
+import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;
+import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
+import io.grpc.netty.shaded.io.netty.handler.ssl.SslContext;
 import io.micrometer.observation.ObservationRegistry;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -69,14 +75,51 @@ public class EdgeConfiguration {
     @Bean(destroyMethod = "shutdown")
     @ConditionalOnProperty(name = "payorch.orchestrator.transport", havingValue = "grpc")
     public ManagedChannel orchestratorChannel(
-            @Value("${payorch.orchestrator.grpc-target:payment-orchestrator:9091}") String target) {
-        return ManagedChannelBuilder.forTarget(target)
-                // No TLS on the internal hop yet. mTLS is 9b's criterion and is
-                // outstanding; saying so here is better than a reader assuming
-                // the channel is encrypted because it is gRPC.
-                .usePlaintext()
+            @Value("${payorch.orchestrator.grpc-target:payment-orchestrator:9091}") String target,
+            @Value("${payorch.grpc.tls.enabled:false}") boolean tlsEnabled,
+            @Value("${payorch.grpc.tls.cert-file:}") String certFile,
+            @Value("${payorch.grpc.tls.key-file:}") String keyFile,
+            @Value("${payorch.grpc.tls.ca-file:}") String caFile) {
+
+        if (!tlsEnabled) {
+            return ManagedChannelBuilder.forTarget(target)
+                    .usePlaintext()
+                    .keepAliveTime(30, java.util.concurrent.TimeUnit.SECONDS)
+                    .build();
+        }
+
+        // Phase 9b. This service's own cert, presented as the client
+        // credential payment-orchestrator's server side now requires - the
+        // payments-edge identity issued by docker/certs/generate-certs.sh,
+        // trusted only because it is signed by the same CA the orchestrator
+        // trusts, and named nothing else.
+        return NettyChannelBuilder.forTarget(target)
+                .sslContext(clientSslContext(certFile, keyFile, caFile))
                 .keepAliveTime(30, java.util.concurrent.TimeUnit.SECONDS)
                 .build();
+    }
+
+    /**
+     * Identical in shape to {@code OrchestratorConfiguration.clientSslContext}
+     * one hop down, and deliberately not shared - see that method's javadoc for
+     * why duplicating a dozen lines beats a shared TLS module here.
+     */
+    private static SslContext clientSslContext(String certFile, String keyFile, String caFile) {
+        if (certFile.isBlank() || keyFile.isBlank() || caFile.isBlank()) {
+            throw new IllegalStateException(
+                    "payorch.grpc.tls.enabled is true but cert-file, key-file or ca-file is "
+                            + "blank - mTLS was turned on without the certificates to back it");
+        }
+        try {
+            return GrpcSslContexts.forClient()
+                    .keyManager(new java.io.File(certFile), new java.io.File(keyFile))
+                    .trustManager(new java.io.File(caFile))
+                    .build();
+        } catch (javax.net.ssl.SSLException e) {
+            throw new IllegalStateException(
+                    "could not build a client SSL context from " + certFile + ", " + keyFile
+                            + ", " + caFile, e);
+        }
     }
 
     @Bean

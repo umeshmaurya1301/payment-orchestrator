@@ -67,7 +67,29 @@ exist: the token vault (phase 1), webhook HMAC (phase 6), and API keys (phase 1)
       a test that sets it one hop too late measures nothing
 - [ ] Server streaming works for status
 - [ ] gRPC → HTTP status mapping documented and tested
-- [ ] **Benchmark written up** — throughput, P99, payload size, CPU
+- [x] **Benchmark written up** — throughput, P99, payload size, CPU —
+      [experiment 23](../experiments/23-rest-vs-grpc.md), two independent runs
+      agreeing to within 1%:
+
+      | | REST | gRPC |
+      |---|---|---|
+      | payments in 45s | 12,580 / 12,657 | **14,141 / 14,298** (+13%) |
+      | p95 | 156.7 / 153.5ms | **129.8 / 127.7ms** (−17%) |
+      | mean CPU | 559 / 583% | 569 / 585% (equal) |
+      | `AuthorizeRequest` | 185 bytes | **97 bytes** (−48%) |
+      | `AuthorizeResponse` | 101 bytes | **37 bytes** (−63%) |
+
+      Payload sizes come from `PayloadSizeTest` rather than the script — the one
+      number of the four that is deterministic, so it is re-checked on every
+      build. P95 not P99: k6's summary carries p90/p95 and a p99 over 12,000
+      samples is thin. That is a substitution, not a detail.
+
+      **The first two runs were invalid and passed anyway.** They reported the
+      two arms 0.1% apart, which read as confirmation of the hypothesis and was
+      in fact `merchant-per-sec: 50` — 99.5% of requests rejected by a token
+      bucket three services upstream, so the p95 being compared was the p95 of
+      *rejections*. The script now asserts that at least half the requests
+      reached a connector, separately from the comparison it makes
 
 ### Traps
 

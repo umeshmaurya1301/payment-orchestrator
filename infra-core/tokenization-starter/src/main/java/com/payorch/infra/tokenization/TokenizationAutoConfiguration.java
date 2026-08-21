@@ -164,9 +164,41 @@ public class TokenizationAutoConfiguration {
     @ConditionalOnMissingBean
     public TokenVault tokenVault(VaultConnection connection,
                                  org.springframework.beans.factory.ObjectProvider<PanCipher> legacy,
-                                 EnvelopeCipher envelopeCipher) {
+                                 EnvelopeCipher envelopeCipher,
+                                 org.springframework.beans.factory.ObjectProvider<VaultAccessLog> audit) {
         // ObjectProvider because panCipher may legitimately be absent now.
-        return new TokenVault(connection.jdbc(), legacy.getIfAvailable(), envelopeCipher);
+        TokenVault vault = new TokenVault(connection.jdbc(), legacy.getIfAvailable(), envelopeCipher);
+        audit.ifAvailable(vault::setAuditLog);
+        return vault;
+    }
+
+    /**
+     * 9c's access log, and the condition is the design.
+     *
+     * <p>{@code payorch.vault.audit.enabled} defaults to <strong>false</strong>,
+     * which looks like the wrong default for an audit control and is not. Only
+     * psp-connector detokenizes, and it is the only service whose credential can
+     * write to {@code vault_access_log} — payments-edge tokenizes and has no
+     * grant there at all. Defaulting this on would give every service that
+     * touches the vault a bean that fails on its first insert, and in the
+     * fail-closed configuration that means tokenization stops at the edge
+     * because of an audit table it is not supposed to write to.
+     *
+     * <p>So the service that reads cards turns it on, explicitly, next to the
+     * credential that lets it. The pairing is the point: the ability to read a
+     * card and the obligation to record it are configured in the same place.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "payorch.vault.audit", name = "enabled", havingValue = "true")
+    public VaultAccessLog vaultAccessLog(
+            VaultConnection connection,
+            @org.springframework.beans.factory.annotation.Value("${spring.application.name:unknown}")
+            String actor,
+            @org.springframework.beans.factory.annotation.Value("${payorch.vault.audit.fail-closed:true}")
+            boolean failClosed) {
+
+        return new VaultAccessLog(connection.jdbc(), actor, failClosed);
     }
 
     /**

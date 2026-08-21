@@ -51,9 +51,23 @@ payorch:
       password: ${CONFIG_DB_PASSWORD:config_reader_pw}
 
   vault:
-    # Read-only credentials. This service can reverse a token and can do nothing
-    # else to the vault - no INSERT, no UPDATE, no DELETE - and that is enforced
-    # by the grants in docker/mysql/init/01-vault.sql, not by this file.
+    # Phase 9c. Turned on HERE rather than defaulted on in the starter, and the
+    # placement is the point: this is the only service that can read a card, and
+    # the only credential with INSERT on vault_access_log. The permission to read
+    # and the obligation to record are configured three lines apart.
+    audit:
+      enabled: ${VAULT_AUDIT_ENABLED:true}
+      # Fail-closed: if the access cannot be recorded, the card is not read.
+      # That turns an audit table problem into a payment failure, deliberately -
+      # a log that is skipped when writing it is inconvenient has its gap exactly
+      # where the incident is. False is the control arm for experiment 25.
+      fail-closed: ${VAULT_AUDIT_FAIL_CLOSED:true}
+
+    # Read-only credentials on token_vault. This service can reverse a token and
+    # can do nothing else to it - no INSERT, no UPDATE, no DELETE - and that is
+    # enforced by the grants in docker/mysql/init/01-vault.sql, not by this file.
+    # 9c adds INSERT on vault_access_log and nothing else: it can append to its
+    # own audit trail and cannot read, alter or erase it.
     datasource:
       url: ${VAULT_DB_URL:jdbc:mysql://localhost:3306/payorch_vault}
       username: ${VAULT_DB_USER:vault_reader}

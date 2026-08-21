@@ -75,6 +75,18 @@ public class TokenVault {
     private final EnvelopeCipher envelope;
     private final SecureRandom random = new SecureRandom();
 
+    /**
+     * 9c. Nullable, and only in the sense that a vault used purely for
+     * tokenization has nothing to audit yet. Once set, no read bypasses it -
+     * which is the reason the log lives inside this class rather than in a
+     * decorator a caller could be constructed without.
+     */
+    private VaultAccessLog auditLog;
+
+    public void setAuditLog(VaultAccessLog auditLog) {
+        this.auditLog = auditLog;
+    }
+
     public TokenVault(JdbcClient jdbc, PanCipher legacyCipher, EnvelopeCipher envelope) {
         this.jdbc = jdbc;
         this.legacyCipher = legacyCipher;
@@ -134,15 +146,65 @@ public class TokenVault {
      *         a caller can answer 404 rather than 500 without string-matching.
      */
     public DetokenizedCard detokenize(String token) {
-        Optional<DetokenizedCard> row = jdbc.sql(SELECT)
-                .param("token", token)
-                .query((rs, n) -> new DetokenizedCard(
-                        readPan(rs, token),
-                        rs.getInt("expiry_month"),
-                        rs.getInt("expiry_year")))
-                .optional();
+        return detokenize(token, VaultAccess.unattributed());
+    }
 
-        return row.orElseThrow(() -> new UnknownTokenException(token));
+    /**
+     * Reads a card, and records that it was read. Phase 9c.
+     *
+     * <h2>The order matters</h2>
+     *
+     * <p>The audit row is written <strong>before the card is returned</strong>
+     * and after the outcome is known. Writing it first would record reads that
+     * never happened; writing it after the return - or in a finally block that
+     * swallows - would let a failed audit still disclose a card, which is the
+     * one sequence the fail-closed setting exists to prevent.
+     *
+     * <p>Decryption happens before the audit write, so a PAN briefly exists in
+     * memory for a read that is then refused. That is not a disclosure: it is
+     * never handed to a caller, and the alternative - auditing before knowing
+     * the outcome - would mean the log could not record whether the token was
+     * even real.
+     *
+     * <h2>Failures are audited too, and they are the interesting rows</h2>
+     *
+     * <p>A successful read by an authorised service is the boring case. A run of
+     * {@code UNKNOWN_TOKEN} from one actor is somebody walking the token space,
+     * and this is the only place in the system where that would be visible.
+     */
+    public DetokenizedCard detokenize(String token, VaultAccess access) {
+        Optional<DetokenizedCard> row;
+        try {
+            row = jdbc.sql(SELECT)
+                    .param("token", token)
+                    .query((rs, n) -> new DetokenizedCard(
+                            readPan(rs, token),
+                            rs.getInt("expiry_month"),
+                            rs.getInt("expiry_year")))
+                    .optional();
+
+        } catch (RuntimeException e) {
+            // A key that cannot unwrap, a legacy row with no legacy cipher, a
+            // vault that is unreachable. Recorded, because "the card could not
+            // be read" is exactly as interesting to an investigation as "it
+            // was" - a crypto-shred shows up here.
+            audit(token, access, VaultAccessLog.FAILED);
+            throw e;
+        }
+
+        if (row.isEmpty()) {
+            audit(token, access, VaultAccessLog.UNKNOWN_TOKEN);
+            throw new UnknownTokenException(token);
+        }
+
+        audit(token, access, VaultAccessLog.SUCCESS);
+        return row.get();
+    }
+
+    private void audit(String token, VaultAccess access, String outcome) {
+        if (auditLog != null) {
+            auditLog.record(token, access, outcome);
+        }
     }
 
     /**

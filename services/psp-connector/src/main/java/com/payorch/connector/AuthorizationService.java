@@ -6,6 +6,7 @@ import com.payorch.connector.provider.PspAdapterRegistry;
 import com.payorch.infra.logging.LogEvent;
 import com.payorch.infra.logging.LogFields;
 import com.payorch.infra.tokenization.DetokenizedCard;
+import com.payorch.infra.tokenization.VaultAccess;
 import com.payorch.infra.tokenization.TokenVault;
 import com.payorch.infra.web.ApiException;
 import org.slf4j.Logger;
@@ -46,7 +47,7 @@ public class AuthorizationService {
         // Detokenize as late as possible - after routing has been resolved and
         // after any rejection that could have happened without a card number.
         // The window in which plaintext exists is the thing being minimised.
-        DetokenizedCard card = detokenize(request.cardToken());
+        DetokenizedCard card = detokenize(request.cardToken(), request.reference());
 
         long startedAt = System.nanoTime();
         PspAdapter.ProviderAuthorization result = adapter.authorize(
@@ -86,9 +87,13 @@ public class AuthorizationService {
      * whether the card was charged" - for a request that provably never reached
      * a provider.
      */
-    private DetokenizedCard detokenize(String token) {
+    private DetokenizedCard detokenize(String token, String reference) {
         try {
-            return vault.detokenize(token);
+            // 9c. The purpose and the payment travel with the read, so the audit
+            // row says "read for authorization of payment X" rather than the
+            // useless "psp-connector read a card" - which the grants already
+            // said it may do.
+            return vault.detokenize(token, VaultAccess.forPayment("authorize", reference));
         } catch (TokenVault.UnknownTokenException e) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "unknown_token",
                     "the supplied card token is not in the vault");

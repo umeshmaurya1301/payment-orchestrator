@@ -380,8 +380,58 @@ Generate per-encryption, never reuse a nonce under the same key.
       unrecoverable, **verified** — 9c. Per-merchant key scoping; erasure
       destroys the scope's key material and touches no row. Verified against a
       simulated backup restore, which is what distinguishes it from a `DELETE`
-- [ ] Audit log shows every detokenization event during a load run
-- [ ] Only `psp-connector` can detokenize; another service attempting it fails
+- [x] Audit log shows every detokenization event during a load run — 9c,
+      [experiment 25](../experiments/25-vault-audit.md). Encryption answers
+      "can somebody who steals this table read it"; it does not answer the
+      question an auditor asks first. A service authorised to detokenize once
+      per authorization, doing it a million times on a Tuesday night, was
+      invisible to every control built so far.
+
+      Asserted as **equality**, not "at least one" — a log holding some of the
+      reads is not an audit trail:
+
+      ```
+      payments authorized                     40
+      SUCCESS rows in the window              40
+      rows with a correlation id              40
+      rows with a trace id                    40
+      ```
+
+      Failures are recorded too, and they are the rows worth having: a run of
+      `UNKNOWN_TOKEN` from one actor is somebody walking the token space, and
+      nothing else in this system would show it. No PAN in any column —
+      asserted — because a log of what was read is a second copy of the card
+      and it is the copy nobody remembers to encrypt.
+
+      **Fail-closed**: if the access cannot be recorded, the card is not read.
+      That turned four `AuthorizationFlowTest` cases to 500 the moment it was
+      enabled, because the test vault had no audit table — the design working,
+      in the least convenient place, which is where a control like this is
+      supposed to surface
+- [x] Only `psp-connector` can detokenize; another service attempting it fails
+      — 9c. Six controls, every one denied by MySQL with `ERROR 1142` rather
+      than by a code review. Asserted on the error *number*: "connection
+      refused" and "no such table" also produce an error and would mean the
+      control was never exercised.
+
+      | attempt | result |
+      |---|---|
+      | payment-orchestrator reads a card | denied |
+      | the auditor reads a card | denied |
+      | psp-connector reads its own audit trail | denied |
+      | psp-connector erases an audit row | denied |
+      | psp-connector rewrites an audit row | denied |
+      | psp-connector plants a card | denied |
+
+      The last three are the interesting ones. The audited service writes its
+      own trail — there is no honest way around that without an out-of-process
+      interceptor — so what is arranged instead is that the record is beyond
+      its reach once written: `INSERT` and nothing else, **including no
+      `SELECT`**, so a compromised connector cannot read back what has been
+      recorded about it. Append-only is tamper-evident, not tamper-proof.
+
+      `vault_auditor` has no grant on `token_vault` at all: the account used to
+      investigate card access cannot itself access cards
 - [ ] TTL demonstrably expires raw payloads
 
 ### Traps

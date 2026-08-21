@@ -88,6 +88,27 @@ class AuthorizationFlowTest {
                     expiry_year  SMALLINT      NOT NULL
                 )
                 """).update();
+
+        // Phase 9c. Not optional, and the failure it caused is worth recording:
+        // psp-connector now audits every card read and is FAIL-CLOSED, so
+        // without this table every test in this class returned 500 - no card is
+        // disclosed when the access cannot be recorded. That is the design
+        // working, surfacing in the least convenient place, which is where a
+        // design like this is supposed to surface.
+        vaultConnection.jdbc().sql("""
+                CREATE TABLE IF NOT EXISTS vault_access_log (
+                    id             BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    token          VARCHAR(64) NOT NULL,
+                    actor          VARCHAR(64) NOT NULL,
+                    purpose        VARCHAR(64) NOT NULL,
+                    reference      VARCHAR(64) NULL,
+                    correlation_id VARCHAR(64) NULL,
+                    trace_id       VARCHAR(64) NULL,
+                    outcome        VARCHAR(24) NOT NULL,
+                    at             TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """).update();
+
         adapter.reset();
     }
 

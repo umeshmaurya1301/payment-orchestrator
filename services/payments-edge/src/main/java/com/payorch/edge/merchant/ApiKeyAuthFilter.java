@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.util.HexFormat;
 import java.util.Optional;
 
@@ -12,6 +13,8 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.core.Ordered;
 import org.springframework.http.HttpStatus;
@@ -28,6 +31,12 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * the credential that produced it. {@code ApiKeyAuthFilterTest} verifies that
  * rather than assuming it.
  *
+ * <p><strong>Since 9b a merchant has several keys.</strong> The lookup starts at
+ * the key rather than the merchant and arrives at the merchant by id, and a key
+ * authenticates only while {@link MerchantApiKey#isUsableAt} says so — which
+ * covers the overlap window during a rotation and closes it on time whether or
+ * not any scheduled job is running.
+ *
  * <p><strong>Why a filter and not Spring Security.</strong> Phase 1 needs one
  * header checked against one hashed column. Spring Security would bring a filter
  * chain, an authentication manager and a security context to express that, and
@@ -37,6 +46,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
  */
 public class ApiKeyAuthFilter extends OncePerRequestFilter implements Ordered {
 
+    private static final Logger log = LoggerFactory.getLogger(ApiKeyAuthFilter.class);
+
     public static final String HEADER = "X-Api-Key";
 
     /** Where the authenticated merchant id is left for the controller. */
@@ -45,9 +56,15 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter implements Ordered {
     private static final String API_PREFIX = "/v1/";
 
     private final MerchantRepository merchants;
+    private final MerchantApiKeyRepository keys;
+    private final ApiKeyUsageRecorder usage;
 
-    public ApiKeyAuthFilter(MerchantRepository merchants) {
+    public ApiKeyAuthFilter(MerchantRepository merchants,
+                            MerchantApiKeyRepository keys,
+                            ApiKeyUsageRecorder usage) {
         this.merchants = merchants;
+        this.keys = keys;
+        this.usage = usage;
     }
 
     @Override
@@ -60,15 +77,32 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter implements Ordered {
             return;
         }
 
-        Optional<Merchant> merchant = merchants.findByApiKeyHash(sha256Hex(apiKey));
+        Instant now = Instant.now();
+        Optional<MerchantApiKey> key = keys.findByApiKeyHash(sha256Hex(apiKey));
+
+        // A revoked or expired key that is still being presented is worth a log
+        // line, and it is the ONLY signal that a rotation was completed too
+        // early - somebody is still using the key that was just turned off. It
+        // is logged by key label and merchant id, never by the credential.
+        if (key.isPresent() && !key.get().isUsableAt(now)) {
+            log.warn("a retired api key was presented: label={} status={} merchant={}",
+                    key.get().getLabel(), key.get().getStatus(), key.get().getMerchantId());
+        }
+
+        Optional<Merchant> merchant = key
+                .filter(k -> k.isUsableAt(now))
+                .flatMap(k -> merchants.findById(k.getMerchantId()));
+
         if (merchant.isEmpty() || !merchant.get().isActive()) {
-            // One response for "no such key" and "key belongs to a suspended
-            // merchant". Distinguishing them would let a caller enumerate valid
-            // keys, and neither case is one the caller can fix by knowing which
-            // it was.
+            // One response for "no such key", "revoked key" and "key belongs to
+            // a suspended merchant". Distinguishing them would let a caller
+            // enumerate valid keys, and neither case is one the caller can fix
+            // by knowing which it was.
             reject(response, "invalid_api_key", "The API key is not valid.");
             return;
         }
+
+        usage.recordUsed(key.get().getId(), now);
 
         request.setAttribute(MERCHANT_ATTRIBUTE, merchant.get().getId());
         MDC.put(LogFields.MERCHANT_ID, merchant.get().getId().toString());

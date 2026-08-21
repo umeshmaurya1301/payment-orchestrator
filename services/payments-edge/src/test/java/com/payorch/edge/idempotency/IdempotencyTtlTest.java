@@ -69,13 +69,14 @@ class IdempotencyTtlTest {
     void reset() {
         jdbc.sql("DELETE FROM idempotency_record").update();
         jdbc.sql("DELETE FROM merchant").update();
+        // No api key row: this test drives IdempotencyGuard directly and never
+        // authenticates, so the credential is not part of what it is measuring.
         jdbc.sql("""
-                INSERT INTO merchant (id, name, api_key_hash, status, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO merchant (id, name, status, created_at)
+                VALUES (?, ?, ?, ?)
                 """)
                 .param(Uuid7.toBytes(MERCHANT))
                 .param("Test Merchant")
-                .param("hash")
                 .param("ACTIVE")
                 .param(Timestamp.from(Instant.now()))
                 .update();

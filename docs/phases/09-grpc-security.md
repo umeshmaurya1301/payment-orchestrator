@@ -230,7 +230,41 @@ a change to every row.
       correctly at every point of a partial rotation, and that a retired key
       version makes exactly the rows still naming it unreadable
 - [ ] mTLS between all internal services
-- [ ] API keys hashed at rest, rotation demonstrated
+- [x] API keys hashed at rest, rotation demonstrated — 9b,
+      [experiment 24](../experiments/24-key-rotation.md). Hashing was already
+      true since V2 in phase 1; ticking the criterion on that alone would have
+      been defensible and wrong, because **hashing at rest is not what limits
+      exposure for an API key**. One key per merchant means replacing it is a
+      simultaneous edit on two sides, so it is done rarely, so keys live for
+      years.
+
+      V16 gives a merchant several keys with three states — `ACTIVE`,
+      `RETIRING` (the overlap), `REVOKED` — and drops `merchant.api_key_hash`
+      in the same migration, because two places a credential is checked against
+      is how a revoked key keeps working.
+
+      Measured under continuous traffic, because a rotation script run against
+      an idle system demonstrates replacement rather than rotation:
+
+      ```
+      requests during the whole rotation    53
+      rejected with 401                      0
+      ```
+
+      Verified live on MySQL, not only H2: migration applied, both merchants
+      backfilled, a real payment returned 201, a bogus key 401, `last_used_at`
+      stamped only for the merchant that called.
+
+      Two design points the experiment forced. **Expiry is enforced on the read
+      path, not by a job** — a job that flips `RETIRING` to `REVOKED` is exactly
+      the kind nobody notices has stopped, and its failure is invisible because
+      everything keeps working with twice as many live credentials as anyone
+      believes. The run asserts the row still reads `RETIRING` while the key is
+      refused. And **`last_used_at` is throttled to one write per key per
+      minute**, because the naive version adds ~279 writes/s (experiment 23's
+      number) to maintain a timestamp whose only consumer is a human — which in
+      turn means its staleness sets a floor on how long quiet must be observed
+      before it can be trusted
 
 ### Traps
 

@@ -99,17 +99,9 @@ class PaymentsApiTest {
         vaultConnection.jdbc().sql("DELETE FROM token_vault").update();
 
         jdbc.sql("DELETE FROM idempotency_record").update();
+        jdbc.sql("DELETE FROM merchant_api_key").update();
         jdbc.sql("DELETE FROM merchant").update();
-        jdbc.sql("""
-                INSERT INTO merchant (id, name, api_key_hash, status, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                """)
-                .param(Uuid7.toBytes(MERCHANT_ID))
-                .param("Dev Merchant")
-                .param(ApiKeyAuthFilter.sha256Hex(API_KEY))
-                .param("ACTIVE")
-                .param(Timestamp.from(Instant.now()))
-                .update();
+        seedMerchant(MERCHANT_ID, "Dev Merchant", API_KEY);
 
         orchestrator.reset();
     }
@@ -448,20 +440,46 @@ class PaymentsApiTest {
                 .doesNotContain(PAN.substring(0, 6));
     }
 
+    /**
+     * A merchant and one ACTIVE key for it. Since 9b those are two rows: the
+     * credential lives in {@code merchant_api_key} so that a merchant can hold
+     * several during a rotation.
+     */
+    private void seedMerchant(UUID merchantId, String name, String apiKey) {
+        jdbc.sql("""
+                INSERT INTO merchant (id, name, status, created_at)
+                VALUES (?, ?, ?, ?)
+                """)
+                .param(Uuid7.toBytes(merchantId))
+                .param(name)
+                .param("ACTIVE")
+                .param(Timestamp.from(Instant.now()))
+                .update();
+        seedKey(merchantId, apiKey, "original", "ACTIVE", null);
+    }
+
+    private void seedKey(UUID merchantId, String apiKey, String label,
+                         String status, Instant expiresAt) {
+        jdbc.sql("""
+                INSERT INTO merchant_api_key
+                    (id, merchant_id, api_key_hash, label, status, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """)
+                .param(Uuid7.toBytes(Uuid7.generate()))
+                .param(Uuid7.toBytes(merchantId))
+                .param(ApiKeyAuthFilter.sha256Hex(apiKey))
+                .param(label)
+                .param(status)
+                .param(Timestamp.from(Instant.now()))
+                .param(expiresAt == null ? null : Timestamp.from(expiresAt))
+                .update();
+    }
+
     @Test
     void twoMerchantsMayUseTheSameKey() throws Exception {
         UUID other = UUID.fromString("0192abcd-0000-7000-8000-0000000000ff");
         String otherKey = "pk_test_other_merchant";
-        jdbc.sql("""
-                INSERT INTO merchant (id, name, api_key_hash, status, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                """)
-                .param(Uuid7.toBytes(other))
-                .param("Other Merchant")
-                .param(ApiKeyAuthFilter.sha256Hex(otherKey))
-                .param("ACTIVE")
-                .param(Timestamp.from(Instant.now()))
-                .update();
+        seedMerchant(other, "Other Merchant", otherKey);
 
         mvc.perform(authenticated(create("shared-key"))).andExpect(status().isCreated());
         mvc.perform(create("shared-key").header(ApiKeyAuthFilter.HEADER, otherKey))

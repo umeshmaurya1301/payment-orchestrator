@@ -5,6 +5,8 @@ import com.payorch.infra.resilience.deadline.DeadlineExecutor;
 import com.payorch.infra.resilience.deadline.DeadlinePropagation;
 import com.payorch.infra.resilience.deadline.Deadlines;
 import com.payorch.infra.idempotency.WaitBudget;
+import com.payorch.edge.merchant.ApiKeyUsageRecorder;
+import com.payorch.edge.merchant.MerchantApiKeyRepository;
 import com.payorch.edge.merchant.MerchantRepository;
 import com.payorch.edge.orchestrator.OrchestratorClient;
 import com.payorch.infra.resilience.ratelimit.EndpointCosts;
@@ -72,8 +74,28 @@ public class EdgeConfiguration {
     }
 
     @Bean
-    public ApiKeyAuthFilter apiKeyAuthFilter(MerchantRepository merchants) {
-        return new ApiKeyAuthFilter(merchants);
+    public ApiKeyAuthFilter apiKeyAuthFilter(MerchantRepository merchants,
+                                             MerchantApiKeyRepository keys,
+                                             ApiKeyUsageRecorder usage) {
+        return new ApiKeyAuthFilter(merchants, keys, usage);
+    }
+
+    /**
+     * 9b. How stale {@code last_used_at} is allowed to be.
+     *
+     * <p>A minute, not a second, and the reason is in {@link ApiKeyUsageRecorder}:
+     * the consumer is a person deciding whether a retiring key is safe to
+     * revoke, and they cannot use a value accurate to the second any differently
+     * from one accurate to the minute. Setting it to zero turns every
+     * authenticated request into a database write — experiment 23 measured this
+     * edge at 279 payments/s, so that is 279 writes/s bought for nothing.
+     */
+    @Bean
+    public ApiKeyUsageRecorder apiKeyUsageRecorder(
+            MerchantApiKeyRepository keys,
+            @Value("${payorch.api-keys.usage-stamp-interval-ms:60000}") long intervalMs) {
+
+        return new ApiKeyUsageRecorder(keys, java.time.Duration.ofMillis(intervalMs));
     }
 
     /**

@@ -16,6 +16,12 @@ import org.hibernate.type.SqlTypes;
  * <p>Read-only here. Merchants arrive by migration in phase 1; onboarding is not
  * part of this project's scope, and pretending otherwise would add a CRUD
  * surface nothing else in the design depends on.
+ *
+ * <p><strong>No API key column since 9b.</strong> Credentials live in
+ * {@link MerchantApiKey}, one row per key, because a merchant needs more than
+ * one during a rotation. The column was dropped rather than left in place: two
+ * places a credential can be checked against is how a revoked key keeps
+ * working, and that is a security bug with a deprecation notice on it.
  */
 @Entity
 @Table(name = "merchant")
@@ -28,13 +34,6 @@ public class Merchant {
 
     @Column(name = "name", nullable = false, length = 128)
     private String name;
-
-    /**
-     * SHA-256 hex of the API key. The key itself is never stored, so a dump of
-     * this table does not let anyone call the API.
-     */
-    @Column(name = "api_key_hash", nullable = false, length = 64)
-    private String apiKeyHash;
 
     @Column(name = "status", nullable = false, length = 16)
     private String status;
@@ -56,10 +55,6 @@ public class Merchant {
 
     public String getName() {
         return name;
-    }
-
-    public String getApiKeyHash() {
-        return apiKeyHash;
     }
 
     public String getStatus() {

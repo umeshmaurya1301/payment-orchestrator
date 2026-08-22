@@ -241,11 +241,11 @@ it costs.
       is money, so a threshold on "total mismatches" would be dominated
       permanently by timing noise — the same shape as 6i's finding that DLQ
       depth is the wrong number and `pending` is the right one
-- [~] `UNKNOWN` payments resolve automatically; alert fires when the backlog
-      grows — 8a. **The resolution half is now measured**
-      ([experiment 20](../experiments/20-unknown-resolution.md), run 2026-08-21);
-      the alert half is not, and needs a SigNoz rule on gauges that already
-      exist.
+- [x] `UNKNOWN` payments resolve automatically; alert fires when the backlog
+      grows — 8a. **Both halves now measured.**
+      [Experiment 20](../experiments/20-unknown-resolution.md) (run
+      2026-08-21) is the resolution half; the alert half closed here, verified
+      against a real backlog rather than a config that merely applied cleanly.
 
       Enabling the poller against 11,601 real `UNKNOWN` payments — oldest 4.3
       days — resolved **nothing**, 250 polls, 250 inconclusive, every provider
@@ -268,7 +268,34 @@ it costs.
          anywhere, from the day it was written.
 
       After: 50 resolved per tick, `inconclusive` flat at its pre-fix value,
-      backlog 11,601 → 11,201 and falling
+      backlog 11,601 → 11,201 and falling.
+
+      **The alert.** Two rules — `docker/signoz/alerts/07-unknown-backlog-age.json`
+      on `payorch.payments.unknown.oldest_age_seconds` (the gauge
+      `UnknownResolverMetrics` already published, waiting for this) and
+      `08-unresolved-payments.json` on `payorch.payments.unresolved`, the
+      poller's own give-up state. **Age, not count** — a steady hundred
+      `UNKNOWN`s resolving within a minute is a healthy system; three sitting
+      for an hour is a dead provider, and count cannot tell those apart. The
+      3-hour threshold is computed, not guessed: `base-backoff-ms=60000,
+      max-backoff-ms=3600000, max-attempts=8` sums to a worst-case ~2.05h for
+      one payment resolving entirely through normal backoff, so 3h clears that
+      with an hour of margin — a lower threshold would page on the poller
+      doing its job correctly.
+
+      **Verified against a live backlog, not a dry-run apply.** This
+      session's own accumulated testing had left 25,530 real `UNKNOWN`
+      payments, oldest ~17.3 hours — turning the poller on and pointing it at
+      SigNoz was enough to watch the whole chain for real: the gauge exported
+      `62422` (seconds), the rule transitioned `inactive → firing`, and
+      `payorch-alert-sink` logged the delivered notification with the correct
+      severity. The first evaluation cycle reported `query result is nil` and
+      stayed inactive — not a bug, SigNoz's own `eval_delay` (2 minutes) meant
+      the first eval's query window predated the metric's first sample by
+      seconds; the next cycle saw it and fired. `unresolved-payments` stayed
+      `inactive` throughout, correctly — zero rows were actually in that state,
+      and a rule that fired on nothing would be exactly the false alarm this
+      phase's own text warns against
 - [x] Every index added via a Flyway migration — `V15__payment_indexes.sql`.
       None applied by hand; the first attempt was numbered V12 and collided with
       an existing migration, which Flyway caught at startup by refusing to boot

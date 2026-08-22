@@ -1,0 +1,94 @@
+{
+  "_comment": [
+    "Phase 8a. The single most important payment-system health signal, per the",
+    "phase plan's own words - and the exit criterion left half-built until now:",
+    "the poller was measured (experiment 20), the alert was not.",
+    "",
+    "AGE, NOT COUNT - THE SAME LESSON THIS PROJECT KEEPS RELEARNING",
+    "",
+    "payorch.payments.unknown is published too and is deliberately not the",
+    "threshold here. A steady hundred UNKNOWN payments that each resolve within",
+    "a minute is a busy system behaving correctly; three that have sat for an",
+    "hour is a provider that stopped answering, and count cannot tell those",
+    "apart. This is phase 4e's HTTP-5xx mistake in a new shape - see",
+    "docker/signoz/alerts/03-payment-failure-rate.json - and UnknownResolverMetrics",
+    "was written with this alert already in mind: 'the number to alert on' is",
+    "its own comment on the gauge below.",
+    "",
+    "THE THRESHOLD IS MEASURED, NOT CHOSEN",
+    "",
+    "10800s (3h), against a computed worst case of ~2.05h for a SINGLE payment",
+    "resolving entirely through normal backoff and never once getting an answer:",
+    "",
+    "  base-backoff-ms=60000, max-backoff-ms=3600000, max-attempts=8",
+    "  gaps (s): 60, 120, 240, 480, 960, 1920, 3600  = 7380s = 123min",
+    "  plus initial-delay-ms=60000                   = 124min ~ 2.05h",
+    "",
+    "A payment can legitimately sit UNKNOWN for two hours while the poller is",
+    "doing exactly its job - working through the doubling backoff toward",
+    "UNRESOLVED. A threshold below that fires on the poller working correctly,",
+    "which is 04-egress-limiter-saturation.json's trap in reverse: an alert that",
+    "cries wolf during a clean run gets muted. 3h clears the worst case with an",
+    "hour of margin, so this fires only once the poller SHOULD have already",
+    "given up and has not, or has stopped running entirely.",
+    "",
+    "-1 IS HANDLED THE SAME WAY 02-provider-p99-breach.json HANDLES IT",
+    "",
+    "PaymentPersistence.oldestAgeInState returns a real Duration or Duration.ZERO",
+    "when the backlog is empty - not a sentinel - so an empty backlog reads as",
+    "age 0, which is below the threshold and cannot fire. There is no equivalent",
+    "of provider-p99-breach's -1 case here because 'no UNKNOWN payments' is an",
+    "unambiguous zero, not a missing measurement.",
+    "",
+    "NO alertOnAbsent, same reasoning as 06-dlq-pending.json",
+    "",
+    "UnknownResolverMetrics only binds when payorch.recon.unknown-poller.enabled",
+    "is true (UNKNOWN_POLLER_ENABLED, off by default). Absence-alerting would fire",
+    "on every stack that has not turned the poller on, which is most local runs -",
+    "and the series that answers 'is the poller alive at all' is a different",
+    "question from 'is the backlog aging out', which this rule is about."
+  ],
+  "version": "v5",
+  "schemaVersion": "v1",
+  "alert": "unknown-backlog-age",
+  "alertType": "METRIC_BASED_ALERT",
+  "ruleType": "threshold_rule",
+  "frequency": "60s",
+  "evalWindow": "5m",
+  "condition": {
+    "compositeQuery": {
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "disabled": false,
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "payorch.payments.unknown.oldest_age_seconds",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "op": ">",
+    "target": 10800,
+    "matchType": "1",
+    "selectedQueryName": "A",
+    "targetUnit": "s"
+  },
+  "labels": {
+    "severity": "critical",
+    "component": "unknown-resolution"
+  },
+  "annotations": {
+    "summary": "A payment has been UNKNOWN for over 3 hours",
+    "description": "The oldest UNKNOWN payment has aged past the poller's own worst-case resolution time (~2h through 8 backoff attempts). Either the poller has stopped resolving it, or it has stopped running. Check GET /actuator/health for the poller and payorch.recon.polled / payorch.recon.inconclusive for whether it is still trying. Every payment in this state may have moved money nobody has confirmed."
+  },
+  "preferredChannels": ["payorch-alert-sink"]
+}

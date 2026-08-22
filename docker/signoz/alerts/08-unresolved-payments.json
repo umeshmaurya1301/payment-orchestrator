@@ -1,0 +1,78 @@
+{
+  "_comment": [
+    "Phase 8a. The poller's own give-up state, and the alert",
+    "UnknownResolverMetrics was written already expecting: 'every one of these",
+    "needs a person... a threshold of more than zero for more than an hour is a",
+    "reasonable page' - that sentence is this rule.",
+    "",
+    "WHY THIS IS A SEPARATE RULE FROM unknown-backlog-age, NOT ONE THRESHOLD",
+    "",
+    "UNKNOWN and UNRESOLVED are different questions with different urgency.",
+    "UNKNOWN means 'we do not know yet, the poller is working' - a payment can be",
+    "in that state for up to ~2h through normal backoff and the age alert next",
+    "to this one is tuned around exactly that math. UNRESOLVED means 'we do not",
+    "know, and we have stopped asking' - the poller exhausted its 8 attempts and",
+    "gave up, so nothing in this system will ever move this payment again without",
+    "a person. Folding the two into one rule would mean either paging on normal",
+    "backoff or waiting hours to notice a payment nothing is working on anymore;",
+    "the phase's own text keeps them as two states for the same reason -",
+    "PaymentState.UNRESOLVED's own javadoc: 'one of these is worth waking",
+    "somebody up for; a thousand UNKNOWNs at 2am might not be.'",
+    "",
+    "matchType 1, target 0, op > - the same shape as 06-dlq-pending.json and for",
+    "the identical reason: there is no healthy non-zero level of a payment",
+    "nothing is working on. One is worth a page.",
+    "",
+    "evalWindow 15m rather than the age alert's 5m. UNRESOLVED is set once, by",
+    "the poller's own give-up transition (recon/UnknownResolver), not something",
+    "that fluctuates - a longer window here only affects how quickly the FIRST",
+    "occurrence is noticed, and 15 minutes after a payment has already been",
+    "abandoned by automation is not urgency this rule needs to shave finer.",
+    "",
+    "NO alertOnAbsent, same reasoning as unknown-backlog-age.json: this gauge",
+    "only exists when the poller is enabled, and most local runs do not enable",
+    "it."
+  ],
+  "version": "v5",
+  "schemaVersion": "v1",
+  "alert": "unresolved-payments",
+  "alertType": "METRIC_BASED_ALERT",
+  "ruleType": "threshold_rule",
+  "frequency": "60s",
+  "evalWindow": "15m",
+  "condition": {
+    "compositeQuery": {
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "disabled": false,
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "payorch.payments.unresolved",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "op": ">",
+    "target": 0,
+    "matchType": "1",
+    "selectedQueryName": "A"
+  },
+  "labels": {
+    "severity": "critical",
+    "component": "unknown-resolution"
+  },
+  "annotations": {
+    "summary": "{{$value}} payment(s) the poller has given up on",
+    "description": "The automatic UNKNOWN poller exhausted its 8 attempts on at least one payment without a definitive answer from any provider. Nothing in this system will act on it further - it needs a human to look the reference up with each provider directly. See UnknownResolver and payorch.recon.gave_up for how many have accumulated."
+  },
+  "preferredChannels": ["payorch-alert-sink"]
+}

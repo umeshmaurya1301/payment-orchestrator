@@ -6,8 +6,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 
-import com.payorch.infra.logging.LogEvent;
-import com.payorch.infra.logging.LogFields;
+import org.infra.logging.LogEvent;
+import org.infra.logging.LogFields;
 
 /**
  * Publishes straight to Kafka, immediately after the database commit.

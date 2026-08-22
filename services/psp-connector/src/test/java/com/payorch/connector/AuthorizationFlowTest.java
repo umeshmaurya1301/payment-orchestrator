@@ -4,10 +4,10 @@ import java.util.ArrayList;
 import java.util.List;
 
 import com.payorch.connector.provider.PspAdapter;
-import com.payorch.infra.tokenization.DetokenizedCard;
-import com.payorch.infra.tokenization.TokenVault;
-import com.payorch.infra.tokenization.TokenizedCard;
-import com.payorch.infra.tokenization.VaultConnection;
+import org.infra.tokenization.DetokenizedCard;
+import org.infra.tokenization.TokenVault;
+import org.infra.tokenization.TokenizedCard;
+import org.infra.tokenization.VaultConnection;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;

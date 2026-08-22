@@ -9,8 +9,8 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import com.payorch.infra.logging.LogEvent;
-import com.payorch.infra.logging.LogFields;
+import org.infra.logging.LogEvent;
+import org.infra.logging.LogFields;
 import com.payorch.ledger.consume.PaymentEventMessage;
 import com.payorch.ledger.journal.JournalEntry;
 import com.payorch.ledger.journal.JournalRepository;

@@ -3,7 +3,7 @@ package com.payorch.connector.health;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-import com.payorch.infra.observability.ProviderHealth;
+import org.infra.observability.ProviderHealth;
 
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
 import org.springframework.boot.actuate.endpoint.annotation.ReadOperation;

@@ -168,7 +168,7 @@ reports BUILD SUCCESSFUL because there is almost nothing left to build.
 ## Run it
 
 ```bash
-./gradlew build          # compiles, runs ALL tests - including infra-core's
+./gradlew build          # compiles, runs ALL tests
 ./gradlew bootJar        # produces one runnable jar per service
 docker compose up -d --build
 ```
@@ -178,10 +178,6 @@ docker compose up -d --build
 > `docker/mysql/init/01-vault.sql`, and MySQL runs that script **only** on the
 > first start against an empty data directory. On a volume that predates it,
 > `payments-edge` refuses to start and says so.
-
-`build` at the root explicitly depends on `infra-core:buildAll`. Without that
-dependency Gradle runs no tests in the included build at all, because the
-services need the starters' jars and nothing more.
 
 The Docker images copy a jar built on the host rather than building inside a
 builder stage, so `bootJar` must run first. See the comment at the top of
@@ -321,16 +317,7 @@ profile is covered by the phase-1 exit criteria.
 
 ```
 payment-orchestrator/
-├── gradle/libs.versions.toml     one version catalog, shared by both builds
-├── infra-core/                   a SEPARATE gradle build, wired via includeBuild
-│   ├── logging-starter           structured JSON logging + PII masking
-│   ├── web-starter               RFC-7807 errors + correlation-ID filter
-│   ├── persistence-starter       UUIDv7 identifiers and their BINARY(16) form
-│   ├── tokenization-starter      the token vault and the one detokenization path
-│   ├── chaos-core                bean-level assaults and bespoke fault seams
-│   ├── idempotency-starter       keys, replay; hardened in phase 7
-│   ├── resilience-starter        empty until phase 3
-│   └── observability-starter     empty until phase 4
+├── gradle/libs.versions.toml     the version catalog for the root build
 ├── services/                     the six Spring Boot applications
 ├── docker/
 │   ├── Dockerfile                one shared image, selected by build arg
@@ -341,13 +328,18 @@ payment-orchestrator/
 └── tools/panscan/                the PAN-leak scan, seed of the phase-4 build test
 ```
 
-### Why `infra-core` is an included build
+### The `infra-core` starters live in a separate repository
 
-`settings.gradle.kts` pulls it in with `includeBuild` and substitutes the
-starter coordinates for local projects. Editing a starter is picked up by the
-services on the next build - no publish step, no version bump. It is still a
-standalone build, so `./gradlew -p infra-core publishToMavenLocal` produces real
-snapshots when a pinned version is wanted instead.
+`logging-starter`, `web-starter`, `persistence-starter`, `tokenization-starter`,
+`chaos-core`, `idempotency-starter`, `resilience-starter` and
+`observability-starter` used to live in this repo as an `includeBuild`. They
+now live in the standalone **Infra-Core** project (group `org.infra`,
+artifacts `infra-logging`, `infra-web`, `infra-persistence`,
+`infra-tokenization`, `infra-chaos`, `infra-idempotency`, `infra-resilience`,
+`infra-observability`), consumed here as ordinary published dependencies via
+Maven Local (`gradle/libs.versions.toml`, the `payorch-*` aliases). Editing a
+starter now means a normal `./gradlew publishToMavenLocal` from the Infra-Core
+repo, then rebuilding this one.
 
 ---
 

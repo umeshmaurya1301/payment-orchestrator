@@ -8,7 +8,7 @@ import java.time.Instant;
 import java.util.HexFormat;
 import java.util.Optional;
 
-import com.payorch.infra.logging.LogFields;
+import org.infra.logging.LogFields;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;

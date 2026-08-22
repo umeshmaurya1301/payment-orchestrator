@@ -14,9 +14,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import com.payorch.infra.logging.LogEvent;
-import com.payorch.infra.logging.LogFields;
-import com.payorch.infra.resilience.deadline.Deadlines;
+import org.infra.logging.LogEvent;
+import org.infra.logging.LogFields;
+import org.infra.resilience.deadline.Deadlines;
 
 /**
  * Asks every provider about one reference, at the same time. Phase 7f.

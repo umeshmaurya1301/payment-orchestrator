@@ -8,9 +8,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
-import com.payorch.infra.chaos.ChaosSeam;
-import com.payorch.infra.persistence.Uuid7;
-import com.payorch.infra.chaos.ChaosSeams;
+import org.infra.chaos.ChaosSeam;
+import org.infra.persistence.Uuid7;
+import org.infra.chaos.ChaosSeams;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

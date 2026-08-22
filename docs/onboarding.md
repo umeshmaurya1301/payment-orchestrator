@@ -20,26 +20,34 @@ it should be read, and both are already sequenced for you.
 
 ## 1. The four starters the vertical slice needs
 
-Don't read all eight `infra-core` starters. Read only the four phase 0/1
-actually use, in this order - `logging-starter` is the one dependency the
-other three share:
+The eight starters this system is built on - `logging-starter`, `web-starter`,
+`persistence-starter`, `tokenization-starter`, `chaos-core`,
+`resilience-starter`, `observability-starter`, `idempotency-starter` - now
+live in the standalone **Infra-Core** repository (group `org.infra`), not in
+this one; this repo consumes them as ordinary published dependencies (see
+`gradle/libs.versions.toml`'s `payorch-*` aliases, and the README's "The
+`infra-core` starters live in a separate repository" section). Clone that repo
+alongside this one to read the source below.
 
-1. **`infra-core/logging-starter`** - `LogFields.java`, `LogEvent.java`,
-   `Masking.java`. Pure, small, no Spring machinery, and every other starter
-   and every service logs through it.
-2. **`infra-core/persistence-starter`** - `Uuid7.java`. A one-file module.
-   Explains why every ID in the system looks the way it does.
-3. **`infra-core/web-starter`** - `CorrelationIdFilter` and the RFC-7807
-   error model. Small, and it's why every error response across all six
-   services carries the same JSON shape.
-4. **`infra-core/tokenization-starter`** - `Pan.java` -> `TokenVault.java` ->
+Don't read all eight. Read only the four phase 0/1 actually use, in this
+order - `infra-logging` is the one dependency the other three share:
+
+1. **`infra-logging`** - `LogFields.java`, `LogEvent.java`, `Masking.java`.
+   Pure, small, no Spring machinery, and every other starter and every
+   service logs through it.
+2. **`infra-persistence`** - `Uuid7.java`. A one-file module. Explains why
+   every ID in the system looks the way it does.
+3. **`infra-web`** - `CorrelationIdFilter` and the RFC-7807 error model.
+   Small, and it's why every error response across all six services carries
+   the same JSON shape.
+4. **`infra-tokenization`** - `Pan.java` -> `TokenVault.java` ->
    `PanCipher` / `EnvelopeCipher`. Slow down here. This is the actual
    security boundary the README's PCI section is about.
 
-Leave `chaos-core`, `resilience-starter`, `observability-starter`, and
-`idempotency-starter` for later - they belong to phases 2-7 and will make
-more sense once you've seen the plain, undefended version of the system they
-were added to protect.
+Leave `infra-chaos`, `infra-resilience`, `infra-observability`, and
+`infra-idempotency` for later - they belong to phases 2-7 and will make more
+sense once you've seen the plain, undefended version of the system they were
+added to protect.
 
 ## 2. One real service: `payments-edge`
 

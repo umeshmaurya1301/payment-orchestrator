@@ -12,8 +12,8 @@ import com.payorch.connector.config.ProviderConfig;
 import com.payorch.connector.config.ProviderConfigStore;
 import com.payorch.connector.provider.PspAdapter;
 import com.payorch.connector.provider.PspAdapterRegistry;
-import com.payorch.infra.resilience.breaker.CircuitBreakers;
-import com.payorch.infra.tokenization.DetokenizedCard;
+import org.infra.resilience.breaker.CircuitBreakers;
+import org.infra.tokenization.DetokenizedCard;
 
 /**
  * Tests a recovering provider with money nobody spent. Phase 5, the standing
@@ -36,7 +36,7 @@ import com.payorch.infra.tokenization.DetokenizedCard;
  * {@link CircuitBreakers} instance a real payment would use, so the call
  * genuinely counts toward the breaker's decision to close or reopen — using a
  * card and amount that were never a customer's. With this running,
- * {@link com.payorch.infra.observability.ProviderHealth} gates half-open
+ * {@link org.infra.observability.ProviderHealth} gates half-open
  * traffic to zero instead of capping it, because the breaker's evidence now
  * comes from here.
  *

@@ -7,7 +7,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Supplier;
 
-import com.payorch.infra.resilience.lock.RedisLock;
+import org.infra.resilience.lock.RedisLock;
 import com.payorch.orchestrator.PaymentPersistence;
 import com.payorch.orchestrator.connector.ConnectorApi;
 import com.payorch.orchestrator.connector.ConnectorClient;

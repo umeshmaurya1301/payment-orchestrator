@@ -7,8 +7,8 @@ import org.springframework.stereotype.Service;
 import com.payorch.connector.api.ConnectorApi;
 import com.payorch.connector.provider.PspAdapter;
 import com.payorch.connector.provider.PspAdapterRegistry;
-import com.payorch.infra.logging.LogEvent;
-import com.payorch.infra.logging.LogFields;
+import org.infra.logging.LogEvent;
+import org.infra.logging.LogFields;
 
 /**
  * Taking the money, as opposed to holding it.

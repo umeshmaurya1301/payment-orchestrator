@@ -6,7 +6,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 
-import com.payorch.infra.observability.ProviderHealth;
+import org.infra.observability.ProviderHealth;
 import com.payorch.orchestrator.domain.PspConfig;
 
 /**

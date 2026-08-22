@@ -8,8 +8,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 
-import com.payorch.infra.logging.LogEvent;
-import com.payorch.infra.logging.LogFields;
+import org.infra.logging.LogEvent;
+import org.infra.logging.LogFields;
 import com.payorch.orchestrator.PaymentService;
 
 /**

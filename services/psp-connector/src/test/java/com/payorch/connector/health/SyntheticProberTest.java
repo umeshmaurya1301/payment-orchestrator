@@ -12,8 +12,8 @@ import com.payorch.connector.config.ProviderConfig;
 import com.payorch.connector.config.ProviderConfigStore;
 import com.payorch.connector.provider.PspAdapter;
 import com.payorch.connector.provider.PspAdapterRegistry;
-import com.payorch.infra.resilience.breaker.CircuitBreakers;
-import com.payorch.infra.tokenization.DetokenizedCard;
+import org.infra.resilience.breaker.CircuitBreakers;
+import org.infra.tokenization.DetokenizedCard;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;

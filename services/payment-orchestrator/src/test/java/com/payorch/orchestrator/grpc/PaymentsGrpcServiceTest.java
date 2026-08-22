@@ -15,7 +15,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 
-import com.payorch.infra.web.ApiException;
+import org.infra.web.ApiException;
 import com.payorch.orchestrator.PaymentService;
 import com.payorch.orchestrator.api.OrchestratorApi;
 import com.payorch.proto.v1.CapturePaymentRequest;

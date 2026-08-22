@@ -10,7 +10,7 @@ import io.grpc.StatusRuntimeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.payorch.infra.resilience.deadline.Deadlines;
+import org.infra.resilience.deadline.Deadlines;
 import com.payorch.proto.v1.CapturePaymentRequest;
 import com.payorch.proto.v1.GetPaymentRequest;
 import com.payorch.proto.v1.PaymentsGrpc;
@@ -67,7 +67,7 @@ public class GrpcOrchestratorClient implements OrchestratorClient {
      */
     private PaymentsGrpc.PaymentsBlockingStub withDeadline() {
         long remaining = Deadlines.current()
-                .map(com.payorch.infra.resilience.deadline.Deadline::remainingMs)
+                .map(org.infra.resilience.deadline.Deadline::remainingMs)
                 .orElse(-1L);
 
         if (remaining <= 0) {

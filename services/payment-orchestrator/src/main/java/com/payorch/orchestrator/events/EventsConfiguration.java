@@ -14,7 +14,7 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.support.serializer.JacksonJsonSerializer;
 
-import com.payorch.infra.observability.TraceCarrier;
+import org.infra.observability.TraceCarrier;
 
 /**
  * The producer side of phase 6.

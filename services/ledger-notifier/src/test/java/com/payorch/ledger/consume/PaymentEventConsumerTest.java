@@ -7,8 +7,8 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
 
-import com.payorch.infra.chaos.ChaosSeam;
-import com.payorch.infra.chaos.ChaosSeams;
+import org.infra.chaos.ChaosSeam;
+import org.infra.chaos.ChaosSeams;
 import org.springframework.beans.factory.ObjectProvider;
 
 import com.payorch.ledger.domain.LedgerPosting;
@@ -100,7 +100,7 @@ class PaymentEventConsumerTest {
     void theDeadLetterHandlerLogsWithoutTrippingTheLogFieldAllowlist() {
         consumer.onDeadLetter(event(),
                 "payment.events.retry-600000".getBytes(StandardCharsets.UTF_8),
-                "com.payorch.infra.chaos.ChaosSeams$ChaosInjectedException",
+                "org.infra.chaos.ChaosSeams$ChaosInjectedException",
                 attempts(4));
 
         assertThat(consumer.deadLettered()).isEqualTo(1);

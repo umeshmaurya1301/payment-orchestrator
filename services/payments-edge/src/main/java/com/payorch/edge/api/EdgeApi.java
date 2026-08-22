@@ -2,8 +2,8 @@ package com.payorch.edge.api;
 
 import java.time.Instant;
 
-import com.payorch.infra.logging.MaskStrategy;
-import com.payorch.infra.logging.Sensitive;
+import org.infra.logging.MaskStrategy;
+import org.infra.logging.Sensitive;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;

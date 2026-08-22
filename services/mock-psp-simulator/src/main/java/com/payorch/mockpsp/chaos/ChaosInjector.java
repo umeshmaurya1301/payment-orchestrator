@@ -5,9 +5,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.ThreadLocalRandom;
 
-import com.payorch.infra.logging.LogEvent;
-import com.payorch.infra.logging.LogFields;
-import com.payorch.infra.web.ApiException;
+import org.infra.logging.LogEvent;
+import org.infra.logging.LogFields;
+import org.infra.web.ApiException;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

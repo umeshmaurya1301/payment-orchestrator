@@ -6,8 +6,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 /**
  * Starts the real context on a real port.
  *
- * <p>Cheap, and it proves more than it looks like it does: that the included
- * build substituted correctly, that all four infra-core starters were discovered
+ * <p>Cheap, and it proves more than it looks like it does: that all four
+ * infra-core starters (org.infra, resolved from Maven Local) were discovered
  * through their AutoConfiguration.imports, that the vault connection was built
  * without displacing the application datasource, and that the correlation
  * filter, API-key filter and problem-detail advice all registered.

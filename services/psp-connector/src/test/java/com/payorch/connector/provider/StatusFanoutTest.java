@@ -7,9 +7,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import com.payorch.infra.resilience.deadline.Deadline;
-import com.payorch.infra.resilience.deadline.Deadlines;
-import com.payorch.infra.tokenization.DetokenizedCard;
+import org.infra.resilience.deadline.Deadline;
+import org.infra.resilience.deadline.Deadlines;
+import org.infra.tokenization.DetokenizedCard;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

@@ -4,9 +4,9 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.UUID;
 
-import com.payorch.infra.persistence.Uuid7;
-import com.payorch.infra.resilience.deadline.DeadlineExecutor;
-import com.payorch.infra.resilience.deadline.DeadlinePropagation;
+import org.infra.persistence.Uuid7;
+import org.infra.resilience.deadline.DeadlineExecutor;
+import org.infra.resilience.deadline.DeadlinePropagation;
 import com.payorch.orchestrator.connector.ConnectorApi;
 import com.payorch.orchestrator.connector.ConnectorClient;
 import com.payorch.orchestrator.domain.PaymentState;

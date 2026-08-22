@@ -1,7 +1,7 @@
 package com.payorch.orchestrator.connector;
 
-import com.payorch.infra.resilience.deadline.DeadlineExecutor;
-import com.payorch.infra.resilience.deadline.DeadlinePropagation;
+import org.infra.resilience.deadline.DeadlineExecutor;
+import org.infra.resilience.deadline.DeadlinePropagation;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.client.HttpServerErrorException;
 import io.micrometer.observation.ObservationRegistry;

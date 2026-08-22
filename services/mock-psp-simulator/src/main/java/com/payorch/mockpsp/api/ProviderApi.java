@@ -3,8 +3,8 @@ package com.payorch.mockpsp.api;
 import java.time.Instant;
 import java.util.List;
 
-import com.payorch.infra.logging.MaskStrategy;
-import com.payorch.infra.logging.Sensitive;
+import org.infra.logging.MaskStrategy;
+import org.infra.logging.Sensitive;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;

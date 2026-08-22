@@ -1,7 +1,7 @@
 package com.payorch.orchestrator;
 
-import com.payorch.infra.resilience.deadline.DeadlineExecutor;
-import com.payorch.infra.resilience.deadline.DeadlinePropagation;
+import org.infra.resilience.deadline.DeadlineExecutor;
+import org.infra.resilience.deadline.DeadlinePropagation;
 import com.payorch.orchestrator.connector.ConnectorClient;
 import com.payorch.orchestrator.connector.GrpcConnectorClient;
 import com.payorch.orchestrator.connector.RestConnectorClient;

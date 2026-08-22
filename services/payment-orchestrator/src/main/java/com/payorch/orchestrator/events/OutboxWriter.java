@@ -4,7 +4,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
-import com.payorch.infra.observability.TraceCarrier;
+import org.infra.observability.TraceCarrier;
 import com.payorch.orchestrator.domain.Payment;
 
 import tools.jackson.databind.ObjectMapper;

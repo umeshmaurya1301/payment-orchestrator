@@ -7,7 +7,7 @@ import java.util.function.Function;
 
 import com.payorch.connector.config.ProviderConfig;
 import com.payorch.connector.config.ProviderConfigStore;
-import com.payorch.infra.web.ApiException;
+import org.infra.web.ApiException;
 import org.springframework.http.HttpStatus;
 
 /**

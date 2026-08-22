@@ -14,10 +14,10 @@ import java.util.concurrent.TimeUnit;
 
 import com.payorch.edge.merchant.ApiKeyAuthFilter;
 import com.payorch.edge.orchestrator.OrchestratorClient;
-import com.payorch.infra.persistence.Uuid7;
-import com.payorch.infra.resilience.deadline.DeadlineExecutor;
-import com.payorch.infra.resilience.deadline.DeadlinePropagation;
-import com.payorch.infra.tokenization.VaultConnection;
+import org.infra.persistence.Uuid7;
+import org.infra.resilience.deadline.DeadlineExecutor;
+import org.infra.resilience.deadline.DeadlinePropagation;
+import org.infra.tokenization.VaultConnection;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;

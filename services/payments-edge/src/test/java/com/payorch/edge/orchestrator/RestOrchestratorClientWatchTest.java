@@ -11,8 +11,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import com.payorch.infra.resilience.deadline.DeadlineExecutor;
-import com.payorch.infra.resilience.deadline.DeadlinePropagation;
+import org.infra.resilience.deadline.DeadlineExecutor;
+import org.infra.resilience.deadline.DeadlinePropagation;
 import io.micrometer.observation.ObservationRegistry;
 
 import static org.assertj.core.api.Assertions.assertThat;

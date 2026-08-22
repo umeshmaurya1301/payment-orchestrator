@@ -8,11 +8,11 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.stream.Collectors;
 
-import com.payorch.infra.resilience.breaker.CircuitBreakers;
-import com.payorch.infra.resilience.bulkhead.Bulkhead;
-import com.payorch.infra.resilience.bulkhead.SemaphoreBulkhead;
-import com.payorch.infra.resilience.ratelimit.RateLimiter;
-import com.payorch.infra.resilience.ratelimit.RedisTokenBucketRateLimiter;
+import org.infra.resilience.breaker.CircuitBreakers;
+import org.infra.resilience.bulkhead.Bulkhead;
+import org.infra.resilience.bulkhead.SemaphoreBulkhead;
+import org.infra.resilience.ratelimit.RateLimiter;
+import org.infra.resilience.ratelimit.RedisTokenBucketRateLimiter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;

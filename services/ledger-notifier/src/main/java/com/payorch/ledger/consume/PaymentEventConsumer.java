@@ -21,9 +21,9 @@ import org.springframework.stereotype.Component;
 
 import org.springframework.beans.factory.ObjectProvider;
 
-import com.payorch.infra.chaos.ChaosSeams;
-import com.payorch.infra.logging.LogEvent;
-import com.payorch.infra.logging.LogFields;
+import org.infra.chaos.ChaosSeams;
+import org.infra.logging.LogEvent;
+import org.infra.logging.LogFields;
 import com.payorch.ledger.domain.LedgerPosting;
 import com.payorch.ledger.saga.CompensationPublisher;
 import com.payorch.ledger.saga.CompensationRequest;

@@ -9,8 +9,8 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import com.payorch.infra.logging.Masking;
-import com.payorch.infra.logging.mask.SensitivePatterns;
+import org.infra.logging.Masking;
+import org.infra.logging.mask.SensitivePatterns;
 
 /**
  * Scans captured database dumps and container output for unmasked PII.
@@ -48,7 +48,7 @@ import com.payorch.infra.logging.mask.SensitivePatterns;
  * </ul>
  *
  * <pre>{@code
- * java -cp infra-core/logging-starter/build/libs/logging-starter-0.1.0-SNAPSHOT.jar \
+ * java -cp ~/.m2/repository/org/infra/infra-logging/1.0.0/infra-logging-1.0.0.jar \
  *      tools/panscan/PanScan.java dump.sql logs.txt
  * }</pre>
  *

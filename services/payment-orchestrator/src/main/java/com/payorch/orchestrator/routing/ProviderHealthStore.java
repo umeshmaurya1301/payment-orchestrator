@@ -10,7 +10,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.web.client.RestClient;
 
-import com.payorch.infra.observability.ProviderHealth;
+import org.infra.observability.ProviderHealth;
 
 /**
  * The orchestrator's cached view of how {@code psp-connector} rates each

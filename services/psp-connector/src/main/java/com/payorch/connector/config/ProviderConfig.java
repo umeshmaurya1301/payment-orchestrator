@@ -2,7 +2,7 @@ package com.payorch.connector.config;
 
 import java.time.Duration;
 
-import com.payorch.infra.resilience.breaker.CircuitBreakers;
+import org.infra.resilience.breaker.CircuitBreakers;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 
 /**

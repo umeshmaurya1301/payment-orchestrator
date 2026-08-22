@@ -1,6 +1,6 @@
 package com.payorch.connector.provider;
 
-import com.payorch.infra.tokenization.DetokenizedCard;
+import org.infra.tokenization.DetokenizedCard;
 
 /**
  * One payment provider, behind one interface.

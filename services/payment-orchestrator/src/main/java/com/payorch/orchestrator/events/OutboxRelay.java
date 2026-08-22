@@ -13,9 +13,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 
-import com.payorch.infra.logging.LogEvent;
-import com.payorch.infra.logging.LogFields;
-import com.payorch.infra.observability.TraceCarrier;
+import org.infra.logging.LogEvent;
+import org.infra.logging.LogFields;
+import org.infra.observability.TraceCarrier;
 
 /**
  * Moves outbox rows to Kafka, and marks them done.

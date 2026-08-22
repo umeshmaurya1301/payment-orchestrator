@@ -9,8 +9,8 @@ import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
-import com.payorch.infra.logging.LogEvent;
-import com.payorch.infra.logging.LogFields;
+import org.infra.logging.LogEvent;
+import org.infra.logging.LogFields;
 import com.payorch.ledger.consume.PaymentEventMessage;
 
 import tools.jackson.databind.ObjectMapper;

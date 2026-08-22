@@ -12,9 +12,9 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
-import com.payorch.infra.logging.LogEvent;
-import com.payorch.infra.logging.LogFields;
-import com.payorch.infra.resilience.lock.RedisLock;
+import org.infra.logging.LogEvent;
+import org.infra.logging.LogFields;
+import org.infra.resilience.lock.RedisLock;
 import com.payorch.orchestrator.PaymentPersistence;
 import com.payorch.orchestrator.connector.ConnectorApi;
 import com.payorch.orchestrator.connector.ConnectorClient;

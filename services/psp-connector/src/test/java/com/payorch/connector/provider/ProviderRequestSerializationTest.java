@@ -1,6 +1,6 @@
 package com.payorch.connector.provider;
 
-import com.payorch.infra.logging.jackson.SensitiveJacksonModule;
+import org.infra.logging.jackson.SensitiveJacksonModule;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
 

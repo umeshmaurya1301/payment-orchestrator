@@ -33,7 +33,7 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.retrytopic.RetryTopicHeaders;
 import org.springframework.kafka.support.KafkaHeaders;
 
-import com.payorch.infra.observability.TraceCarrier;
+import org.infra.observability.TraceCarrier;
 
 /**
  * Reading and replaying the dead-letter queue.

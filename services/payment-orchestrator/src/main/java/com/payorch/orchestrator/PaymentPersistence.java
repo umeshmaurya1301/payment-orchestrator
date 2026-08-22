@@ -7,7 +7,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
-import com.payorch.infra.web.ApiException;
+import org.infra.web.ApiException;
 import com.payorch.orchestrator.domain.Payment;
 import com.payorch.orchestrator.domain.PaymentAttempt;
 import com.payorch.orchestrator.domain.PaymentAttemptRepository;

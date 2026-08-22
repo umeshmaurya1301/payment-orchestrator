@@ -10,8 +10,8 @@ import io.grpc.stub.StreamObserver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.payorch.infra.persistence.Uuid7;
-import com.payorch.infra.web.ApiException;
+import org.infra.persistence.Uuid7;
+import org.infra.web.ApiException;
 import com.payorch.orchestrator.PaymentService;
 import com.payorch.orchestrator.api.OrchestratorApi;
 import com.payorch.proto.v1.CapturePaymentRequest;

@@ -5,8 +5,8 @@ import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
-import com.payorch.infra.idempotency.IdempotencyStore;
-import com.payorch.infra.idempotency.ReplayableResponse;
+import org.infra.idempotency.IdempotencyStore;
+import org.infra.idempotency.ReplayableResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;

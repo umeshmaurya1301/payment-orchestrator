@@ -13,7 +13,7 @@ import org.slf4j.LoggerFactory;
  * cannot express any of that.
  *
  * <p>Every strategy shares one non-negotiable: <strong>a provider below
- * {@link com.payorch.infra.observability.ProviderHealth#UNROUTABLE} is never
+ * {@link org.infra.observability.ProviderHealth#UNROUTABLE} is never
  * chosen</strong>, whatever the strategy would otherwise prefer. "Cheapest" with
  * no health floor routes to whichever provider is failing most cheaply, and
  * "priority" with no health floor is phase 5a's baseline, which sent 100% of the

@@ -1,8 +1,8 @@
 package com.payorch.mockpsp.api;
 
-import com.payorch.infra.logging.LogEvent;
-import com.payorch.infra.logging.LogFields;
-import com.payorch.infra.web.ApiException;
+import org.infra.logging.LogEvent;
+import org.infra.logging.LogFields;
+import org.infra.web.ApiException;
 import com.payorch.mockpsp.chaos.ChaosInjector;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
@@ -222,7 +222,7 @@ public class ProviderController {
      * from the request object and never written anywhere.
      */
     private static String lastFour(String pan) {
-        String digits = com.payorch.infra.logging.Masking.digitsOf(pan);
+        String digits = org.infra.logging.Masking.digitsOf(pan);
         return digits.length() < 4 ? "0000" : digits.substring(digits.length() - 4);
     }
 }

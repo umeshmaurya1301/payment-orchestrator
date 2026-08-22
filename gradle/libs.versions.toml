@@ -1,9 +1,7 @@
-# Single source of truth for dependency versions across BOTH builds:
-#   - the root build (services)
-#   - the `infra-core` included build (starters)
-#
-# infra-core/settings.gradle.kts points at this exact file, so there is one
-# catalog, not two that drift.
+# Single source of truth for dependency versions for the root build (services).
+# The infra-core starters are consumed as ordinary published artifacts from
+# the standalone Infra-Core project (org.infra, via Maven Local) - see the
+# "infra-core starters" section below.
 #
 # Entries WITHOUT a version are resolved by the Spring Boot BOM
 # (org.springframework.boot:spring-boot-dependencies), which every module
@@ -202,18 +200,18 @@ aspectjweaver = { module = "org.aspectj:aspectjweaver" }
 spring-boot-starter-data-redis = { module = "org.springframework.boot:spring-boot-starter-data-redis" }
 
 # --- infra-core starters --------------------------------------------------
-# Ordinary module coordinates. The root settings.gradle.kts substitutes each of
-# these for the local project in the `infra-core` included build, so the version
-# below is only consulted if that substitution is removed and a published
-# snapshot is used instead.
-payorch-logging-starter = { module = "com.payorch.infra:logging-starter", version = "0.1.0-SNAPSHOT" }
-payorch-web-starter = { module = "com.payorch.infra:web-starter", version = "0.1.0-SNAPSHOT" }
-payorch-resilience-starter = { module = "com.payorch.infra:resilience-starter", version = "0.1.0-SNAPSHOT" }
-payorch-idempotency-starter = { module = "com.payorch.infra:idempotency-starter", version = "0.1.0-SNAPSHOT" }
-payorch-observability-starter = { module = "com.payorch.infra:observability-starter", version = "0.1.0-SNAPSHOT" }
-payorch-persistence-starter = { module = "com.payorch.infra:persistence-starter", version = "0.1.0-SNAPSHOT" }
-payorch-tokenization-starter = { module = "com.payorch.infra:tokenization-starter", version = "0.1.0-SNAPSHOT" }
-payorch-chaos-core = { module = "com.payorch.infra:chaos-core", version = "0.1.0-SNAPSHOT" }
+# Ordinary module coordinates, resolved from Maven Local. These used to point
+# at an in-repo `infra-core` included build (group com.payorch.infra); they now
+# point at the standalone Infra-Core project (group org.infra), published with
+# `./gradlew publishToMavenLocal` from that repo.
+payorch-logging-starter = { module = "org.infra:infra-logging", version = "1.0.0" }
+payorch-web-starter = { module = "org.infra:infra-web", version = "1.0.0" }
+payorch-resilience-starter = { module = "org.infra:infra-resilience", version = "1.0.0" }
+payorch-idempotency-starter = { module = "org.infra:infra-idempotency", version = "1.0.0" }
+payorch-observability-starter = { module = "org.infra:infra-observability", version = "1.0.0" }
+payorch-persistence-starter = { module = "org.infra:infra-persistence", version = "1.0.0" }
+payorch-tokenization-starter = { module = "org.infra:infra-tokenization", version = "1.0.0" }
+payorch-chaos-core = { module = "org.infra:infra-chaos", version = "1.0.0" }
 
 # --- test -----------------------------------------------------------------
 h2 = { module = "com.h2database:h2" }

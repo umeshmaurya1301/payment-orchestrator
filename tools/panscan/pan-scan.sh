@@ -34,11 +34,11 @@ mkdir -p "${OUT}"
 WITH_LOAD=0
 [[ "${1:-}" == "--load" ]] && WITH_LOAD=1
 
-STARTER_JAR="$(ls "${ROOT}"/infra-core/logging-starter/build/libs/logging-starter-*.jar 2>/dev/null \
-    | grep -v sources | head -1 || true)"
+STARTER_JAR="${HOME}/.m2/repository/org/infra/infra-logging/1.0.0/infra-logging-1.0.0.jar"
 
-if [[ -z "${STARTER_JAR}" ]]; then
-    echo "logging-starter jar not found - run ./gradlew build first" >&2
+if [[ ! -f "${STARTER_JAR}" ]]; then
+    echo "infra-logging jar not found at ${STARTER_JAR} - publish it from the" >&2
+    echo "Infra-Core project first: ./gradlew publishToMavenLocal" >&2
     exit 2
 fi
 

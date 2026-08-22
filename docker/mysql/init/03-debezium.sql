@@ -30,7 +30,15 @@ CREATE USER IF NOT EXISTS 'debezium'@'%' IDENTIFIED BY 'debezium';
 GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'debezium'@'%';
 
 -- Debezium reads table metadata during snapshot and schema recovery.
-GRANT SELECT ON payorch.outbox_event TO 'debezium'@'%';
+--
+-- Scoped to payorch.*, not the single outbox_event table: on a truly fresh
+-- volume this script runs before payment-orchestrator's own Flyway migration
+-- has created outbox_event, so a table-scoped GRANT fails with ERROR 1146 and
+-- aborts the whole container. payorch.* still excludes the token vault (a
+-- separate database), so the isolation this file is otherwise careful about
+-- - "the polling relay needs SELECT on one table" - just widens to one table
+-- becoming "the rest of this database's tables", not the vault.
+GRANT SELECT ON payorch.* TO 'debezium'@'%';
 
 -- RELOAD is used for FLUSH TABLES WITH READ LOCK during an initial snapshot.
 -- Granted because the alternative is a snapshot mode that can miss rows written

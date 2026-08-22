@@ -12,15 +12,15 @@ import com.payorch.connector.config.ProviderConfigStore;
 import com.payorch.connector.provider.MockPspAdapter;
 import com.payorch.connector.provider.PspAdapter;
 import com.payorch.connector.provider.PspAdapterRegistry;
-import com.payorch.infra.resilience.deadline.DeadlineExecutor;
-import com.payorch.infra.resilience.deadline.DeadlinePropagation;
-import com.payorch.infra.resilience.breaker.CircuitBreakers;
-import com.payorch.infra.resilience.bulkhead.Bulkhead;
-import com.payorch.infra.resilience.ratelimit.RateLimiters;
-import com.payorch.infra.resilience.retry.Retrier;
-import com.payorch.infra.observability.ProviderLatency;
-import com.payorch.infra.observability.ProviderOutcomes;
-import com.payorch.infra.observability.Seams;
+import org.infra.resilience.deadline.DeadlineExecutor;
+import org.infra.resilience.deadline.DeadlinePropagation;
+import org.infra.resilience.breaker.CircuitBreakers;
+import org.infra.resilience.bulkhead.Bulkhead;
+import org.infra.resilience.ratelimit.RateLimiters;
+import org.infra.resilience.retry.Retrier;
+import org.infra.observability.ProviderLatency;
+import org.infra.observability.ProviderOutcomes;
+import org.infra.observability.Seams;
 import io.micrometer.observation.ObservationRegistry;
 import com.zaxxer.hikari.HikariDataSource;
 import org.springframework.beans.factory.annotation.Value;
@@ -123,7 +123,7 @@ public class ConnectorConfiguration {
     /**
      * Phase 5, the standing question experiment 09 left open. On by default -
      * this is the mechanism that lets a half-open breaker be gated rather than
-     * merely capped in {@link com.payorch.infra.observability.ProviderHealth},
+     * merely capped in {@link org.infra.observability.ProviderHealth},
      * so turning it off without also reverting that gate would leave a
      * recovering provider with no way back to CLOSED at all. See
      * {@link SyntheticProber}'s own javadoc for the full argument.

@@ -9,16 +9,6 @@ plugins {
 // inside the `subprojects` lambda, where it is not in scope.
 val catalog = extensions.getByType<VersionCatalogsExtension>().named("libs")
 
-// Without this, `./gradlew build` silently skips every test in infra-core.
-// Gradle only runs tasks in an included build when the consuming build needs
-// their output, and what the services need is the starters' jars - not their
-// test results. That made the phase-0 exit criterion ("a unit test proves
-// @Sensitive fields are masked") pass locally off stale results while a clean
-// clone ran six tests instead of thirty.
-tasks.named("build") {
-    dependsOn(gradle.includedBuild("infra-core").task(":buildAll"))
-}
-
 allprojects {
     group = "com.payorch"
     version = "0.1.0-SNAPSHOT"
@@ -104,8 +94,9 @@ tasks.register<Exec>("panLeakTest") {
     // runtime masking uses. A second copy could disagree with the thing it
     // audits, and the drift is never symmetric - it is always the scanner that
     // ends up more lenient, because that is the direction that makes a red
-    // build go green.
-    dependsOn(gradle.includedBuild("infra-core").task(":logging-starter:jar"))
+    // build go green. The jar itself is a pre-published Maven Local artifact
+    // (org.infra:infra-logging) now, not something this build produces, so
+    // there is nothing here to depend on.
 
     // Not just "bash". On Windows that resolves to WSL's bash, which is a
     // different machine with a different filesystem and no Docker socket - the

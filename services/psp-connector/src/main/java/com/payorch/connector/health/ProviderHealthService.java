@@ -6,11 +6,11 @@ import java.util.Map;
 
 import com.payorch.connector.config.ProviderConfig;
 import com.payorch.connector.config.ProviderConfigStore;
-import com.payorch.infra.observability.ProviderHealth;
-import com.payorch.infra.observability.ProviderLatency;
-import com.payorch.infra.observability.ProviderOutcomes;
-import com.payorch.infra.resilience.breaker.CircuitBreakers;
-import com.payorch.infra.resilience.bulkhead.Bulkhead;
+import org.infra.observability.ProviderHealth;
+import org.infra.observability.ProviderLatency;
+import org.infra.observability.ProviderOutcomes;
+import org.infra.resilience.breaker.CircuitBreakers;
+import org.infra.resilience.bulkhead.Bulkhead;
 
 /**
  * Scores every configured provider, here, because this is the only service that

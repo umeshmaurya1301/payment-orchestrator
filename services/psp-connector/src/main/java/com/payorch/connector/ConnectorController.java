@@ -2,11 +2,11 @@ package com.payorch.connector;
 
 import com.payorch.connector.api.ConnectorApi;
 import com.payorch.connector.provider.PspAdapter;
-import com.payorch.infra.resilience.bulkhead.BulkheadFullException;
-import com.payorch.infra.resilience.ratelimit.RateLimitedException;
+import org.infra.resilience.bulkhead.BulkheadFullException;
+import org.infra.resilience.ratelimit.RateLimitedException;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
-import com.payorch.infra.logging.LogEvent;
-import com.payorch.infra.logging.LogFields;
+import org.infra.logging.LogEvent;
+import org.infra.logging.LogFields;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

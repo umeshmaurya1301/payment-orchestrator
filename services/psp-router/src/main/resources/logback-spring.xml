@@ -6,6 +6,6 @@
     <springProperty scope="context" name="SERVICE_NAME"
                     source="spring.application.name" defaultValue="psp-router"/>
 
-    <include resource="com/payorch/infra/logging/logback-payorch.xml"/>
+    <include resource="org/infra/logging/logback-payorch.xml"/>
 
 </configuration>

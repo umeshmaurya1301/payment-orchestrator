@@ -4,7 +4,7 @@ import java.time.Instant;
 
 import org.springframework.stereotype.Component;
 
-import com.payorch.infra.persistence.Uuid7;
+import org.infra.persistence.Uuid7;
 import com.payorch.orchestrator.domain.Payment;
 import com.payorch.orchestrator.domain.PaymentState;
 

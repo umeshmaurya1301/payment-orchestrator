@@ -184,7 +184,44 @@ Every number should be traceable to a page in `docs/experiments/`.
 - [x] PII/PCI section with a data-flow diagram — 10b. In the README, with the
       audit-scope boundary, the three enforcement mechanisms, and how erasure
       propagates through copies that can never be rewritten
-- [ ] 90-second demo rehearsed end to end from a cold start
+- [x] 90-second demo rehearsed end to end from a cold start —
+      [`tools/demo/90-second-demo.sh`](../../tools/demo/90-second-demo.sh).
+      Runs against a freshly-started stack (nothing pre-warmed with traffic
+      before the clock starts) and verifies every claim it makes rather than
+      narrating them - two consecutive rehearsals both PASS, at **62s and
+      57s**, comfortably under budget:
+
+      | step | measured |
+      |---|---|
+      | load flowing before judging health | 6-46 attempts in an 8s window |
+      | traffic off psp-a after the fault | **2s and 6s** across the two runs |
+      | end-user error rate during the fault | **1%** both times - flat, not a spike |
+      | trace spans the payment path | **4** services found (edge, orchestrator, connector, *and* the simulated provider - one hop further than asked, because `mock-psp-simulator` carries the same instrumentation) |
+
+      **SigNoz was not actually wired up when this started**, despite
+      `docker/signoz/payorch-obs.override.yml` and `tools/obs/signoz.sh`
+      existing and being fully documented from phase 4 - the stack had never
+      been *started* in this environment. Traces were being generated and
+      exported to nothing, silently: `ObservabilityDefaults` points a service
+      with no collector at `http://localhost:4318` precisely so a developer
+      without SigNoz sees no errors, which means a developer *with* SigNoz not
+      yet started also sees no errors, and the distinction between those two
+      cases is not visible from a service's own logs. Only running the actual
+      demo step - open a trace - would have caught it.
+
+      **The demo script itself failed its first rehearsal, in a way worth
+      recording.** `soak.js`'s `setup()` resets the simulator's fault state via
+      a `SIMULATOR` URL defaulted to `localhost:8085` - correct on a host
+      machine, and inside the k6 container that address is itself, not
+      `mock-psp-simulator`. The whole k6 run aborted in `setup()` before a
+      single payment was sent, and every check downstream still had a plausible
+      surface reading: "traffic off psp-a within 20s" reported **2 seconds**,
+      because an empty window divides to a 0% share and looks exactly like an
+      instant, perfect shift. The fix was not the missing env var alone - it
+      was requiring a minimum sample size before trusting any share computed
+      from it, the same trap `rest-vs-grpc.sh` and `mtls-demo.sh` hit earlier
+      this session in different shapes: a script that can pass while measuring
+      nothing is worse than one that fails
 - [x] Resume bullets, each traceable to a measured number —
       [`docs/resume-bullets.md`](../resume-bullets.md). Twelve measured, four
       built-but-unmeasured in a separate table, and one component deliberately
